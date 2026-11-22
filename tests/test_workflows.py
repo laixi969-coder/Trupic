@@ -57,6 +57,197 @@ class WorkflowTests(unittest.TestCase):
             post(self.c, "account/admin", password=studio.ADMIN).status_code, 200
         )
 
+    def bundle_plan(self, cutout=False):
+        with Image.open("server/scenes/matcha.webp") as source:
+            photo = source.convert("RGBA").resize((500, 500))
+        if cutout:
+            canvas = Image.new("RGBA", (700, 700))
+            canvas.paste(photo, (100, 100))
+            photo = canvas
+        stream = io.BytesIO()
+        photo.save(stream, format="PNG")
+        stream.seek(0)
+        with patch.dict(os.environ, {"TRUPIC_CUTOUT": "/missing"}):
+            asset = self.c.post("/api/assets", data={"image": (stream, "product.png")}).json
+        response = post(self.c, "bundles/preview", title="抹茶饮品", benefits="抹茶与牛奶搭配", asset=asset["id"], assetConfirmed=True, ratio="square", resolution=720)
+        self.assertEqual(response.status_code, 200, response.json)
+        q = response.json
+        return q, dict(quote=q["quote"], confirmed=True, confirmedCost=q["cost"], requestKey=uuid.uuid4().hex)
+
+    def test_auto_creation_routing_and_shared_facts(self):
+        from server.auto_creation import route_request, factual_lines
+        self.assertEqual(route_request('只要文案，不要视频')['roles'], ['copy'])
+        self.assertEqual(route_request('只要视频')['roles'], ['copy', 'motion'])
+        self.assertEqual(route_request('只要主图和卖点图')['roles'], ['copy', 'hero', 'benefit'])
+        self.assertEqual(route_request('做图片和视频')['roles'], ['copy', 'poster', 'motion'])
+        self.assertEqual(route_request('一张海报，不要视频')['roles'], ['copy', 'poster'])
+        self.assertEqual(route_request('新品上新组图，配一个短视频')['roles'], ['copy', 'hero', 'benefit', 'scene', 'motion'])
+        self.assertIn('unsupported', route_request('做一个网站'))
+        self.assertEqual(factual_lines('净含量100g，9秒短视频，主标题写成「春山」', '', {}), ['净含量100g'])
+        q, _ = self.bundle_plan(cutout=True)
+        asset = studio.quotes.loads(q['quote'])['specs'][0]['asset']
+        with patch.object(studio.model, 'chat_request', side_effect=AssertionError('No API')):
+            result = post(self.c, 'creations/plan', asset=asset, brief='抹茶新品上新组图，48元/罐，净含量100g，可搭配牛奶冲调。再配一条9秒短视频。主标题写成「给牛奶加一点春山」').json
+        self.assertTrue(result['ready'], result)
+        self.assertEqual(result['cost'], 28)
+        specs = studio.quotes.loads(result['quote'])['items']
+        self.assertEqual([i['role'] for i in specs], ['copy', 'hero', 'benefit', 'scene', 'white', 'motion'])
+        shared = specs[0]['spec']['plan']['coordination']
+        for item in specs:
+            s = item['spec']
+            self.assertEqual(s['plan']['coordination'], shared)
+            self.assertEqual(s['replacement']['body'], '48元/罐；净含量100g；可搭配牛奶冲调')
+            self.assertEqual(s['assetMode'], 'cutout')
+        missing = post(self.c, 'creations/plan', asset=asset, brief='帮我做促销海报').json
+        self.assertFalse(missing['ready'])
+        self.assertEqual(len(missing['questions']), 3)
+        completed = post(self.c, 'creations/plan', asset=asset, brief='帮我做促销海报', facts='买一送一，本周末，全场适用，无其他限制').json
+        self.assertTrue(completed['ready'], completed)
+        other = studio.app.test_client()
+        other.get('/api/state')
+        self.assertEqual(post(other, 'creations/plan', asset=asset, brief='上新组图').status_code, 404)
+
+    def test_auto_creation_retry_billing_and_zip(self):
+        q, _ = self.bundle_plan()
+        asset = studio.quotes.loads(q['quote'])['specs'][0]['asset']
+        q = post(self.c, 'creations/plan', asset=asset, brief='抹茶新品上新组图，48元/罐').json
+        self.assertEqual(q['cost'], 12)  # opaque input cannot gain an unreviewed white image
+        payload = dict(quote=q['quote'], confirmedCost=q['cost'], requestKey=uuid.uuid4().hex)
+        real = studio.render
+        def fail_benefit(folder, plan, *args, **kwargs):
+            if plan.get('bundleRole') == 'benefit':
+                raise ValueError('测试独立重试')
+            return real(folder, plan, *args, **kwargs)
+        with patch.object(studio, 'render', side_effect=fail_benefit), patch.object(studio.model, 'chat_request', side_effect=AssertionError('No API')):
+            pack = post(self.c, 'creations', **payload).json
+            self.assertEqual(pack['requestKey'], payload['requestKey'])
+            self.assertEqual(post(self.c, 'creations', **payload).json['id'], pack['id'])
+            states = [self.finish(item['job'])['state'] for item in pack['items']]
+        self.assertEqual(states, ['complete', 'complete', 'failed', 'complete'])
+        self.assertEqual(self.state()['credits'], 112)
+        self.assertEqual(self.c.get(pack['download']).status_code, 400)
+        failed = pack['items'][2]['job']
+        with patch.object(studio.model, 'chat_request', side_effect=AssertionError('No API')):
+            post(self.c, 'jobs/' + failed + '/retry')
+            self.assertEqual(self.finish(failed)['state'], 'complete')
+        post(self.c, 'jobs/' + failed + '/retry')
+        self.assertEqual(self.state()['credits'], 108)
+        finished = self.c.get('/api/creations/' + pack['id']).json
+        self.assertTrue(finished['complete'])
+        self.assertIn('48元/罐', finished['items'][0]['text'])
+        with zipfile.ZipFile(io.BytesIO(self.c.get(pack['download']).data)) as z:
+            self.assertEqual(len(z.namelist()), 4)
+        other = studio.app.test_client()
+        other.get('/api/state')
+        self.assertEqual(other.get(pack['download']).status_code, 404)
+
+    def test_bundle_atomic_creation_retry_and_zip(self):
+        q, payload = self.bundle_plan()
+        self.assertEqual(q["roles"], ["主图", "卖点图", "场景图"])
+        real_render = studio.render
+        def fail_benefit(folder, plan, *args, **kwargs):
+            if plan.get("bundleRole") == "benefit":
+                raise ValueError("测试单张失败")
+            return real_render(folder, plan, *args, **kwargs)
+        with patch.object(studio, "render", side_effect=fail_benefit), patch.object(studio.model, "chat_request", side_effect=AssertionError("素材包不应调用 API")):
+            pack = post(self.c, "bundles", **payload).json
+            self.assertEqual(post(self.c, "bundles", **payload).json["id"], pack["id"])
+            states = [self.finish(i["job"]) for i in pack["items"]]
+        self.assertEqual([s["state"] for s in states], ["complete", "failed", "complete"], states)
+        self.assertEqual(self.state()["credits"], 112)
+        self.assertEqual(self.c.get(pack["download"]).status_code, 400)
+        failed = pack["items"][1]["job"]
+        post(self.c, "jobs/" + failed + "/retry")
+        self.assertEqual(self.finish(failed)["state"], "complete")
+        post(self.c, "jobs/" + failed + "/retry")
+        self.assertEqual(self.state()["credits"], 108)
+        finished = self.c.get('/api/bundles/' + pack['id']).json
+        self.assertTrue(finished['complete'])
+        with zipfile.ZipFile(io.BytesIO(self.c.get(pack['download']).data)) as z:
+            self.assertEqual(z.namelist(), ['01-主图.png','02-卖点图.png','03-场景图.png'])
+            images = [z.read(name) for name in z.namelist()]
+            self.assertEqual(len(set(images)), 3)
+        other = studio.app.test_client()
+        self.assertEqual(other.get('/api/bundles/' + pack['id']).status_code, 404)
+        self.assertEqual(other.get(pack['download']).status_code, 404)
+        self.assertEqual(post(other, 'bundles', **{**payload, 'requestKey': uuid.uuid4().hex}).status_code, 403)
+
+    def test_bundle_cutout_white_background(self):
+        q, payload = self.bundle_plan(cutout=True)
+        self.assertEqual(q['roles'][-1], '白底图')
+        self.assertEqual(q['cost'], 16)
+        pack = post(self.c, 'bundles', **payload).json
+        for item in pack['items']:
+            result = self.finish(item['job'])
+            self.assertEqual(result['state'], 'complete', result)
+        finished = self.c.get('/api/bundles/' + pack['id']).json
+        white = self.c.get(finished['items'][-1]['preview']).data
+        with Image.open(io.BytesIO(white)) as im:
+            self.assertEqual(im.getpixel((0, 0)), (255,255,255))
+        self.assertEqual(self.state()['credits'], 104)
+
+    def test_all_creative_skill_deliveries(self):
+        for skill in ("promotion", "social", "live", "brand", "mockup", "angles", "motion"):
+            with self.subTest(skill=skill):
+                self.setUp()
+                q, _ = self.bundle_plan()
+                asset = studio.quotes.loads(q["quote"])["specs"][0]["asset"]
+                if skill == "brand":
+                    response = post(self.c, "brand-kit", name="春山",color="#315744",logo=asset,font="")
+                    self.assertEqual(response.status_code,200,response.json)
+                request = dict(skill=skill,title="抹茶饮品",benefits="抹茶与牛奶搭配，28元",terms="11月25日至30日，仅限堂食",asset=asset,assetConfirmed=True,ratio="square",resolution=720,sideAsset=asset,backAsset=asset)
+                q = post(self.c,"bundles/preview",**request).json
+                self.assertIn("quote",q,q)
+                with patch.object(studio.model,"chat_request",side_effect=AssertionError("技能不应调用 API")):
+                    pack = post(self.c,"bundles",quote=q["quote"],confirmed=True,confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
+                    for item in pack["items"]:
+                        result=self.finish(item["job"])
+                        self.assertEqual(result["state"],"complete",(skill,item,result))
+                finished=self.c.get('/api/bundles/'+pack['id']).json
+                self.assertTrue(finished['complete'])
+                response=self.c.get(pack['download'])
+                with zipfile.ZipFile(io.BytesIO(response.data)) as archive:
+                    self.assertGreaterEqual(len(archive.namelist()),len(pack['items']))
+                response.close()
+                if skill == "live":
+                    response=self.c.get(finished['items'][-1]['preview'])
+                    with Image.open(io.BytesIO(response.data)) as im:
+                        self.assertEqual(im.mode,"RGBA")
+                        self.assertEqual(im.getpixel((0,0))[3],0)
+                    response.close()
+                if skill == "motion":
+                    source=self.c.get('/api/jobs/'+pack['items'][-1]['job']).json['work']
+                    q=post(self.c,'bundles/preview',**{**request,'skill':'remake','template':source}).json
+                    repack=post(self.c,'bundles',quote=q['quote'],confirmed=True,confirmedCost=q['cost'],requestKey=uuid.uuid4().hex).json
+                    result=self.finish(repack['items'][0]['job'])
+                    self.assertEqual(result['state'],'complete',result)
+
+    def test_poster_skill_is_executed_and_library_is_admin_only(self):
+        self.assertEqual(self.c.get('/api/admin').status_code, 403)
+        request = dict(brief='为春山抹茶粉做一张封面海报，标题写成「给牛奶加一点春山」', kind='poster')
+        with patch.object(studio.model, 'chat_request', side_effect=AssertionError('不能调用外部 API')):
+            response = post(self.c, 'preview', **request)
+            self.assertEqual(response.status_code, 200, response.json)
+            q = response.json
+            plan = q['plan']
+            selected = {s['id'] for s in plan['skillPlan']['skills']}
+            self.assertIn('poster_design', selected)
+            self.assertIn('cover_design', selected)
+            for stage in ('copy', 'image'):
+                for instruction in plan['skillPlan']['instructions'][stage]:
+                    self.assertIn(instruction, plan['promptBrief']['prompts'][stage])
+            job = post(self.c, 'jobs', quote=q['quote'], confirmed=True, confirmedCost=q['cost'], requestKey=uuid.uuid4().hex).json
+            result = self.finish(job['id'])
+            self.assertEqual(result['state'], 'complete', result)
+        with studio.db() as c:
+            saved = json.loads(c.execute('SELECT spec FROM version WHERE work=?', (result['work'],)).fetchone()[0])
+        self.assertEqual(saved['plan']['skillPlan'], plan['skillPlan'])
+        self.admin()
+        library = self.c.get('/api/admin').json['skills']
+        self.assertTrue(any(s['id']=='poster_design' and s['status']=='integrated' for s in library))
+        self.assertTrue(any(s['status']=='reserve' for s in library))
+        self.assertNotIn('web_visual', [s['id'] for s in self.c.get('/api/creative-skills').json])
+
     def test_consent_and_concurrent_replay(self):
         payload = self.plan()
         self.assertEqual(

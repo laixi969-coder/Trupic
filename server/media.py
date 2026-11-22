@@ -124,6 +124,7 @@ def inspect_upload(source, folder):
         width=original_size[0],
         height=original_size[1],
         risk=risk,
+        suppliedTransparency=supplied_subject is not None,
         action=action,
         detail=detail,
         file=file,
@@ -297,7 +298,10 @@ def render(
         typesetter.audit_text = [] if kind != "copy" else None
         box = original_box
         layer_info = {}
-        if directed:
+        if plan.get("bundleRole") and kind == "poster":
+            from .product_bundle import render_product
+            image, box = render_product(plan, copy, asset_path, dims, typesetter)
+        elif directed:
             save_design = kind == "poster" and index == 0
             separate_shot = shot and asset_path and asset_path.name == "subject.png" and not plan.get("posterArt", {}).get("print")
             source_layers = [] if save_design or separate_shot else None
@@ -362,7 +366,7 @@ def render(
                         box[i % 2] + v * (box[i % 2 + 2] - box[i % 2])
                         for i, v in enumerate(silhouette)
                     ) if silhouette and box else box,
-                    "preview": image.resize((160, 160)),
+                    "preview": image.convert("RGB").resize((160, 160)),
                     "movement": movement,
                     **layer_info,
                 }

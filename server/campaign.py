@@ -237,6 +237,16 @@ def complete_body(plan, body, offer, terms):
 
 
 def storyboard(plan, copy):
+    if plan.get("bundleRole"):
+        # Skill packs already contain approved copy. Industry example copy must
+        # never replace the supplied product facts in the middle shot.
+        return [
+            dict(start=0, end=3, camera="近景切入", line=copy["title"], caption=""),
+            dict(start=3, end=6, camera="推进细节", line=copy["body"], caption=""),
+            dict(start=6, end=9, camera="全景收束",
+                 line=copy.get("cta") or plan["profile"].get("name") or copy["title"],
+                 caption=" · ".join(filter(None,(copy.get("offer"),copy.get("terms"))))),
+        ]
     row = copy_route(plan) or {}
     line = copy.get("detailLine") or row.get("reveal") or copy["body"].split("。")[0]
     if detail := plan.get("posterArt", {}).get("detail"):

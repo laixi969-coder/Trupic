@@ -6,6 +6,7 @@ from .campaign import LOCKED, copy_route, offer_and_terms
 from .creative import METHODS, promotion_terms
 from .art_direction import direct
 from .design import choose_style, requested_style
+from .skill_library import attach as attach_skills
 
 PACE = {
     "steady": "自然推进",
@@ -99,6 +100,7 @@ def local_reading(plan):
 def optimize(spec, *, infer=True, previous=None):
     plan = spec["plan"]
     kind = spec["kind"]
+    skill_plan = plan.get("skillPlan") or attach_skills(plan, kind)
     reading = local_reading(plan)
     engine = "本地提示词规则"
     channels = {
@@ -152,6 +154,7 @@ def optimize(spec, *, infer=True, previous=None):
                     "有商品图": bool(spec["asset"]),
                     "素材形态": plan.get("visualSource"),
                     "原图观察": plan.get("sourceReview", {}).get("reason", ""),
+                    "本地创作技能": skill_plan["instructions"],
                 },
                 320,
             )
@@ -301,6 +304,8 @@ def optimize(spec, *, infer=True, previous=None):
     if "video" in prompts and wenan.no_cta(plan):
         prompts["video"] = prompts["video"].replace("并给出行动", "并以品牌或品名收束")
     for channel in prompts:
+        if guidance := skill_plan["instructions"].get(channel):
+            prompts[channel] += " 执行方法：" + "；".join(guidance)
         if retrieved := plan.get("retrievedMethod"):
             prompts[channel] += (
                 " 跨媒介借用「"

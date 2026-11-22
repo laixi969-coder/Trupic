@@ -1,0 +1,706 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "id": "poster_design",
+      "name": "海报设计",
+      "category": "基础设计",
+      "status": "integrated",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "海报设计",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "推广目标",
+        "商品或活动事实",
+        "画幅；商品保真时提供原图"
+      ],
+      "output": "完整海报 PNG；原有分层路径支持 SVG",
+      "instructions": {
+        "copy": "先提炼一个传播命题，再写主标题、支持信息及行动。指定标题逐字保留，价格和限定条件独立保存；根据画面文字空间调整表达。",
+        "image": "比较以商品用途和以实物形态为起点的两种构想，选与卖点联系更紧的一种。确定第一眼落点、商品与标题的共同边界、字体层级和光色。每种画幅重新构图，文字与真实包装分层。",
+        "video": "",
+        "qa": "核对标题、价格条件、商品轮廓与标识；手机缩略图能识别主诉求；检查原尺寸字形、边距和最终像素。"
+      },
+      "limits": "沿用 Trupic 本地海报策划与渲染；没有取得 Lovart 的内部提示词、模型或工作流。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "launch",
+      "name": "商品上新",
+      "category": "商品图",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "商品上新",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "商品照片",
+        "已确认卖点"
+      ],
+      "output": "主图、卖点图、场景图，合格抠图另出白底图。",
+      "instructions": {
+        "copy": "主图强调识别，卖点页每段交代一项事实，场景页展示用途。",
+        "image": "整套统一品牌与商品尺度；合格透明主体才生成白底图，其他情况保留原环境。",
+        "video": "",
+        "qa": "核对商品像素、主图与卖点图区分、白底角点和整套下载。"
+      },
+      "limits": "场景为本地合成，不生成未知商品结构。",
+      "match": [],
+      "workflow": "launch"
+    },
+    {
+      "id": "promotion",
+      "name": "促销活动",
+      "category": "营销",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "电商促销品牌设计",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "价格与优惠",
+        "期限及适用条件"
+      ],
+      "output": "统一活动主视觉、促销海报、价格图与横幅。填写已确认的优惠及有效期。",
+      "instructions": {
+        "copy": "区分原价、活动价和门槛，优惠条件必须随价格交付。",
+        "image": "共同主视觉分别适配海报、价格图和横幅；横幅重新安排左右关系。",
+        "video": "",
+        "qa": "逐字核对全部优惠和限制；缩略图优先读到活动重点。"
+      },
+      "limits": "仅排版确认的活动，不补写折扣。",
+      "match": [],
+      "workflow": "promotion"
+    },
+    {
+      "id": "social",
+      "name": "小红书组图",
+      "category": "社交",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "小红书封面制作器",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "商品照片",
+        "卖点",
+        "选购动作"
+      ],
+      "output": "封面、卖点展开页、收尾页，共用品牌与商品信息。",
+      "instructions": {
+        "copy": "封面给一个具体阅读理由，展开页解释卖点，收尾页承接行动，不伪造体验或评价。",
+        "image": "封面、展开和收尾保持同一品牌，逐页承担不同信息；保留正文和画面层次。",
+        "video": "",
+        "qa": "检查页间内容递进、标题真实性和小屏可读性。"
+      },
+      "limits": "现有执行交付三张组图，平台发布由用户操作。",
+      "match": [],
+      "workflow": "social"
+    },
+    {
+      "id": "live",
+      "name": "直播素材",
+      "category": "社交",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "电商直播素材",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "开播时间",
+        "直播内容",
+        "商品图"
+      ],
+      "output": "直播预告、封面、背景和透明文字贴片。填写开播时间。",
+      "instructions": {
+        "copy": "开播时间写清，直播内容与实际演示一致，未经确认不加倒计时或库存紧张。",
+        "image": "预告和封面都保留时间；背景为主播留中心区域，透明贴片与背景分开。",
+        "video": "",
+        "qa": "核对时间、内容及贴片 alpha 通道；确认文字不占主播区域。"
+      },
+      "limits": "当前不包含实时直播控制或平台推流。",
+      "match": [],
+      "workflow": "live"
+    },
+    {
+      "id": "brand",
+      "name": "品牌识别",
+      "category": "品牌",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "品牌识别",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "品牌名",
+        "Logo",
+        "色值",
+        "字体"
+      ],
+      "output": "保存品牌名称、Logo、色板和字体，交付品牌规范卡与应用示例。",
+      "instructions": {
+        "copy": "解释品牌名称、色值和选定字体，避免把品牌愿景写成产品事实。",
+        "image": "保留 Logo 比例与透明度，输出规范卡、应用卡和横幅；同套沿用字体与色彩。",
+        "video": "",
+        "qa": "核对色值、字体、Logo 完整性，避免白色底块。"
+      },
+      "limits": "品牌规范与静态应用示例，不自动设计新 Logo。",
+      "match": [],
+      "workflow": "brand"
+    },
+    {
+      "id": "motion",
+      "name": "动态海报",
+      "category": "视频",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "动态海报生成器",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "商品照片",
+        "已确认文案"
+      ],
+      "output": "海报与九秒三镜短片，输出 MP4 和可继续剪辑的素材。",
+      "instructions": {
+        "copy": "三镜依次交代商品、卖点和行动；中镜只用本次确认信息。",
+        "image": "同一主体与品牌构图分三镜，保持文字可读和完整轮廓。",
+        "video": "",
+        "qa": "查看实际 MP4 首中尾帧，核对九秒、24 fps、音轨和剪辑素材。"
+      },
+      "limits": "本地九秒三镜短片；单张图仅支持镜头运动。",
+      "match": [],
+      "workflow": "motion"
+    },
+    {
+      "id": "mockup",
+      "name": "物品样机",
+      "category": "品牌",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "物品样机",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "透明 Logo",
+        "品牌色"
+      ],
+      "output": "把上传的 Logo 应用到平面包装盒、手提袋和品牌卡的概念样机。",
+      "instructions": {
+        "copy": "仅描述应用位置与品牌文字，不暗示尚未生产的材质性能。",
+        "image": "把标识应用到盒、袋和品牌卡；依据物体表面安排尺度，保留标识原比例。",
+        "video": "",
+        "qa": "检查标识未变形、手提袋提手及卡片比例，区分概念与实物。"
+      },
+      "limits": "当前为平面包装概念样机，不是摄影级三维渲染。",
+      "match": [],
+      "workflow": "mockup"
+    },
+    {
+      "id": "angles",
+      "name": "多角度商品图",
+      "category": "商品图",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "多角度商品图",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "同一商品正面、侧面和背面图"
+      ],
+      "output": "使用同一商品的正面、侧面和背面实拍，统一排版交付三张。",
+      "instructions": {
+        "copy": "沿用同一商品名称与规格，不从不可见位置推断结构。",
+        "image": "逐张使用对应角度的原图，统一主体尺度和背景，禁止复制正面冒充背面。",
+        "video": "",
+        "qa": "检查三个来源、完整轮廓、包装文字和输出尺寸。"
+      },
+      "limits": "需要上传三个角度，不从单图生成真实未知视角。",
+      "match": [],
+      "workflow": "angles"
+    },
+    {
+      "id": "remake",
+      "name": "视频重制",
+      "category": "视频",
+      "status": "workflow",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "视频重制",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "已有 Trupic 短片",
+        "新商品图和文案"
+      ],
+      "output": "选择已有 Trupic 九秒短片，沿用画幅与版式，替换商品和文案。",
+      "instructions": {
+        "copy": "继承表达结构，替换商品相关事实和字幕；旧商品声明不能残留。",
+        "image": "沿用参考短片画幅和版式，替换商品后复核完整轮廓。",
+        "video": "",
+        "qa": "核对替换前后画幅、字幕、旧信息残留及最终 MP4。"
+      },
+      "limits": "只支持现有 Trupic 九秒模板，不复刻任意上传视频。",
+      "match": [],
+      "workflow": "remake"
+    },
+    {
+      "id": "cover_design",
+      "name": "封面与缩略图设计",
+      "category": "基础设计",
+      "status": "integrated",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "封面设计总监",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "内容主题",
+        "主体素材",
+        "发布位置"
+      ],
+      "output": "单张封面海报",
+      "instructions": {
+        "copy": "标题体现一个具体信息或观看理由，缩短到缩略图可读，避免重复画面已展示的信息。",
+        "image": "一个明确视觉主体与短标题形成尺度对比，保护脸部和商品标识；四周留裁切余量。",
+        "video": "",
+        "qa": "缩小后仍可辨认主体和标题；检查裁切与文字遮挡。"
+      },
+      "limits": "接入现有单图流程；不会自动获取平台实时尺寸。",
+      "match": [
+        "封面",
+        "缩略图",
+        "thumbnail"
+      ],
+      "workflow": null
+    },
+    {
+      "id": "banner_design",
+      "name": "横幅设计",
+      "category": "基础设计",
+      "status": "integrated",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "横幅设计",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "投放位置",
+        "画幅",
+        "标题及素材"
+      ],
+      "output": "按所选画幅交付单张横幅",
+      "instructions": {
+        "copy": "压缩为主信息与必要条件，保持价格、币种和期限连续可读。",
+        "image": "横向画幅使用左右或横向延展构图，保留主体与标题安全边距，不将竖稿直接拉宽。",
+        "video": "",
+        "qa": "分别检查主体边界、长标题和小尺寸可读性。"
+      },
+      "limits": "按用户所选画幅执行；平台安全区需要提供规格。",
+      "match": [
+        "横幅",
+        "banner"
+      ],
+      "workflow": null
+    },
+    {
+      "id": "paid_social",
+      "name": "投放广告创意",
+      "category": "营销",
+      "status": "integrated",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "Meta广告创意",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "商品事实",
+        "目标受众",
+        "行动目标"
+      ],
+      "output": "单张广告海报",
+      "instructions": {
+        "copy": "围绕一个购买理由写标题和行动。区分受众角度与事实承诺，未经验证不声称投放效果。",
+        "image": "同一 SKU 的商品、标题、价格与行动有明确阅读顺序；每次对比只改变一个创意变量。",
+        "video": "",
+        "qa": "检查声明依据、视觉焦点与行动一致性；不把设计验收当作投放成效。"
+      },
+      "limits": "仅接入单张广告创作；不自动投放或承诺转化率。",
+      "match": [
+        "投放广告",
+        "meta广告",
+        "facebook广告",
+        "付费广告"
+      ],
+      "workflow": null
+    },
+    {
+      "id": "video_storyboard",
+      "name": "商品广告分镜",
+      "category": "视频",
+      "status": "integrated",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "产品电视广告",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "商品图或视频",
+        "确认卖点",
+        "传播目标"
+      ],
+      "output": "现有九秒短片的逐镜脚本和成品",
+      "instructions": {
+        "copy": "首镜提出观察，中镜增加一条商品信息，末镜给一个行动；字幕时长与字数匹配。",
+        "image": "先为每镜确定画面、景别、转场承接和文字区域。只有实拍素材支持时才描述真实搅拌、倾倒等动作。",
+        "video": "每个镜头记录 start、end、camera、line、caption；视觉与字幕共用同一镜头编号。",
+        "qa": "逐镜核对事实与素材、字幕、音轨、时长和整片一致性。"
+      },
+      "limits": "适配 Trupic 九秒短片；完整电视广告制作方法仅作扩展参考。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "ecommerce_listing",
+      "name": "电商商品列表图片",
+      "category": "商品图",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "Amazon产品列表图片",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "商品各角度图",
+        "真实规格",
+        "目标平台要求"
+      ],
+      "output": "商品列表图制作方案",
+      "instructions": {
+        "copy": "按商品识别、关键优势、规格和使用场景排序；比较数据必须有来源。",
+        "image": "主图、细节、场景与尺寸图分工，保证 SKU 一致，按提供的平台规范排版。",
+        "video": "",
+        "qa": "核对商品数量、尺寸标注、图文事实及平台要求。"
+      },
+      "limits": "尚未接入平台规范校验和完整列表成套执行。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "detail_page",
+      "name": "商品详情页编排",
+      "category": "商品图",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "",
+        "title": "Trupic 商家场景补充",
+        "kind": "Trupic 自有方法",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "商品资料",
+        "卖点证据",
+        "规格与售后条件"
+      ],
+      "output": "详情页内容及分屏设计方案",
+      "instructions": {
+        "copy": "先解决购买疑问，再给证据与规格；将确认参数原样保存。",
+        "image": "按卖点、实拍细节、使用方式与规格分屏，连续页面保持品牌和阅读节奏。",
+        "video": "",
+        "qa": "逐屏核对证据、顺序、长文可读性及产品一致性。"
+      },
+      "limits": "方法已保存，长页渲染与完整导出尚未接入。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "marketing_campaign",
+      "name": "跨渠道营销活动",
+      "category": "营销",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "营销活动生成器",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "目标",
+        "受众",
+        "渠道",
+        "时间与预算边界"
+      ],
+      "output": "活动主题及渠道素材清单",
+      "instructions": {
+        "copy": "同一核心命题改写为各渠道自然表达，保留共同价格与活动条件。",
+        "image": "从共同主视觉延展海报、社交和视频，按媒介重新构图。",
+        "video": "",
+        "qa": "检查渠道内容一致性、交付清单和活动条件。"
+      },
+      "limits": "尚未接入跨渠道排期、发布与效果归因。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "creator_identity",
+      "name": "创作者视觉识别",
+      "category": "品牌",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "创作者视觉识别系统",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "品牌定位",
+        "标识",
+        "内容栏目"
+      ],
+      "output": "栏目视觉规范",
+      "instructions": {
+        "copy": "固定品牌语气与栏目命名，区分署名、标题和内容层级。",
+        "image": "定义封面栅格、字色、头像与栏目识别，基于真实内容检验应用。",
+        "video": "",
+        "qa": "检查不同栏目可区分、同一品牌可识别。"
+      },
+      "limits": "规范方法已保存；专用模板集尚未制作。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "channel_banner",
+      "name": "频道横幅",
+      "category": "社交",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "YouTube频道横幅",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "频道名称",
+        "品牌图",
+        "平台裁切规格"
+      ],
+      "output": "频道横幅设计方案",
+      "instructions": {
+        "copy": "用短句说明频道内容，保持名称和更新承诺准确。",
+        "image": "主体信息集中在跨设备共同安全区，外围用于视觉延展。",
+        "video": "",
+        "qa": "逐个设备裁切框检查名称和主体，不臆定最新平台规格。"
+      },
+      "limits": "需提供或核实平台规格后再接专用导出。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "photo_diary",
+      "name": "照片日记与拼贴",
+      "category": "社交",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "复古照片日记",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "三张有使用权的照片",
+        "叙事主题"
+      ],
+      "output": "照片拼贴和叙事布局方案",
+      "instructions": {
+        "copy": "用简短注释串联时间、情绪或产品使用，不编造照片背景事实。",
+        "image": "选择拼贴、摄影、软木板或情绪叙事；保持同一组照片的色调和视觉顺序。",
+        "video": "",
+        "qa": "核对三图来源、人物和商品裁切、图注与原片关系。"
+      },
+      "limits": "多图片拼贴渲染尚未接入。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "character_sheet",
+      "name": "品牌角色设定表",
+      "category": "品牌",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "角色设定表设计",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "已授权角色参考",
+        "不可改变的身份特征"
+      ],
+      "output": "角色视图与姿势制作规范",
+      "instructions": {
+        "copy": "记录角色特征、配件与语气，不从一个视角臆定背面设计。",
+        "image": "锁定比例、轮廓和配色再制作转身、姿势与表情，逐张对照参考。",
+        "video": "",
+        "qa": "逐视图检查身份一致性和授权素材来源。"
+      },
+      "limits": "需要角色图像生成能力和逐张一致性审核。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "app_store",
+      "name": "应用商店展示素材",
+      "category": "扩展设计",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "移动应用商店素材工具包",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "真实应用截图",
+        "功能事实",
+        "商店尺寸规格"
+      ],
+      "output": "商店截图编排方案",
+      "instructions": {
+        "copy": "一屏一个真实功能或使用收益，不展示不存在的界面与排名。",
+        "image": "保持截图可辨认，标题与设备框不遮操作重点，按给定尺寸适配。",
+        "video": "",
+        "qa": "核对功能、截图、语言与平台规格。"
+      },
+      "limits": "尚未接入应用截图采集和商店规格校验。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "web_visual",
+      "name": "Web 产品视觉设计",
+      "category": "扩展设计",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "Web产品视觉设计",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "网站目标",
+        "品牌",
+        "真实内容"
+      ],
+      "output": "网页视觉方向与核心页面规范",
+      "instructions": {
+        "copy": "明确页面目标和用户下一步，按内容优先级组织标题与说明。",
+        "image": "定义色彩、字体、间距与组件，在核心页面验证一致性和响应式关系。",
+        "video": "",
+        "qa": "核对内容、状态、可读性与移动端结构。"
+      },
+      "limits": "仅储备设计方法，不代表当前能发布网站。",
+      "match": [],
+      "workflow": null
+    },
+    {
+      "id": "mobile_visual",
+      "name": "移动应用视觉设计",
+      "category": "扩展设计",
+      "status": "reserve",
+      "version": "1.0.0",
+      "source": {
+        "url": "https://www.lovart.ai/zh/skills",
+        "title": "移动应用视觉设计",
+        "kind": "本地适配；非原始技能导入",
+        "definitionAvailable": false,
+        "observed": "2026-11-22"
+      },
+      "inputs": [
+        "用户任务",
+        "平台",
+        "品牌"
+      ],
+      "output": "移动应用界面规范",
+      "instructions": {
+        "copy": "围绕核心任务减少操作，文案交代状态和结果。",
+        "image": "定义导航、组件与状态，在真实内容下验证小屏布局及触控区域。",
+        "video": "",
+        "qa": "检查核心流程、空态、错误态与平台差异。"
+      },
+      "limits": "仅储备设计方法，未接入应用代码生成。",
+      "match": [],
+      "workflow": null
+    }
+  ]
+}

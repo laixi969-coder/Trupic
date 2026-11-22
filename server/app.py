@@ -54,6 +54,9 @@ from .typography import Typesetter, inspect_face
 from .lettering import OPTIONS as LETTERING_OPTIONS
 from .campaign import storyboard
 from .prompt_agent import full_poster_prompt, optimize
+from .product_bundle import register as register_bundles
+from .auto_creation import register as register_creations
+from .skill_library import attach as attach_skills, catalog as skill_library_catalog
 from .visual_review import (
     FIDELITY,
     LayoutOverflow,
@@ -238,7 +241,7 @@ def pack(c, w, all_versions=False):
         kind=w["kind"],
         created=w["created"],
         current=w["current"],
-        title=current["title"],
+        title=current["title"] or current["body"],
         cover=current["poster"],
         **({"versions": versions} if all_versions else {}),
     )
@@ -274,7 +277,7 @@ def state():
         jobs = [
             dict(x)
             for x in c.execute(
-                "SELECT id,state,work,error,created FROM job WHERE tenant=? AND state IN ('queued','running','failed') ORDER BY created DESC,rowid DESC LIMIT 15",
+                "SELECT id,state,work,error,created,json_extract(spec,'$.plan.autoCreation') AS autoCreation FROM job WHERE tenant=? AND state IN ('queued','running','failed') ORDER BY created DESC,rowid DESC LIMIT 15",
                 (t,),
             )
         ]
@@ -583,6 +586,7 @@ def plan_spec(c, t, v):
         }
         plan["topic"]["id"] = topic_id
         source = item["id"]
+    attach_skills(plan, kind)
     return dict(
         plan=plan,
         kind=kind,
@@ -725,7 +729,8 @@ def produce(id):
     p.setdefault("kind", s["kind"])
     dest = DATA / t / "works" / work / str(n)
     try:
-        preflight(s, DATA / t / "assets")
+        if not p.get("bundleRole") and not p.get("autoCreation"):
+            preflight(s, DATA / t / "assets")
         if not p.get("promptBrief"):
             optimize(s)
             with db(True) as c:
@@ -770,7 +775,10 @@ def produce(id):
                     else json.loads(a["info"])["file"]
                 )
             )
-        background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1)
+        if p.get("bundleRole") or p.get("autoCreation"):
+            background, visual_engine = None, "本地商品素材排版"
+        else:
+            background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1)
         cp["visualEngine"] = visual_engine
         custom_font = None
         if p.get("brandType"):
@@ -793,11 +801,13 @@ def produce(id):
             )
         else:
             original = ap.with_name("original.png") if ap else None
+            if p.get("bundleRole") == "overlay":
+                original = None
             previous = json.loads(j["visual_review"] or "{}")
             visual = {"status": "checking", "attempts": previous.get("attempts", [])}
             for repair in (False, True):
                 chosen = ap
-                if repair and ap:
+                if repair and ap and p.get("bundleRole") != "overlay":
                     last_issues = visual["attempts"][-1]["issues"]
                     intact_mask = ap.name == "subject.png" and not any(
                         "抠图" in issue or "蒙版" in issue for issue in last_issues
@@ -830,7 +840,10 @@ def produce(id):
                     except (OSError, ValueError, subprocess.SubprocessError) as exc:
                         issues = ["导出文件读取失败：" + str(exc)[:100]]
                     try:
-                        review = content_review(dest, original, s, cp, layout)
+                        review = (
+                            None if p.get("bundleRole") or p.get("autoCreation")
+                            else content_review(dest, original, s, cp, layout)
+                        )
                     except (
                         OSError,
                         ValueError,
@@ -1254,6 +1267,7 @@ def admin_state():
                 "hasKey": bool(cfg["key"]),
                 "engine": model.engine_name(),
             },
+            skills=skill_library_catalog(),
             works=works,
             cases=[
                 dict(i)
@@ -1651,6 +1665,10 @@ def site(path=""):
     if path and (dist / path).is_file():
         return send_from_directory(dist, path)
     return send_from_directory(dist, "index.html")
+
+
+register_bundles(app, globals())
+register_creations(app, globals())
 
 
 def start():

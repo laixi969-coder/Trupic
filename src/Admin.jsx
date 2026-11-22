@@ -14,10 +14,12 @@ import {
 } from "lucide-react";
 import { api, Blank, Busy, Field, Modal, PageHead, dateText } from "./ui.jsx";
 import ModelPlatforms from "./ModelPlatforms.jsx";
+import SkillLibrary from "./SkillLibrary.jsx";
 const tabs = [
   ["works", "作品抽查", ShieldCheck],
   ["visual", "成品视觉审核", ScanLine],
   ["cases", "案例与方法", BookOpen],
+  ["skills", "技能库", BookOpen],
   ["rules", "策略版本", GitBranch],
   ["audit", "审计日志", History],
   ["platforms", "模型平台", Settings2],
@@ -101,6 +103,7 @@ export default function Admin({ tip }) {
         <p>{err || "正在载入…"}</p>
       ) : (
         <>
+          {tab === "skills" && <SkillLibrary skills={d.skills || []} />}
           {tab === "platforms" && (
             <ModelPlatforms
               config={d.modelPlatforms}
@@ -205,7 +208,9 @@ export default function Admin({ tip }) {
                       {v.report.content.model} · {v.report.content.reason}
                     </p>
                   )}
-                  {v.report.content?.compositionNote && <p>全幅画面观察 · {v.report.content.compositionNote}</p>}
+                  {v.report.content?.compositionNote && (
+                    <p>全幅画面观察 · {v.report.content.compositionNote}</p>
+                  )}
                   {v.error && <p className="error">{v.error}</p>}
                   {v.state === "complete" && (
                     <a
@@ -430,13 +435,16 @@ export default function Admin({ tip }) {
                 <h2>图像生成</h2>
               </div>
               <p className="fineprint">
-                百炼 Qwen-Image 可供海报 agent 携带商品参考图生成整稿。工作台的分层导出用该连接生成场景，商品主体取自原图。调用按服务商规则计费。
+                百炼 Qwen-Image 可供海报 agent
+                携带商品参考图生成整稿。工作台的分层导出用该连接生成场景，商品主体取自原图。调用按服务商规则计费。
               </p>
               {field("imageUrl", "图像生成接口地址", {
                 limit: 1200,
                 placeholder: "https://…/v1/images/generations",
               })}
-              {field("imageModel", "图像模型名称", { placeholder: "qwen-image-3.0-pro" })}
+              {field("imageModel", "图像模型名称", {
+                placeholder: "qwen-image-3.0-pro",
+              })}
               <label className="field">
                 图像服务密钥
                 <input

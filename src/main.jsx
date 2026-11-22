@@ -57,6 +57,7 @@ import {
   dateText,
 } from "./ui.jsx";
 import Admin from "./Admin.jsx";
+import AutoCreate from "./AutoCreate.jsx";
 import ProductRegion from "./ProductRegion.jsx";
 import {
   FontPicker,
@@ -74,7 +75,10 @@ const navs = [
   ["inspiration", "灵感广场", Compass],
   ["profile", "商家档案", Store],
 ];
-const route = () => decodeURIComponent(location.hash.slice(1)) || "home";
+const route = () => {
+  const value = decodeURIComponent(location.hash.slice(1)) || "home";
+  return value === "bundles" ? "home" : value;
+};
 const ratios = {
   portrait: "竖版 3:4",
   square: "方形 1:1",
@@ -187,7 +191,7 @@ function App() {
       .then((d) => {
         setProfile(d.profile);
         setBootError("");
-        const j = d.jobs.find((j) => ["queued", "running"].includes(j.state));
+        const j = d.jobs.find((j) => !j.autoCreation && ["queued", "running"].includes(j.state));
         if (j) {
           setJob(j);
         }
@@ -536,7 +540,7 @@ function App() {
           </div>
         </div>
         <div className="content" key={section}>
-          {page === "home" && (
+          {(page === "home" || page === "bundles") && (
             <>
               <div className="homehead">
                 <h1>创作工作台</h1>
@@ -566,131 +570,7 @@ function App() {
                   <p>为你的生意，创作文案、海报与短片。</p>
                 </div>
               </div>
-              <section className="composer" aria-label="一句话智能创作">
-                <div className="composehead">
-                  <div className="compose-title">
-                    <Sparkles size={19} />
-                    <h2>一句话创作</h2>
-                  </div>
-                  <div className="mode-tabs" aria-label="作品类型">
-                    {Object.entries(formats).map(([key, f]) => (
-                      <button
-                        aria-pressed={draft.kind === key}
-                        key={key}
-                        className={draft.kind === key ? "sel" : ""}
-                        onClick={() => patch({ kind: key })}
-                      >
-                        <f.icon size={14} />
-                        {f.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <textarea
-                  ref={textarea}
-                  aria-label="创作需求"
-                  maxLength={1200}
-                  value={draft.brief}
-                  onChange={(e) =>
-                    patch({
-                      brief: e.target.value,
-                      topicId: e.target.value.trim() ? draft.topicId : "",
-                      source: "一句话创作",
-                      reference: "",
-                    })
-                  }
-                  onKeyDown={(e) => {
-                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") plan();
-                  }}
-                  placeholder={
-                    draft.kind === "poster"
-                      ? "描述你的创作需求，例如：为我的咖啡店做一张秋冬热饮上新的海报…"
-                      : draft.kind === "video"
-                        ? "描述想拍的短片，例如：用 9 秒邀请下班的朋友来台球室开一局…"
-                        : "描述你的宣传想法，例如：为周末的火锅聚餐写一条朋友圈文案…"
-                  }
-                />
-                {selected && (
-                  <div className="selectedasset">
-                    <button
-                      onClick={() => {
-                        setAssetItem(selected);
-                        open("checkAsset");
-                      }}
-                    >
-                      <img src={selected.url} alt="" />
-                      {selected.name} ·{" "}
-                      {draft.assetConfirmed ? "已确认" : "待核对"}
-                    </button>
-                    <button
-                      aria-label="移除素材"
-                      onClick={() =>
-                        patch({
-                          asset: "",
-                          identityRegion: null,
-                          assetConfirmed: false,
-                        })
-                      }
-                    >
-                      <X size={13} />
-                    </button>
-                  </div>
-                )}
-                {draft.kind !== "copy" && (
-                  <ExportOptions draft={draft} patch={patch} ratios={ratios} />
-                )}
-                {showParams &&
-                  (draft.kind === "copy" ? (
-                    <div className="paramrow">纯文本文案 · TXT</div>
-                  ) : (
-                    <PosterOptions
-                      draft={draft}
-                      patch={patch}
-                      data={data}
-                      refresh={refresh}
-                    />
-                  ))}
-                <div className="composefoot">
-                  <div>
-                    <button
-                      className="toolbtn"
-                      onClick={() => open("chooseAsset")}
-                    >
-                      <Paperclip size={15} />
-                      添加素材
-                    </button>
-                    <button
-                      aria-label="创作设置"
-                      aria-expanded={showParams}
-                      className={"toolbtn param " + (showParams ? "on" : "")}
-                      onClick={() => setParams(!showParams)}
-                    >
-                      <SlidersHorizontal size={15} />
-                      <span>版式与字体</span>
-                    </button>
-                  </div>
-                  <button
-                    className="primary start"
-                    disabled={!!busy || !!job}
-                    onClick={plan}
-                  >
-                    {busy === "plan" ? (
-                      <Busy text="分析需求" />
-                    ) : (
-                      <>
-                        <Sparkles size={16} />
-                        开始创作
-                        <ArrowRight size={15} />
-                      </>
-                    )}
-                  </button>
-                </div>
-                {error && !modal && (
-                  <p role="alert" className="error">
-                    {error}
-                  </p>
-                )}
-              </section>
+              <AutoCreate assets={data.assets} draft={draft} patch={patch} refresh={refresh} textRef={textarea} />
               <div className="recline">
                 <span>
                   <Lightbulb size={15} />
@@ -1685,17 +1565,17 @@ function App() {
               [
                 Camera,
                 "使用真实素材",
-                "可上传商品原图。系统会检查清晰度，并在需要时调光或分离主体。",
+                "上传一张商品图，系统会检查清晰度并保留商品原貌。",
               ],
               [
                 Sparkles,
-                "确认后制作",
-                "先查看创意方案、规格与用量，再生成成品。",
+                "一键开始制作",
+                "查看预计成品与积分后点击一键创作，系统自动安排文案、图片和需要的短片。",
               ],
               [
                 Layers,
                 "下载或调整作品",
-                "在作品页复制文案、下载文件，或应用建议并切换版本。",
+                "结果中预览图片、播放短片、复制文案；失败项单独重试，全部完成后整套下载。",
               ],
             ].map(([I, t, s]) => (
               <div key={t}>
