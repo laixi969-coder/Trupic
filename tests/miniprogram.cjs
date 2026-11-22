@@ -168,12 +168,30 @@ test(
     assert.equal(gallery.data.samples.length, 1);
     gallery.open(click({ id: "tea" }));
     gallery.use();
-    home.onShow();
+    await home.onShow();
+    assert.equal(home.data.topics.length, 2);
     assert.equal(route, "/pages/home/home");
     assert.match(home.data.brief, /抹茶/);
     home.addPhoto();
     for (let i = 0; i < 100 && !home.data.assetImage; i++) await delay(50);
     assert.ok(home.data.assetImage);
+    await home.startMark();
+    home.createSelectorQuery = () => ({
+      select() {
+        return this;
+      },
+      boundingClientRect(cb) {
+        cb({ left: 0, top: 0, width: 400, height: 600 });
+        return this;
+      },
+      exec() {},
+    });
+    home.markPoint({ changedTouches: [{ clientX: 100, clientY: 120 }] });
+    home.markPoint({ changedTouches: [{ clientX: 300, clientY: 480 }] });
+    assert.deepEqual(
+      Array.from(home.data.identityRegion),
+      [0.25, 0.2, 0.75, 0.8],
+    );
     home.acceptPhoto();
     assert.equal(home.data.assetConfirmed, true);
     for (const kind of ["poster", "video", "copy"]) {
@@ -245,6 +263,36 @@ test(
           assert.equal(probe.trim(), "1280,720");
         }
       }
+      if (kind === "poster") {
+        const first = result.data.version;
+        const originalImage = readFileSync(result.data.media);
+        await result.revise(click({ action: "layout" }));
+        while (result.job) {
+          result.stop();
+          assert.notEqual(result.data.state, "failed", result.data.error);
+          await delay(80);
+          await result.refresh();
+        }
+        assert.equal(result.data.version.n, 2);
+        assert.equal(
+          result.data.version.plan.design.id,
+          first.layoutSuggestion.id,
+        );
+        assert.equal(result.data.version.body, first.body);
+        assert.equal(
+          originalImage.equals(readFileSync(result.data.media)),
+          false,
+        );
+        await result.selectVersion(input(1));
+        assert.equal(result.data.version.n, 1);
+        await result.restore();
+        assert.equal(result.data.work.current, 1);
+        assert.equal(result.data.work.versions.length, 2);
+      }
+      if (kind === "video") {
+        home.useTopic(click({ id: home.data.topics[0].topicId }));
+        assert.equal(home.data.brief, home.data.topics[0].brief);
+      }
     }
     const mine = page("mine");
     await mine.load();
@@ -252,6 +300,7 @@ test(
     assert.equal(mine.data.credits, 104);
     const state = await api.request("state");
     assert.equal(state.assets.length, 1);
+    assert.ok(state.recs.find((r) => r.topicId === home.data.topicId).adopted);
     const reopened = page("home");
     reopened.onLoad();
     reopened.changeKind(click({ kind: "poster" }));

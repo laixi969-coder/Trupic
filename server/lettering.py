@@ -54,7 +54,9 @@ def apply_lettering(
     image, plan, ts, art, style, subject=None, margin=False, bleed=True
 ):
     mode = plan.get("lettering", "auto")
-    if mode == "off":
+    if mode == "off" or (mode == "auto" and plan.get("posterArt") and
+                         plan["posterArt"].get("composition") not in ("ingredient", "projection") and
+                         not plan["posterArt"].get("modelMark")):
         return image
     row = copy_route(plan) or {}
     product = plan["profile"].get("product") or plan["subject"]

@@ -45,8 +45,10 @@ def inspect_upload(source, folder):
                 raise ValueError("图片超过 3200 万像素，请先缩小。")
             original_size = raw.size
             image = ImageOps.exif_transpose(raw).convert("RGBA")
+            alpha = image.getchannel("A")
+            supplied_subject = image if alpha.getextrema()[0] < 240 else None
             canvas = Image.new("RGB", image.size, "white")
-            canvas.paste(image, mask=image.getchannel("A"))
+            canvas.paste(image, mask=alpha)
             image = canvas
     except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as e:
         raise ValueError("无法读取图片，请重新选择清晰的 JPG、PNG 或 WebP。") from e
@@ -81,6 +83,13 @@ def inspect_upload(source, folder):
     if risk:
         action = "建议换图"
         detail = "请靠近主体，在均匀光线下对焦拍摄，确保商品、包装和标识清晰可辨。"
+    elif supplied_subject is not None and alpha.getbbox():
+        supplied_subject.save(folder / "subject.png")
+        file, action, detail = (
+            "subject.png",
+            "主体抠图",
+            "已沿用上传文件的透明轮廓，请确认主体与标识。",
+        )
     elif lum < 65 or lum > 212:
         fixed = ImageEnhance.Brightness(image).enhance(min(1.25, max(0.86, 130 / lum)))
         fixed.save(folder / "adjusted.png")
@@ -88,19 +97,8 @@ def inspect_upload(source, folder):
         action = "轻度调光"
         detail = "已适度校正曝光，保留商品本身的颜色与细节。"
     else:
-        edges = np.asarray(sample.filter(ImageFilter.FIND_EDGES))
-        h, w = arr.shape
-        border = max(2, min(h, w) // 6)
-        outside = np.concatenate(
-            [
-                edges[1:border].ravel(),
-                edges[-border:-1].ravel(),
-                edges[1:-1, 1:border].ravel(),
-                edges[1:-1, -border:-1].ravel(),
-            ]
-        )
         tool = Path(os.getenv("TRUPIC_CUTOUT", ROOT / ".trupic/bin/cutout"))
-        if outside.size and (outside > 26).mean() > 0.10 and tool.is_file():
+        if tool.is_file():
             try:
                 subprocess.run(
                     [str(tool), str(folder / file), str(folder / "subject.png")],
@@ -112,6 +110,11 @@ def inspect_upload(source, folder):
                 with Image.open(folder / "subject.png") as cut:
                     opacity = np.asarray(cut.convert("RGBA"))[:, :, 3]
                     if 0.05 < (opacity > 128).mean() < 0.9:
+                        # Native segmentation supplies the matte. Keep source RGB verbatim.
+                        with Image.open(folder / "original.png") as original:
+                            subject = original.convert("RGBA")
+                        subject.putalpha(cut.getchannel("A").resize(subject.size))
+                        subject.save(folder / "subject.png")
                         file = "subject.png"
                         action = "主体抠图"
                         detail = "已保留原图主体并分离背景，请在预览中核对包装与标识。"
@@ -211,7 +214,7 @@ def picture(plan, asset_path, area, variant, scene, background, dark, accent):
     return out
 
 
-def soundtrack(path):
+def soundtrack(path, optical=False):
     rate = 22050
     t = np.arange(rate * 9) / rate
     signal = np.zeros_like(t)
@@ -225,6 +228,17 @@ def soundtrack(path):
             * np.exp(-s * 8)
             * np.minimum(s / 0.012, 1)
         )
+    if optical:
+        # A low tonal bed and three shutter transients follow the cuts of the optics film.
+        signal = 0.055 * np.sin(2 * np.pi * 55 * t) + 0.025 * np.sin(
+            2 * np.pi * 82.41 * t
+        )
+        signal *= np.minimum(t / 0.22, 1) * np.clip((9 - t) / 0.45, 0, 1)
+        rng = np.random.default_rng(40)
+        for when in (0.10, 3.02, 6.01):
+            span = (t >= when) & (t < when + 0.13)
+            elapsed = t[span] - when
+            signal[span] += 0.32 * rng.normal(size=span.sum()) * np.exp(-49 * elapsed)
     with wave.open(str(path), "wb") as f:
         f.setparams((1, 2, rate, 0, "NONE", "not compressed"))
         f.writeframes((signal * 32767).astype("<i2").tobytes())
@@ -240,27 +254,122 @@ def render(
     variant,
     background=None,
     custom_font=None,
+    repair=False,
 ):
     from .posters import poster
     from .motion import frame
     from .campaign import storyboard
     from .typography import Typesetter
 
+    from .visual_review import product_geometry, map_box
+    from .campaign_frame import campaign_frame, film_planes, moving_frame
+    from .film_edit import encode
+    from .poster_composition import LAYOUTS
+
     typesetter = Typesetter(custom_font)
     folder.mkdir(parents=True, exist_ok=True)
     output = plan.get("output") or output_spec(kind, ratio)
     dims = (output["width"], output["height"])
     dense = "满屏字" in plan["original"] and variant == 0
-    img = poster(
-        plan,
-        copy,
-        asset_path,
-        dims,
-        variant,
-        dense=dense,
-        background=background,
-        typesetter=typesetter,
+    frames = []
+    original_box = product_geometry(dims, asset_path) if asset_path else None
+
+    directed = repair or bool(
+        plan.get("posterArt")
+        and (
+            kind == "video"
+            or plan.get("design", {}).get("id") in {"riso", "ipscene", *LAYOUTS}
+            or (asset_path and plan.get("design", {}).get("id", "product") == "product")
+        )
     )
+    layers = {}
+    shot_titles = {}
+    video_renderer = None
+    pace = plan.get("promptBrief", {}).get("reading", {}).get("pace", "steady")
+    silhouette = None
+    if asset_path and asset_path.name == "subject.png":
+        with Image.open(asset_path) as subject:
+            alpha_box = subject.getchannel("A").getbbox()
+            if alpha_box:
+                silhouette = tuple(v / subject.size[i % 2] for i,v in enumerate(alpha_box))
+
+    def draw_frame(index, shot=None, movement=0):
+        typesetter.audit_text = [] if kind != "copy" else None
+        box = original_box
+        layer_info = {}
+        if directed:
+            save_design = kind == "poster" and index == 0
+            separate_shot = shot and asset_path and asset_path.name == "subject.png" and not plan.get("posterArt", {}).get("print")
+            source_layers = [] if save_design or separate_shot else None
+            typesetter.editable_text = [] if save_design or shot else None
+            plate, overlay, box = campaign_frame(
+                plan,
+                copy,
+                shot,
+                dims,
+                asset_path,
+                background,
+                typesetter,
+                index,
+                source_layers,
+                repair=repair,
+            )
+            if save_design:
+                from .design_source import save_source
+
+                save_source(
+                    folder / "poster.svg", dims, source_layers, typesetter.editable_text
+                )
+            image = plate.copy()
+            image.paste(overlay, mask=overlay.getchannel("A"))
+            if shot:
+                shot_titles[index] = typesetter.editable_text
+                planes = film_planes(source_layers, dims)
+                plate, foreground = planes or (plate, None)
+                layers[index] = plate, foreground, overlay
+                layer_info = {
+                    "cameraShot": index,
+                    "pace": pace,
+                    "plate": plate.resize((160, 160)),
+                    "overlay": overlay.resize((160, 160)),
+                    "foreground": foreground.resize((160, 160)) if foreground else None,
+                }
+
+        elif shot is not None:
+            image = frame(
+                plan, shot, index - 1, asset_path, dims, variant, background, typesetter
+            )
+            if box:
+                box = map_box(box, typesetter.camera, dims)
+        else:
+            image = poster(
+                plan,
+                copy,
+                asset_path,
+                dims,
+                variant,
+                dense=dense,
+                background=background,
+                typesetter=typesetter,
+            )
+        if kind != "copy":
+            frames.append(
+                {
+                    "text": typesetter.audit_text,
+                    "size": dims,
+                    "product": box,
+                    "subjectBounds": tuple(
+                        box[i % 2] + v * (box[i % 2 + 2] - box[i % 2])
+                        for i, v in enumerate(silhouette)
+                    ) if silhouette and box else box,
+                    "preview": image.resize((160, 160)),
+                    "movement": movement,
+                    **layer_info,
+                }
+            )
+        return image
+
+    img = draw_frame(0)
     img.save(
         folder / "poster.png", compress_level=6, dpi=(output["dpi"], output["dpi"])
     )
@@ -274,49 +383,62 @@ def render(
             tmp = Path(tmp)
             size = dims
             shots = copy.get("storyboard") or storyboard(plan, copy)
+            drift = {"quiet": 0.0006, "steady": 0.0009, "brisk": 0.0012}[pace]
             for i, shot in enumerate(shots):
-                frame(
-                    plan, shot, i, asset_path, size, variant, background, typesetter
-                ).save(tmp / f"shot{i}.png")
-            pace = plan.get("promptBrief", {}).get("reading", {}).get("pace", "steady")
-            movement = {"quiet": 0.00015, "steady": 0.0004, "brisk": 0.0009}[pace]
-            soundtrack(tmp / "track.wav")
-            subprocess.run(
-                [
-                    ffmpeg,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-framerate",
-                    "1/3",
-                    "-i",
-                    str(tmp / "shot%d.png"),
-                    "-i",
-                    str(tmp / "track.wav"),
-                    "-vf",
-                    f"zoompan=z='1+{movement}*mod(on,72)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=72:s={size[0]}x{size[1]}:fps=24,setsar=1,format=yuv420p",
-                    "-c:v",
-                    "libx264",
-                    "-threads",
-                    "2",
-                    "-preset",
-                    "veryfast",
-                    "-crf",
-                    "23",
-                    "-c:a",
-                    "aac",
-                    "-t",
-                    "9",
-                    "-movflags",
-                    "+faststart",
-                    str(folder / "video.mp4"),
-                ],
-                timeout=300,
-                check=True,
-                capture_output=True,
+                movement = drift * (1.6, 1.2, 0.65)[i] if directed else drift
+                image = draw_frame(i + 1, shot, movement)
+                if not directed:
+                    image.save(tmp / f"shot{i}.png")
+            soundtrack(
+                tmp / "track.wav", optical=bool(plan.get("posterArt", {}).get("optics"))
             )
+            if directed:
+                from functools import partial
+                video_renderer = encode(
+                    layers, folder, tmp / "track.wav", dims, shots,
+                    partial(moving_frame, pace=pace), shot_titles, pace,
+                )
+            else:
+                video_renderer = "FFmpeg"
+                camera = f"zoompan=z='1+{drift}*mod(on,72)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=72:s={size[0]}x{size[1]}:fps=24"
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-framerate",
+                        "1/3",
+                        "-i",
+                        str(tmp / "shot%d.png"),
+                        "-i",
+                        str(tmp / "track.wav"),
+                        "-vf",
+                        camera + ",setsar=1,format=yuv420p",
+                        "-c:v",
+                        "libx264",
+                        "-threads",
+                        "2",
+                        "-preset",
+                        "veryfast",
+                        "-crf",
+                        "23",
+                        "-c:a",
+                        "aac",
+                        "-t",
+                        "9",
+                        "-movflags",
+                        "+faststart",
+                        str(folder / "video.mp4"),
+                    ],
+                    timeout=300,
+                    check=True,
+                    capture_output=True,
+                )
     return dict(
+        frames=frames,
+        videoRenderer=video_renderer,
         fonts=sorted(typesetter.used),
         fallback=typesetter.fallback_used,
         poster="poster.png",

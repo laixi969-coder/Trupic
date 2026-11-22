@@ -59,3 +59,7 @@
   width: 100%;
   height: 380rpx;
 }
+
+.region-wrap { position: relative; line-height: 0; }
+.region-image { display:block; width:100%; }
+.region-outline {position:absolute; pointer-events:none; border:2px solid #ffbe34; box-sizing:border-box;}

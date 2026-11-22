@@ -57,6 +57,7 @@ import {
   dateText,
 } from "./ui.jsx";
 import Admin from "./Admin.jsx";
+import ProductRegion from "./ProductRegion.jsx";
 import {
   FontPicker,
   PosterOptions,
@@ -96,6 +97,7 @@ const initialDraft = {
   assetMode: "processed",
   assetConfirmed: false,
   source: "一句话创作",
+  topicId: "",
   reference: "",
 };
 function savedDraft() {
@@ -108,7 +110,7 @@ function savedDraft() {
     return initialDraft;
   }
 }
-function OptimizedBrief({ plan }) {
+function OptimizedBrief({ plan, fullPosterPrompt }) {
   const brief = plan?.promptBrief;
   if (!brief) return null;
   const names = { copy: "文案指令", image: "画面指令", video: "分镜指令" };
@@ -116,12 +118,14 @@ function OptimizedBrief({ plan }) {
     <details className="shot-list">
       <summary>查看优化后的创作指令</summary>
       <p className="fineprint">{brief.engine}</p>
+      {plan.posterArt?.reference && <p>{plan.posterArt.reference}</p>}
       {Object.entries(brief.prompts).map(([k, v]) => (
         <div key={k}>
           <strong>{names[k]}</strong>
           <p>{v}</p>
         </div>
       ))}
+      {fullPosterPrompt && <div><strong>整张海报直出提示词</strong><p style={{whiteSpace: "pre-line"}}>{fullPosterPrompt}</p></div>}
     </details>
   );
 }
@@ -287,9 +291,14 @@ function App() {
     setDraft((p) => ({ ...p, ...d }));
     setError("");
   }
-  function chooseBrief(brief, reference = "", source = "灵感广场") {
+  function chooseBrief(
+    brief,
+    reference = "",
+    source = "灵感广场",
+    topicId = "",
+  ) {
     go("home");
-    patch({ brief, reference, source });
+    patch({ brief, reference, source, topicId });
     setTimeout(() => {
       textarea.current?.focus();
       textarea.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -303,7 +312,12 @@ function App() {
   function useAsset(a) {
     const check = a.risk || a.action === "主体抠图";
     setAssetItem(a);
-    patch({ asset: a.id, assetMode: "processed", assetConfirmed: !check });
+    patch({
+      asset: a.id,
+      identityRegion: null,
+      assetMode: "processed",
+      assetConfirmed: !check,
+    });
     if (check) open("checkAsset");
     else {
       close();
@@ -346,6 +360,12 @@ function App() {
         ...(draft.kind === "video"
           ? { ratio: draft.videoRatio, resolution: draft.videoResolution }
           : {}),
+      }).catch((e) => {
+        if (selected && /标出要保真|所选标识|原图标识区域/.test(e.message)) {
+          setAssetItem(selected);
+          open("checkAsset");
+        }
+        throw e;
       });
       setPreview(p);
       token.current = crypto.randomUUID();
@@ -574,6 +594,7 @@ function App() {
                   onChange={(e) =>
                     patch({
                       brief: e.target.value,
+                      topicId: e.target.value.trim() ? draft.topicId : "",
                       source: "一句话创作",
                       reference: "",
                     })
@@ -604,7 +625,11 @@ function App() {
                     <button
                       aria-label="移除素材"
                       onClick={() =>
-                        patch({ asset: "", assetConfirmed: false })
+                        patch({
+                          asset: "",
+                          identityRegion: null,
+                          assetConfirmed: false,
+                        })
                       }
                     >
                       <X size={13} />
@@ -674,9 +699,10 @@ function App() {
                 {data.recs.slice(0, 2).map((r) => (
                   <button
                     key={r.id}
-                    onClick={() => chooseBrief(r.brief, "", r.id)}
+                    onClick={() => chooseBrief(r.brief, "", r.id, r.topicId)}
                   >
                     {r.title}
+                    {r.adopted && " · 已制作"}
                     <ArrowUpRight size={12} />
                   </button>
                 ))}
@@ -735,7 +761,7 @@ function App() {
                   <button
                     key={r.id}
                     className={"reccard r" + i}
-                    onClick={() => chooseBrief(r.brief, "", r.id)}
+                    onClick={() => chooseBrief(r.brief, "", r.id, r.topicId)}
                   >
                     <span>
                       {i === 0 ? (
@@ -746,9 +772,10 @@ function App() {
                         <Leaf size={17} />
                       )}{" "}
                       {r.tag}
+                      {r.adopted && " · 已制作"}
                     </span>
                     <h3>{r.title}</h3>
-                    <p>{r.brief.split("。")[1]}。</p>
+                    <p>{r.brief}</p>
                     <b>
                       用这个主题 <ArrowUpRight size={14} />
                     </b>
@@ -1066,10 +1093,19 @@ function App() {
                       : "")
                   }
                 >
-                  <a className="primary" href={versionData.download} download>
-                    <Download size={16} />
-                    下载{formats[work.kind].name}
-                  </a>
+                  <div className="result-downloads">
+                    {versionData.openDesignSource && (
+                      <a className="secondary" href={versionData.openDesignSource} download>
+                        下载 Open Design 剪辑工程
+                      </a>
+                    )}
+                    {versionData.editSource && <a className="secondary" href={versionData.editSource} download>下载剪辑素材包</a>}
+                    {versionData.designSource && <a className="secondary" href={versionData.designSource} download>下载分层 SVG</a>}
+                    <a className="primary" href={versionData.download} download>
+                      <Download size={16} />
+                      下载{formats[work.kind].name}
+                    </a>
+                  </div>
                 </PageHead>
                 <div className="resultgrid">
                   <div className="resultvisual">
@@ -1151,7 +1187,7 @@ function App() {
                         </>
                       ) : detailTab === "quality" ? (
                         <>
-                          <OptimizedBrief plan={versionData.plan} />
+                          <OptimizedBrief plan={versionData.plan} fullPosterPrompt={versionData.fullPosterPrompt} />
                           <div className="checklist">
                             {versionData.quality.map((q) => (
                               <div key={q.label}>
@@ -1230,6 +1266,18 @@ function App() {
                         <Check size={14} />
                         一键应用建议
                       </button>
+                      {versionData.layoutSuggestion && (
+                        <>
+                          <p>{versionData.layoutSuggestion.intent}</p>
+                          <button
+                            className="textbtn rethink"
+                            disabled={!!busy || !!job}
+                            onClick={() => launch("layout")}
+                          >
+                            应用{versionData.layoutSuggestion?.name}版式
+                          </button>
+                        </>
+                      )}
                       <button
                         className="textbtn rethink"
                         disabled={!!busy || !!job}
@@ -1243,6 +1291,12 @@ function App() {
                     <details className="original">
                       <summary>原始需求与创意依据</summary>
                       <p>{versionData.brief}</p>
+                      {versionData.plan.topic && (
+                        <p>
+                          本周主题 · {versionData.plan.topic.title} ·{" "}
+                          {versionData.plan.topic.basis}
+                        </p>
+                      )}
                       <p>推测受众 · {versionData.plan.audience}</p>
                       <p>创意方向 · {versionData.plan.angle}</p>
                     </details>
@@ -1364,6 +1418,16 @@ function App() {
             {assetItem.action}
           </div>
           <p>{assetItem.detail}</p>
+          {modal === "checkAsset" && !assetItem.risk && (
+            <ProductRegion
+              key={assetItem.id}
+              asset={assetItem}
+              region={draft.identityRegion}
+              change={(identityRegion) =>
+                patch({ identityRegion, assetConfirmed: false })
+              }
+            />
+          )}
           {modal === "checkAsset" && assetItem.file !== "original.png" && (
             <label className="checkline">
               <input
@@ -1393,7 +1457,11 @@ function App() {
                   className="primary"
                   onClick={() => {
                     go("home");
-                    patch({ asset: assetItem.id, assetConfirmed: false });
+                    patch({
+                      asset: assetItem.id,
+                      identityRegion: null,
+                      assetConfirmed: false,
+                    });
                     setTimeout(() => open("checkAsset"), 50);
                   }}
                 >
@@ -1436,7 +1504,11 @@ function App() {
                 run("delete", async () => {
                   await api("/assets/" + assetItem.id, "DELETE");
                   if (draft.asset === assetItem.id)
-                    patch({ asset: "", assetConfirmed: false });
+                    patch({
+                      asset: "",
+                      identityRegion: null,
+                      assetConfirmed: false,
+                    });
                   await refresh();
                   close();
                   tip("素材已删除");
@@ -1511,7 +1583,10 @@ function App() {
               <b className="price">{preview.cost} 体验积分</b>
             </div>
           </div>
-          <OptimizedBrief plan={preview.plan} />
+          <OptimizedBrief
+            plan={preview.plan}
+            fullPosterPrompt={preview.fullPosterPrompt}
+          />
           <p className="fineprint">
             当前余额 {data.credits} 积分。作品生成成功后结算，失败可免费重试。
           </p>

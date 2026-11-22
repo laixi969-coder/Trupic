@@ -9,33 +9,51 @@ import tempfile
 import time
 import urllib.request
 
-from .store import DATA
+from .store import DATA, db, now
+from . import providers
 
 SETTINGS = DATA / "integrations.json"
 
 
-def settings():
+ENV_NAMES = {
+    "url": "TRUPIC_MODEL_URL",
+    "imageUrl": "TRUPIC_IMAGE_URL",
+    "imageModel": "TRUPIC_IMAGE_MODEL",
+    "visionModel": "TRUPIC_VISION_MODEL",
+    "visionUrl": "TRUPIC_VISION_URL",
+    "visionKey": "TRUPIC_VISION_KEY",
+    "imageKey": "TRUPIC_IMAGE_KEY",
+    "model": "TRUPIC_MODEL",
+    "key": "TRUPIC_MODEL_KEY",
+    "feed": "TRUPIC_REFERENCE_FEED",
+    "license": "TRUPIC_FEED_LICENSE",
+    "board": "TRUPIC_PINTEREST_BOARD",
+    "pinToken": "TRUPIC_PINTEREST_TOKEN",
+    "pinRights": "TRUPIC_PINTEREST_LICENSE",
+}
+
+
+def saved_settings():
     try:
-        data = json.loads(SETTINGS.read_text())
+        return json.loads(SETTINGS.read_text())
     except (OSError, ValueError):
-        data = {}
-    names = {
-        "url": "TRUPIC_MODEL_URL",
-        "imageUrl": "TRUPIC_IMAGE_URL",
-        "imageModel": "TRUPIC_IMAGE_MODEL",
-        "imageKey": "TRUPIC_IMAGE_KEY",
-        "model": "TRUPIC_MODEL",
-        "key": "TRUPIC_MODEL_KEY",
-        "feed": "TRUPIC_REFERENCE_FEED",
-        "license": "TRUPIC_FEED_LICENSE",
-        "board": "TRUPIC_PINTEREST_BOARD",
-        "pinToken": "TRUPIC_PINTEREST_TOKEN",
-        "pinRights": "TRUPIC_PINTEREST_LICENSE",
-    }
-    return {k: os.environ.get(v, data.get(k, "")) for k, v in names.items()}
+        return {}
+
+
+def settings():
+    data = saved_settings()
+    return {k: os.environ.get(v, data.get(k, "")) for k, v in ENV_NAMES.items()}
 
 
 def save_settings(data):
+    previous = saved_settings()
+    data = dict(data)
+    for field, variable in ENV_NAMES.items():
+        if variable in os.environ:
+            if field in previous:
+                data[field] = previous[field]
+            else:
+                data.pop(field, None)
     with tempfile.NamedTemporaryFile(mode="w", dir=DATA, delete=False) as f:
         json.dump(data, f)
         name = f.name
@@ -68,35 +86,60 @@ def apple_available():
     return _fm_ok
 
 
-def engine_name():
+def route(kind):
+    named = providers.connection(kind)
+    if named:
+        return named
     cfg = settings()
+    if kind == "vision":
+        return {
+            "url": cfg["visionUrl"] or cfg["url"],
+            "key": cfg["visionKey"] if cfg["visionUrl"] else cfg["key"],
+            "model": cfg["visionModel"],
+            "provider": "default",
+        }
+    return {**cfg, "provider": "default"}
+
+
+def engine_name():
+    cfg = route("text")
     if cfg["url"] and cfg["model"]:
         return cfg["model"]
     return "Apple 设备端模型" if apple_available() else "本地创意规则"
 
 
+def reserve_provider_call(kind):
+    """Count outgoing attempts because a timed-out call may still be billable."""
+    limit = os.getenv("TRUPIC_DAILY_" + kind.upper() + "_CALLS")
+    cap = int(limit) if limit else None
+    day = now()[:10]
+    with db(True) as c:
+        row = c.execute(
+            "SELECT calls FROM provider_usage WHERE day=? AND kind=?", (day, kind)
+        ).fetchone()
+        if cap is not None and (row[0] if row else 0) >= cap:
+            raise ValueError("已达当日外部服务调用上限。")
+        c.execute(
+            """INSERT INTO provider_usage VALUES(?,?,1)
+               ON CONFLICT(day,kind) DO UPDATE SET calls=calls+1""",
+            (day, kind),
+        )
+
+
 def ask(instructions, payload, max_tokens=650):
-    cfg = settings()
+    cfg = route("text")
     text = json.dumps(payload, ensure_ascii=False)
     if cfg["url"] and cfg["model"]:
-        reqdata = {
-            "model": cfg["model"],
-            "messages": [
+        return chat_request(
+            cfg,
+            cfg["model"],
+            [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": text},
             ],
-            "max_tokens": max_tokens,
-        }
-        headers = {"Content-Type": "application/json"}
-        if cfg["key"]:
-            headers["Authorization"] = "Bearer " + cfg["key"]
-        req = urllib.request.Request(cfg["url"], json.dumps(reqdata).encode(), headers)
-        with urllib.request.urlopen(req, timeout=24) as response:
-            data = response.read(250_001)
-            if len(data) > 250_000:
-                raise ValueError("模型响应过长。")
-            raw = json.loads(data)["choices"][0]["message"]["content"]
-        name = cfg["model"]
+            max_tokens,
+            "text",
+        ), cfg["model"]
     elif apple_available():
         r = subprocess.run(
             [
@@ -120,7 +163,54 @@ def ask(instructions, payload, max_tokens=650):
         name = "Apple 设备端模型"
     else:
         raise ValueError("尚未连接可用模型。")
+    return response_object(raw), name
+
+
+def response_object(raw):
     obj = json.loads(re.sub(r"^\s*```(?:json)?|```\s*$", "", raw.strip()))
     if not isinstance(obj, dict):
         raise ValueError("模型未返回有效对象。")
-    return obj, name
+    return obj
+
+
+def chat_request(cfg, name, messages, max_tokens, kind):
+    data = {"model": name, "messages": messages, "max_tokens": max_tokens}
+    if schema := cfg.get("responseSchema"):
+        data["response_format"] = {"type": "json_schema", "json_schema": {"name": "visual_audit", "schema": schema}}
+    headers = {"Content-Type": "application/json"}
+    if cfg["key"]:
+        headers["Authorization"] = "Bearer " + cfg["key"]
+    req = urllib.request.Request(cfg["url"], json.dumps(data).encode(), headers)
+    reserve_provider_call(kind)
+    started = time.monotonic()
+    usage = {}
+    ok = False
+    try:
+        with urllib.request.urlopen(
+            req, timeout=90 if kind == "vision" else 24
+        ) as response:
+            body = response.read(250_001)
+        if len(body) > 250_000:
+            raise ValueError("模型响应过长。")
+        reply = json.loads(body)
+        if isinstance(reply.get("usage"), dict):
+            usage = reply["usage"]
+        result = response_object(reply["choices"][0]["message"]["content"])
+        ok = True
+        return result
+    finally:
+        counts = [usage.get(k) for k in ("prompt_tokens", "completion_tokens")]
+        with db(True) as c:
+            c.execute(
+                """INSERT INTO model_call(day,kind,platform,model,ok,ms,input_tokens,output_tokens)
+                      VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    now()[:10],
+                    kind,
+                    cfg.get("provider", "default"),
+                    name,
+                    ok,
+                    round((time.monotonic() - started) * 1000),
+                    *(n if type(n) is int and 0 <= n < 2**63 else None for n in counts),
+                ),
+            )

@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -85,8 +86,11 @@ class WorkflowTests(unittest.TestCase):
             j = post(self.c, "jobs", **self.plan()).json
             self.assertEqual(self.finish(j["id"])["state"], "failed")
         self.assertEqual(self.state()["credits"], 120)
-        post(self.c, "jobs/" + j["id"] + "/retry")
-        self.assertEqual(self.finish(j["id"])["state"], "complete")
+        with patch.object(
+            studio, "generate_copy", side_effect=AssertionError("重试应复用已审文案")
+        ):
+            post(self.c, "jobs/" + j["id"] + "/retry")
+            self.assertEqual(self.finish(j["id"])["state"], "complete")
         post(self.c, "jobs/" + j["id"] + "/retry")
         self.assertEqual(self.state()["credits"], 116)
 
@@ -139,6 +143,28 @@ class WorkflowTests(unittest.TestCase):
             out = self.c.get(w["download"])
             self.assertGreater(len(out.data), 30)
             if kind == "video":
+                self.assertIn(
+                    next(item["detail"] for item in w["quality"] if item["label"] == "短片渲染引擎"),
+                    {"HyperFrames", "FFmpeg"},
+                )
+                source = self.c.get(w["openDesignSource"])
+                self.assertEqual(source.status_code, 200)
+                self.assertIn("OpenDesign.zip", source.headers["Content-Disposition"])
+                with zipfile.ZipFile(io.BytesIO(source.data)) as project:
+                    self.assertEqual(project.read("video.mp4"), out.data)
+                    html = project.read("index.html").decode("utf-8")
+                    self.assertIn('href="video.mp4"', html)
+                    self.assertIn('data-fps="24"', html)
+                    self.assertIn('id="soundtrack"', html)
+                    self.assertIn(w["storyboard"][1]["line"], project.read("captions.srt").decode())
+                    for shot in range(1, 4):
+                        self.assertIn(f'id="picture-{shot}"', html)
+                        self.assertIn(f'id="title-{shot}"', html)
+                        self.assertIn(f"assets/title-{shot}.svg", project.namelist())
+                source.close()
+                other = studio.app.test_client()
+                other.get("/api/state")
+                self.assertEqual(other.get(w["openDesignSource"]).status_code, 404)
                 with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
                     f.write(out.data)
                     f.flush()
@@ -167,6 +193,40 @@ class WorkflowTests(unittest.TestCase):
             out.close()
         self.assertEqual(self.state()["credits"], 108)
 
+    def test_reference_poster_layouts_export_editable_photos_and_copy(self):
+        for style, brief, photo, ratio in (
+            ("food-motion", "为牛肉火锅制作日式美食海报，居酒屋暗调。", "hotpot", "portrait"),
+            ("quiet-light", "为木质香水做留白光影海报，标题写「闻见安静」。", "beauty", "square"),
+            ("photo-grid", "用照片编排展示试驾，标题写「照片里，握不到方向盘」。", "auto", "landscape"),
+        ):
+            with self.subTest(style=style):
+                original = studio.ROOT / "server" / "scenes" / f"{photo}.webp"
+                asset = self.c.post(
+                    "/api/assets", data={"image": (io.BytesIO(original.read_bytes()), original.name)}
+                ).json
+                req = dict(
+                    brief=brief, kind="poster", asset=asset["id"], assetMode="original",
+                    assetConfirmed=True, ratio=ratio, resolution=720,
+                )
+                quote = post(self.c, "preview", **req).json
+                self.assertEqual(quote["plan"]["design"]["id"], style)
+                self.assertEqual(quote["plan"]["posterArt"]["composition"], style)
+                if style == "food-motion":
+                    self.assertEqual(quote["plan"]["posterArt"]["lighting"], "dark")
+                job = post(
+                    self.c, "jobs", **req, confirmed=True, confirmedCost=quote["cost"],
+                    quote=quote["quote"], requestKey=uuid.uuid4().hex,
+                ).json
+                status = self.finish(job["id"])
+                self.assertEqual(status["state"], "complete", status)
+                version = self.c.get(f"/api/works/{job['work']}").json["versions"][0]
+                with self.c.get(version["designSource"]) as svg:
+                    self.assertEqual(svg.status_code, 200)
+                    self.assertIn(b'id="source-photo"', svg.data)
+                    self.assertIn(b'id="typography"', svg.data)
+                    if style == "photo-grid":
+                        self.assertIn(b'id="picture-frame"', svg.data)
+
     def test_weekly_local_and_free(self):
         self.admin()
         today = dt.date.today().isoformat()
@@ -194,6 +254,393 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(state["recs"]), 3)
         self.assertEqual(state["credits"], 120)
 
+    def test_topic_adoption_only_after_delivery(self):
+        post(self.c, "profile", name="春野", product="菌菇火锅", industry="火锅")
+        topic = self.c.get("/api/topics").json[0]
+        req = {"brief": topic["brief"], "topicId": topic["topicId"], "kind": "copy"}
+        other = studio.app.test_client()
+        self.assertEqual(post(other, "preview", **req).status_code, 400)
+        preview = post(self.c, "preview", **req).json
+        self.assertEqual(preview["plan"]["topic"]["title"], topic["title"])
+
+        def adopted():
+            return next(
+                i["adopted"]
+                for i in self.state()["recs"]
+                if i["topicId"] == topic["topicId"]
+            )
+
+        self.assertFalse(adopted())
+        with patch.object(studio, "render", side_effect=ValueError("测试制作中断")):
+            job = post(
+                self.c, "jobs", quote=preview["quote"], requestKey=uuid.uuid4().hex
+            ).json
+            self.assertEqual(self.finish(job["id"])["state"], "failed")
+        self.assertFalse(adopted())
+        post(self.c, "jobs/" + job["id"] + "/retry")
+        self.assertEqual(self.finish(job["id"])["state"], "complete")
+        self.assertTrue(adopted())
+        self.assertEqual(self.state()["credits"], 120)
+
+    def test_visual_preflight_detailed_area_and_semantic_source(self):
+        from PIL import ImageDraw
+
+        pic = Image.new("RGB", (540, 400), "white")
+        draw = ImageDraw.Draw(pic)
+        for x in range(0, 240, 6):
+            draw.rectangle((x, 0, x + 2, 399), fill="navy")
+        stream = io.BytesIO()
+        pic.save(stream, "PNG")
+        stream.seek(0)
+        asset = self.c.post("/api/assets", data={"image": (stream, "package.png")}).json
+        self.assertFalse(asset["risk"])
+        req = {
+            "asset": asset["id"],
+            "assetConfirmed": True,
+            "assetMode": "original",
+            "brief": "保留包装文字，给商品做海报",
+            "kind": "poster",
+        }
+        self.assertEqual(post(self.c, "preview", **req).status_code, 400)
+        self.assertEqual(
+            post(
+                self.c, "preview", **req, identityRegion=[0.60, 0.24, 0.85, 0.55]
+            ).status_code,
+            400,
+        )
+        req["identityRegion"] = [0.05, 0.1, 0.35, 0.5]
+        self.assertEqual(post(self.c, "preview", **req).status_code, 200)
+        with (
+            patch.dict(os.environ, TRUPIC_VISION_MODEL="视觉测试"),
+            patch(
+                "server.model.chat_request",
+                return_value={"ok": False, "reason": "包装被手遮挡"},
+            ) as remote,
+        ):
+            denied = post(self.c, "preview", **req)
+            self.assertIn("包装被手遮挡", denied.json["error"])
+            self.assertEqual(
+                sum(
+                    v["type"] == "image_url"
+                    for v in remote.call_args.args[2][1]["content"]
+                ),
+                2,
+            )
+        self.assertEqual(self.state()["credits"], 120)
+
+    def test_poster_repairs_overwritten_product_and_blocks_failed_recheck(self):
+        from pathlib import Path
+        from PIL import ImageDraw
+
+        with open(Path(studio.ROOT) / "miniprogram/images/tea.jpg", "rb") as f:
+            asset = self.c.post(
+                "/api/assets", data={"image": (io.BytesIO(f.read()), "tea.jpg")}
+            ).json
+        req = {
+            "kind": "poster",
+            "asset": asset["id"],
+            "assetConfirmed": True,
+            "assetMode": "original",
+            "brief": "为茶饮做一张商品海报",
+            "resolution": 720,
+        }
+        render = studio.render
+
+        def overwrite(*args, **kwargs):
+            layout = render(*args, **kwargs)
+            if not kwargs.get("repair") or always:
+                dest = args[0] / "poster.png"
+                with Image.open(dest) as saved:
+                    im = saved.copy()
+                box = layout["frames"][0]["product"]
+                ImageDraw.Draw(im).rectangle(box, fill="red")
+                im.save(dest, dpi=(300, 300))
+            return layout
+
+        self.admin()
+        for always in (False, True):
+            with patch.object(studio, "render", side_effect=overwrite):
+                job = post(
+                    self.c,
+                    "jobs",
+                    **req,
+                    confirmed=True,
+                    confirmedCost=4,
+                    requestKey=uuid.uuid4().hex,
+                ).json
+                result = self.finish(job["id"])
+            report = next(
+                v["report"]
+                for v in self.c.get("/api/admin").json["visualReviews"]
+                if v["id"] == job["id"]
+            )
+            self.assertEqual(len(report["attempts"]), 2)
+            self.assertTrue(
+                any("商品局部" in i for i in report["attempts"][0]["issues"])
+            )
+            self.assertEqual(
+                report["status"], "blocked" if always else "repaired", report
+            )
+            self.assertEqual(
+                result["state"], "failed" if always else "complete", result
+            )
+            self.assertEqual(self.state()["credits"], 116)
+        self.assertEqual(len(self.state()["works"]), 1)
+
+    def test_print_source_separates_inks_subject_and_editable_copy(self):
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+
+        with (Path(studio.ROOT) / "miniprogram/images/tea.jpg").open("rb") as fp:
+            asset = self.c.post("/api/assets", data={"image": (fp, "tea.jpg")}).json
+        for direction, second_ink in (("蓝墨单色印刷", False), ("蓝墨橙墨双色印刷", True)):
+            quote = post(self.c, "preview", kind="poster", brief=direction + "海报，标题「茶与光」。不要行动号召。",
+                         asset=asset["id"], assetConfirmed=True, resolution=720, lettering="both").json
+            self.assertEqual(quote["plan"]["design"]["id"], "riso")
+            job = post(self.c, "jobs", quote=quote["quote"], confirmed=True,
+                       confirmedCost=quote["cost"], requestKey=uuid.uuid4().hex).json
+            result = self.finish(job["id"])
+            self.assertEqual(result["state"], "complete", result)
+            version = self.c.get("/api/works/" + job["work"]).json["versions"][0]
+            response = self.c.get(version["designSource"])
+            self.assertEqual(response.status_code, 200)
+            root = ET.fromstring(response.data)
+            ids = {el.get("id") for el in root}
+            self.assertTrue({"paper", "primary-ink", "subject", "typography", "letterforms"} <= ids)
+            self.assertEqual("accent-ink" in ids, second_ink)
+            self.assertIn("茶与光", "".join(root.itertext()))
+            stranger = studio.app.test_client()
+            stranger.get("/api/state")
+            self.assertEqual(stranger.get(version["designSource"]).status_code, 404)
+
+    def test_food_title_and_reference_subject_remain_independent(self):
+        import xml.etree.ElementTree as ET
+        from server.posters import SCENES
+
+        with Image.open(SCENES / "matcha-campaign.webp") as photo, Image.open(SCENES / "masks/matcha-campaign.png") as matte:
+            sample = photo.convert("RGBA")
+            sample.putalpha(matte.convert("L").resize(sample.size))
+            sample = sample.crop(sample.getchannel("A").getbbox())
+            sample.thumbnail((600, 600))
+        stream = io.BytesIO()
+        sample.save(stream, "PNG")
+        stream.seek(0)
+        asset = self.c.post("/api/assets", data={"image": (stream, "tea.png")}).json
+        quote = post(self.c, "preview", kind="poster", posterStyle="product",
+                     brief="冰抹茶拿铁，食材大字与实物穿插。标题「把春天搅开」。不要行动号召。",
+                     asset=asset["id"], assetMode="processed", assetConfirmed=True, resolution=720).json
+        self.assertEqual(quote["plan"]["posterArt"]["composition"], "ingredient")
+        job = post(self.c, "jobs", quote=quote["quote"], confirmed=True,
+                   confirmedCost=quote["cost"], requestKey=uuid.uuid4().hex).json
+        self.assertEqual(self.finish(job["id"])["state"], "complete")
+        version = self.c.get("/api/works/" + job["work"]).json["versions"][0]
+        svg = ET.fromstring(self.c.get(version["designSource"]).data)
+        groups = {g.get("id"):g for g in svg}
+        self.assertLess(list(groups).index("model-lettering"), list(groups).index("subject"))
+        self.assertEqual("".join(groups["model-lettering"].itertext()), "抹茶")
+        self.assertIn("把春天搅开", "".join(groups["typography"].itertext()))
+
+        for mode, expected in (("processed", "material"), ("original", "photograph")):
+            q = post(self.c, "preview", kind="poster", posterStyle="product",
+                     brief="冰抹茶拿铁，标题「把春天搅开」。不要食材大字。仅限堂食。",
+                     asset=asset["id"], assetConfirmed=True, assetMode=mode, resolution=720).json
+            art = q["plan"]["posterArt"]
+            self.assertEqual(art["composition"], expected)
+            self.assertFalse(art["modelMark"])
+            task = post(self.c, "jobs", quote=q["quote"], confirmed=True,
+                        confirmedCost=q["cost"], requestKey=uuid.uuid4().hex).json
+            self.assertEqual(self.finish(task["id"])["state"], "complete")
+            result = self.c.get("/api/works/" + task["work"]).json["versions"][0]
+            prompt = result["fullPosterPrompt"]
+            for literal in ("把春天搅开", "仅限堂食", "720"):
+                self.assertIn(literal, prompt)
+            self.assertNotIn("只设计空背景", prompt)
+
+    def test_whole_frame_composition_can_reject_a_visible_product(self):
+        from pathlib import Path
+        from server.visual_review import compact_review
+
+        spec = {"kind": "poster", "plan": {"profile": {"product": "茶杯"}, "subject": "茶杯"}}
+        with tempfile.TemporaryDirectory() as dest:
+            Image.new("RGB", (180, 240), "green").save(Path(dest) / "poster.png")
+            with patch("server.model.chat_request", side_effect=[
+                {"status": "pass", "reason": "杯身可辨"},
+                {"status": "repair", "reason": "标题盖住杯口标志"},
+            ]):
+                review = compact_review(Path(dest), spec, {"provider": "local", "model": "test"},
+                                        {"frames": [{"product": [20, 25, 140, 205]}]})
+            self.assertEqual(review["status"], "repair")
+            self.assertIn("标题盖住", review["reason"])
+
+    def test_existing_character_poster_requires_reference(self):
+        response = post(self.c, "preview", kind="poster", brief="吉祥物在橘园伸手摘橘子")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("角色参考图", response.json["error"])
+
+    def test_audio_video_review_uses_actual_middle_shot(self):
+        render = studio.render
+
+        def damage(*args, **kwargs):
+            layout = render(*args, **kwargs)
+            if not kwargs.get("repair"):
+                video = args[0] / "video.mp4"
+                damaged = video.with_name("damaged.mp4")
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-i",
+                        str(video),
+                        "-vf",
+                        "drawbox=color=black:t=fill:enable='between(t,3,5.99)'",
+                        "-c:a",
+                        "copy",
+                        str(damaged),
+                    ],
+                    check=True,
+                )
+                damaged.replace(video)
+            return layout
+
+        self.admin()
+        with patch.object(studio, "render", side_effect=damage):
+            job = post(self.c, "jobs", **self.plan("video")).json
+            result = self.finish(job["id"])
+        self.assertEqual(result["state"], "complete", result)
+        import zipfile
+        version = self.c.get("/api/works/" + job["work"]).json["versions"][0]
+        response = self.c.get(version["editSource"])
+        self.assertEqual(response.status_code, 200)
+        with zipfile.ZipFile(io.BytesIO(response.data)) as bundle:
+            self.assertIsNone(bundle.testzip())
+            timeline = json.loads(bundle.read("timeline.json"))
+            self.assertEqual([shot["startFrame"] for shot in timeline["shots"]], [0, 72, 144])
+            self.assertEqual(timeline["shots"][-1]["endFrameExclusive"], 216)
+            for entry in timeline["shots"]:
+                self.assertIn(entry["titleLayer"], bundle.namelist())
+            self.assertIn("00:00:06,000 --> 00:00:09,000", bundle.read("captions.srt").decode())
+            self.assertGreater(bundle.getinfo("picture.mp4").file_size, 1000)
+            self.assertGreater(bundle.getinfo("soundtrack.wav").file_size, 1000)
+        report = next(
+            x["report"]
+            for x in self.c.get("/api/admin").json["visualReviews"]
+            if x["id"] == job["id"]
+        )
+        self.assertEqual(report["status"], "repaired")
+        self.assertTrue(
+            any(
+                "镜头 2" in i and "分镜不符" in i
+                for i in report["attempts"][0]["issues"]
+            )
+        )
+        self.assertEqual(report["attempts"][1]["issues"], [])
+        self.assertEqual(self.state()["credits"], 108)
+
+    def test_semantic_review_checks_frames_and_rechecks_repairs(self):
+        self.admin()
+        req = self.plan("video")
+        replies = [
+            {"status": "repair", "reason": "字幕压住商品。"},
+            {"status": "pass", "reason": "分镜文字与商品分区清楚。"},
+        ]
+        with (
+            patch.dict(os.environ, TRUPIC_VISION_MODEL="视觉测试"),
+            patch("server.model.chat_request", side_effect=replies) as remote,
+        ):
+            job = post(self.c, "jobs", **req).json
+            result = self.finish(job["id"])
+        self.assertEqual(result["state"], "complete", result)
+        self.assertEqual(remote.call_count, 2)
+        for call in remote.call_args_list:
+            content = call.args[2][1]["content"]
+            self.assertEqual(sum(x["type"] == "image_url" for x in content), 4)
+        with (
+            patch.dict(os.environ, TRUPIC_VISION_MODEL="视觉测试"),
+            patch("server.model.chat_request", side_effect=OSError("offline")),
+        ):
+            j = post(self.c, "jobs", **{**req, "requestKey": uuid.uuid4().hex}).json
+            self.assertEqual(self.finish(j["id"])["state"], "failed")
+        self.assertEqual(self.state()["credits"], 108)
+
+    def test_weekly_preference_and_observed_response_rates(self):
+        from server.creative import recommendations
+
+        profile = {"product": "菌菇火锅"}
+        items = recommendations(profile, [])
+        favorite = items[-1]["tag"]
+        ranked = recommendations(profile, [{"preferredTag": favorite}])
+        self.assertEqual(ranked[0]["tag"], favorite)
+        self.admin()
+        job = post(self.c, "jobs", **self.plan("copy")).json
+        self.finish(job["id"])
+        resp = post(
+            self.c,
+            "admin/review",
+            id=job["work"],
+            n=1,
+            rating="合格",
+            views=100,
+            clicks=7,
+            metrics="自有渠道，测试日",
+        )
+        self.assertEqual(resp.status_code, 200)
+        metrics = self.c.get("/api/admin").json["effects"]
+        self.assertTrue(any(x["ctr"] == 7 and x["ctrSamples"] >= 1 for x in metrics))
+
+    def test_contrast_is_measured_in_delivered_pixels(self):
+        from PIL import ImageDraw
+        from server.visual_review import text_check
+        from server.typography import Typesetter
+
+        ts = Typesetter()
+        ts.audit_text = []
+        image = Image.new("RGB", (300, 180), "#aaaaaa")
+        ts.draw(
+            ImageDraw.Draw(image), "包装文字", (10, 10, 250, 100), 40, "body", "#999999"
+        )
+        self.assertIn(
+            "对比", text_check(image, ts.audit_text, (0, 0, 300, 180), image.size)
+        )
+
+    def test_opt_in_method_retrieval_matches_and_can_be_disabled(self):
+        self.admin()
+        post(
+            self.c,
+            "admin/case",
+            title="近景问题",
+            source="https://example.org/" + uuid.uuid4().hex,
+            license="测试",
+            kind="视频",
+            category="创意方法",
+            tags="午休",
+            scenario="新客",
+            lesson="用可见的动作引出问题。",
+        )
+        case = self.c.get("/api/admin").json["cases"][0]
+        post(self.c, "admin/approve", id=case["id"])
+        post(
+            self.c,
+            "admin/rule",
+            name="跨媒介方法",
+            method="question",
+            reason="测试",
+            case_id=case["id"],
+        )
+        rule = self.c.get("/api/admin").json["rules"][0]
+        req = {"kind": "poster", "brief": "为午休时的台球室做海报"}
+        self.assertNotIn("retrievedMethod", post(self.c, "preview", **req).json["plan"])
+        self.assertEqual(
+            post(self.c, "admin/retrieval", id=rule["id"], enabled=True).status_code,
+            200,
+        )
+        plan = post(self.c, "preview", **req).json["plan"]
+        self.assertEqual(plan["retrievedMethod"]["id"], case["id"])
+        self.assertIn("用可见的动作", plan["promptBrief"]["prompts"]["image"])
+        post(self.c, "admin/retrieval", id=rule["id"], enabled=False)
+        self.assertNotIn("retrievedMethod", post(self.c, "preview", **req).json["plan"])
+
     def test_review_gate_and_rollback(self):
         self.assertEqual(self.c.get("/api/admin").status_code, 403)
         self.admin()
@@ -206,6 +653,8 @@ class WorkflowTests(unittest.TestCase):
             kind="文案",
             category="创意方法",
             lesson="用全市第一来做承诺",
+            tags="新客,开场",
+            scenario="新品上市",
         )
         self.assertEqual(r.status_code, 200)
         case = next(
@@ -214,6 +663,12 @@ class WorkflowTests(unittest.TestCase):
             if c["title"] == "测试案例"
         )
         post(self.c, "admin/approve", id=case)
+        stored = next(
+            c for c in self.c.get("/api/admin").json["cases"] if c["id"] == case
+        )
+        self.assertEqual(
+            (stored["tags"], stored["scenario"]), ("新客,开场", "新品上市")
+        )
         post(
             self.c,
             "admin/rule",
@@ -268,6 +723,187 @@ class WorkflowTests(unittest.TestCase):
         ):
             self.assertEqual(generate_copy(plan)["engine"], "test-model")
 
+    def test_custom_platforms_can_coexist_and_keep_routes(self):
+        from server import model
+
+        self.admin()
+        first, second = ("custom-" + uuid.uuid4().hex for _ in range(2))
+        for platform, title in ((first, "文本服务 A"), (second, "图像审核 B")):
+            result = post(self.c, "admin/model-platform", id=platform, label=title,
+                          url="http://localhost:7395/v1/chat/completions",
+                          text="text-" + platform, vision="vision-" + platform)
+            self.assertEqual(result.status_code, 200, result.json)
+        try:
+            result = post(self.c, "admin/model-routes", text=first, vision=second)
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(model.route("text")["provider"], first)
+            self.assertEqual(model.route("vision")["provider"], second)
+            config = self.c.get("/api/admin").json["modelPlatforms"]
+            labels = {row["id"]: row["label"] for row in config["platforms"]}
+            self.assertEqual((labels[first], labels[second]), ("文本服务 A", "图像审核 B"))
+            invalid = post(self.c, "admin/model-routes", text=second, vision="unknown")
+            self.assertEqual(invalid.status_code, 400)
+            self.assertEqual(model.route("text")["provider"], first)
+        finally:
+            post(self.c, "admin/model-routes", text="", vision="")
+
+    def test_platform_routes_keys_and_usage(self):
+        from server import model
+        from server.store import db, now
+
+        self.assertEqual(
+            post(self.c, "admin/model-platform", id="local").status_code, 403
+        )
+        self.admin()
+        cfg = self.c.get("/api/admin").json["modelPlatforms"]
+        self.assertTrue(
+            {"atlas", "ark", "bailian", "deepseek"}
+            <= {r["id"] for r in cfg["platforms"]}
+        )
+        try:
+            for platform, kind, key in [
+                ("deepseek", "text", "test-text-key"),
+                ("ark", "vision", "test-vision-key"),
+            ]:
+                preset = next(p for p in cfg["platforms"] if p["id"] == platform)
+                saved = post(
+                    self.c,
+                    "admin/model-platform",
+                    **{**preset, kind: "sample-" + kind, "key": key},
+                )
+                self.assertEqual(saved.status_code, 200, saved.json)
+            routes = {"text": "deepseek", "vision": "ark"}
+            self.assertEqual(
+                post(self.c, "admin/model-routes", **routes).status_code, 200
+            )
+            self.assertEqual(
+                post(self.c, "admin/model-routes", text="", vision="local").status_code,
+                400,
+            )
+            self.assertEqual(
+                self.c.get("/api/admin").json["modelPlatforms"]["routes"], routes
+            )
+            self.assertNotIn(
+                "test-vision-key", self.c.get("/api/admin").get_data(as_text=True)
+            )
+            self.assertEqual(model.engine_name(), "sample-text")
+            self.assertEqual(model.route("vision")["key"], "test-vision-key")
+
+            def respond(request, timeout):
+                payload = json.loads(request.data)
+                is_vision = payload["model"] == "sample-vision"
+                self.assertEqual(
+                    request.get_header("Authorization"),
+                    "Bearer test-" + ("vision" if is_vision else "text") + "-key",
+                )
+                self.assertEqual(
+                    request.full_url,
+                    next(
+                        p["url"]
+                        for p in cfg["platforms"]
+                        if p["id"] == ("ark" if is_vision else "deepseek")
+                    ),
+                )
+                if is_vision:
+                    import base64
+
+                    image = payload["messages"][0]["content"][1]["image_url"]["url"]
+                    with Image.open(
+                        io.BytesIO(base64.b64decode(image.split(",")[1]))
+                    ) as card:
+                        r, g, b = card.convert("RGB").getpixel((50, 50))
+                    color = (
+                        "yellow"
+                        if min(r, g) > 200
+                        else "red"
+                        if r > 200
+                        else "blue"
+                        if b > 200
+                        else "green"
+                    )
+                    reply = {"color": color}
+                else:
+                    reply = {"ok": True}
+                return io.BytesIO(
+                    json.dumps(
+                        {
+                            "choices": [{"message": {"content": json.dumps(reply)}}],
+                            "usage": {"prompt_tokens": 30, "completion_tokens": 6},
+                        }
+                    ).encode()
+                )
+
+            with patch("urllib.request.urlopen", side_effect=respond):
+                self.assertEqual(post(self.c, "admin/test-model").status_code, 200)
+                self.assertEqual(post(self.c, "admin/test-vision").status_code, 200)
+            with patch("urllib.request.urlopen", side_effect=OSError("unavailable")):
+                self.assertEqual(post(self.c, "admin/test-vision").status_code, 400)
+            usage = self.c.get("/api/admin").json["modelUsage"]
+            vision = next(r for r in usage if r["model"] == "sample-vision")
+            self.assertEqual(
+                (
+                    vision["calls"],
+                    vision["succeeded"],
+                    vision["inputTokens"],
+                    vision["inputReports"],
+                ),
+                (2, 1, 30, 1),
+            )
+            self.assertEqual(
+                post(
+                    self.c,
+                    "admin/model-platform",
+                    id="ark",
+                    url="https://other.example/v1/chat/completions",
+                    vision="sample-vision",
+                ).status_code,
+                400,
+            )
+            self.assertEqual(model.route("vision")["key"], "test-vision-key")
+            self.assertEqual(
+                post(
+                    self.c,
+                    "admin/model-platform",
+                    id="ark",
+                    url=model.route("vision")["url"],
+                    text="only-text",
+                ).status_code,
+                400,
+            )
+        finally:
+            with db(True) as c:
+                c.execute("DELETE FROM model_route")
+                c.execute("DELETE FROM model_provider WHERE id IN ('ark','deepseek')")
+                c.execute(
+                    "DELETE FROM model_call WHERE day=? AND model IN ('sample-vision','sample-text')",
+                    (now()[:10],),
+                )
+
+    def test_qwen_image_full_poster_and_reference_free_scene(self):
+        import base64
+        from pathlib import Path
+        from server.qwen_image import generate
+
+        cfg = dict(imageUrl="https://example.invalid/images/generations",
+                   imageKey="fixture", imageModel="qwen-image-3.0-pro")
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "product.png"
+            Image.new("RGB", (512, 512), "green").save(reference)
+            png = reference.read_bytes()
+            encoded = base64.b64encode(png).decode()
+            response = json.dumps({"data": [{"b64_json": encoded}]}).encode()
+            for asset in (None, reference):
+                with patch("urllib.request.urlopen", return_value=io.BytesIO(response)) as remote:
+                    self.assertEqual(generate(cfg, "标题「把春天搅开」", "512x512", asset), png)
+                    payload = json.loads(remote.call_args.args[0].data)
+                    self.assertEqual(payload["model"], cfg["imageModel"])
+                    self.assertEqual(payload["response_format"], "b64_json")
+                    self.assertEqual(payload.get("image"), "data:image/png;base64," + encoded if asset else None)
+            with patch("urllib.request.urlopen") as remote:
+                with self.assertRaises(ValueError):
+                    generate({**cfg, "imageKey": ""}, "生成海报", "512x512", reference)
+                remote.assert_not_called()
+
     def test_provider_and_pinterest_adapters(self):
         import base64
         from server.background import make_scene
@@ -284,6 +920,20 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertEqual(post(self.c, "admin/settings", **options).status_code, 200)
         try:
+            with (
+                patch.dict(os.environ, TRUPIC_DAILY_TEXT_CALLS="0"),
+                patch("urllib.request.urlopen") as remote,
+            ):
+                plan = prepare(
+                    "为台球室写一条周末邀请",
+                    {},
+                    [],
+                    {"name": "测试", "id": "base", "method": "moment"},
+                )
+                result = generate_copy(plan)
+                self.assertEqual(result["engine"], "本地创意规则")
+                self.assertTrue(result["reviewFlag"])
+                remote.assert_not_called()
             model_response = io.BytesIO(
                 json.dumps(
                     {"choices": [{"message": {"content": '{"ok":true}'}}]}
@@ -292,6 +942,9 @@ class WorkflowTests(unittest.TestCase):
             with patch("urllib.request.urlopen", return_value=model_response):
                 self.assertEqual(
                     post(self.c, "admin/test-model").json["model"], "fixture"
+                )
+                self.assertGreaterEqual(
+                    self.c.get("/api/admin").json["settings"]["callsToday"]["text"], 1
                 )
             pins = io.BytesIO(
                 json.dumps(

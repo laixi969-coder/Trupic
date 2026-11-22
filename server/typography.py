@@ -9,6 +9,8 @@ from pathlib import Path
 from fontTools.ttLib import TTFont
 from PIL import ImageFont
 
+from .visual_review import LayoutOverflow, glyph_sample
+
 FONT_DIR = Path(__file__).parent / "fonts"
 SANS = FONT_DIR / "SourceHanSansCN-Medium.otf"
 SERIF = FONT_DIR / "SourceHanSerifCN-SemiBold.otf"
@@ -66,6 +68,8 @@ class Typesetter:
         self.custom = custom
         override = os.getenv("TRUPIC_CJK_FONT")
         self.sans = Path(override) if override and Path(override).is_file() else SANS
+        self.audit_text = None
+        self.editable_text = None
         self.paths = {}
         self.used = set()
         self.fallback_used = False
@@ -189,7 +193,7 @@ class Typesetter:
             else:
                 high = s - 1
         if not best:
-            raise ValueError("此段文案超出海报版面，请缩短正文或选择竖版画幅。")
+            raise LayoutOverflow("此段文案超出海报版面，请缩短正文或选择竖版画幅。")
         _, rows, asc, step, actual = best
         baseline = (
             y
@@ -235,5 +239,11 @@ class Typesetter:
                 return
             x0, y0, x1, y1 = zip(*bounds)
             fill = fill((min(x0), min(y0), max(x1), max(y1)))
+        if self.editable_text is not None:
+            self.editable_text.append(
+                [(pos, run, f, fill) for pos, run, f in placements]
+            )
+        if self.audit_text is not None:
+            self.audit_text.append(glyph_sample(placements, best[0]))
         for pos, run, font in placements:
             canvas.text(pos, run, font=font, fill=fill, anchor="ls")

@@ -61,12 +61,68 @@ STYLES = {
         "type": "Barlow Condensed / 思源黑体",
     },
 }
+STYLES.update(
+    {
+        "riso": {
+            "name": "单双色孔版",
+            "intent": "以原图中的局部形状和纸色组织印刷画面，商家的商品主体保留原色。",
+            "scene": "纸张底色、局部网点和一至两种印色。",
+            "type": "思源宋体 / Barlow Condensed",
+        },
+        "ipscene": {
+            "name": "品牌 IP 场景",
+            "intent": "把角色原稿置于与活动有关的场景，保留角色轮廓、品牌色和配件。",
+            "scene": "用角色视线与前景道具形成对角关系，预留标题区。",
+            "type": "思源黑体 / Barlow Condensed",
+        },
+        "food-motion": {
+            "name": "食欲定格",
+            "intent": "让菜品或食材成为第一眼，保留照片中真实的动作与细节。",
+            "scene": "以餐具、食材或光束建立方向，使用明快色面或暗调聚光。",
+            "type": "思源黑体 / Barlow Condensed",
+        },
+        "quiet-light": {
+            "name": "留白光影",
+            "intent": "用集中的侧光和小面积实物建立尺度，给标题留连续空间。",
+            "scene": "单一主体、清楚的受光面与较安静的背景，避免杂物打断留白。",
+            "type": "思源宋体 / 思源黑体",
+        },
+        "photo-grid": {
+            "name": "照片编排",
+            "intent": "保留整张照片，用取景边、文字基线和留白组织叙事。",
+            "scene": "以一张完整照片为视觉锚点，用原片明暗和方向决定版面。",
+            "type": "思源黑体 / Barlow Condensed",
+        },
+    }
+)
 EXPLICIT = [
+    (
+        "孔版|单色印刷|双色印刷|单色海报|双色海报|蓝晒|risograph|photo.riso|mono.color",
+        "riso",
+    ),
+    (r"品牌\s*IP|IP\s*场景|吉祥物|角色场景", "ipscene"),
+    (r"食欲定格|日式美食|日式餐饮|美食动势|食材悬停|筷子.{0,6}(夹起|挑起)|面条.{0,6}(拉起|挑起)", "food-motion"),
+    (r"留白光影|静物留白|低调侧光|留白.{0,4}侧光|光影.{0,4}留白", "quiet-light"),
+    (r"照片编排|相册海报|照片叙事|摄影排版|旅行海报|照片.{0,5}(对齐线|透视线)", "photo-grid"),
     ("杂志|编辑风|报纸|宋体|文艺", "editorial"),
     ("丝印|电影海报|mondo|演出|音乐节", "screenprint"),
     ("瑞士|促销网格|价格主视觉|放大价格|突出价格|网格排版", "swiss"),
     ("商品主视觉|品牌\\s*KV|产品特写", "product"),
 ]
+
+
+def visual_requests(brief):
+    """Return affirmative directions, so e.g. 不要孔版 cannot select the print route."""
+    clauses = re.split(r"[，,。；;！？\n]", brief)
+    return "。".join(
+        re.split(r"不要|避免|禁止|不用|别用|不想|不需要|不使用|不采用", clause, maxsplit=1)[0]
+        for clause in clauses
+    )
+
+
+def requested_style(brief):
+    affirmative = visual_requests(brief)
+    return next((style for words, style in EXPLICIT if re.search(words, affirmative, re.I)), None)
 
 
 def style_type(style, art):
@@ -81,10 +137,8 @@ def choose_style(plan, selection="auto"):
     if selection != "auto":
         key = selection
     else:
-        brief = plan["original"]
-        key = next(
-            (style for words, style in EXPLICIT if re.search(words, brief, re.I)), None
-        )
+        brief = visual_requests(plan["original"])
+        key = requested_style(plan["original"])
         if not key:
             if re.search(r"满\s*\d+|\d+\s*折|优惠|促销|折扣|价目|第二杯|买一", brief):
                 key = "swiss"
@@ -107,6 +161,15 @@ def choose_style(plan, selection="auto"):
 
 
 def next_style(current):
-    keys = list(STYLES)
+    # Existing brand characters require an explicit character brief and reference.
+    keys = [k for k in STYLES if k != "ipscene"]
+    if current["id"] not in keys:
+        return {"id": keys[0], "selection": "auto", **STYLES[keys[0]]}
     key = keys[(keys.index(current["id"]) + 1) % len(keys)]
     return {"id": key, "selection": "auto", **STYLES[key]}
+
+
+def layout_alternative(plan, copy):
+    current = (plan.get("design") or choose_style(plan))["id"]
+    preferred = "swiss" if copy.get("offer") else "editorial"
+    return choose_style(plan, "product" if preferred == current else preferred)

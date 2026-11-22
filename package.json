@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "vision:serve": "sh scripts/serve-vision.sh",
     "setup": "node scripts/setup.mjs",
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
     "start": ".venv/bin/python -m server.app"
   },
   "dependencies": {
+    "gsap": "3.15.1",
     "lucide-react": "^0.468.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
@@ -20,5 +22,8 @@
   },
   "overrides": {
     "rollup": "4.68.0"
+  },
+  "optionalDependencies": {
+    "hyperframes": "0.9.40"
   }
 }

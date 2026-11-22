@@ -4,7 +4,8 @@ import re
 from . import model, wenan
 from .campaign import LOCKED, copy_route, offer_and_terms
 from .creative import METHODS, promotion_terms
-from .design import DIRECTIONS, choose_style
+from .art_direction import direct
+from .design import choose_style, requested_style
 
 PACE = {
     "steady": "自然推进",
@@ -12,11 +13,36 @@ PACE = {
     "brisk": "快速推近，用尺度变化强调细节",
 }
 TREATMENTS = {
+    "riso": "按商家指定画幅，选择纸色和一到两种墨色，以实拍特征形成网点或负形，留出安静的阅读空间。",
+    "ipscene": "以确认的角色图作身份依据，让真实姿态与场景里的一个动作相接，保留轮廓、配件和原色。",
     "product": "让一件商品占据主画面，用光线分开主体和背景。",
     "editorial": "扩大连续留白，减少道具，让材质与字形产生对照。",
     "swiss": "先读活动利益与条件，再读品名，数字与包装分开落位。",
     "screenprint": "用有限色和物件轮廓组织前后景，保留真实商品颜色。",
+    "food-motion": "用真实食材的形状或原片动作组织取景，价格与条件在同一阅读区。",
+    "quiet-light": "让侧光落在实物附近，连续留白承接主标题及小字。",
+    "photo-grid": "保持完整原片，以取景边和文字基线建立阅读顺序。",
 }
+
+
+def full_poster_prompt(plan, copy):
+    """Hand off the approved concept and literal final copy to a reference-image model."""
+    art = plan["posterArt"]
+    output = plan["output"]
+    words = list(dict.fromkeys(filter(None, (
+        plan["profile"].get("name"), copy["title"], copy.get("offer"),
+        copy.get("terms"), copy.get("cta"),
+    ))))
+    brief = [
+        f"为「{plan.get('promptBrief', {}).get('reading', {}).get('product') or plan['subject']}」生成一张 {output['width']} × {output['height']} 的满幅商业海报。",
+        art.get("modelConcept") or art["concept"],
+        "附商品原图作为外形、颜色和标识的依据。" if plan.get("visualSource") in ("cutout", "photograph") else "以无品牌概念画面表现主题。",
+        "设计字形、字距与位置，让标题与主体共用一道轮廓或明暗边界。主标题逐字写作「" + copy["title"] + "」。",
+        "画面文案逐字使用 " + " / ".join("「" + w + "」" for w in words) + "。保留实物原有标识。",
+    ]
+    if requirements := plan.get("promptBrief", {}).get("visualConstraints"):
+        brief.append("遵守商家要求 " + "。".join(requirements))
+    return "\n".join(brief)
 
 
 def local_reading(plan):
@@ -103,8 +129,8 @@ def optimize(spec, *, infer=True, previous=None):
             result, name = model.ask(
                 "你是 Trupic 的创作提示词策划。理解商家口语，区分真实卖点、目标受众和表现手法。根据素材和媒介选择执行方向。"
                 "只输出 JSON。product、audience、focus、visual 分别逐字摘取原文中的商品、受众、想突出的事实或动作、视觉约束，保留否定和限定词；不确定留空。"
-                "method 选 moment/question/invite，style 选 product/editorial/swiss/screenprint，pace 选 steady/quiet/brisk。优先明确要求与已选版式。"
-                "还要返回 directions 对象，只填写媒介需要的 copy/image/video 键，每项写一至两句本次专用的创作提示词。把空泛形容词翻成能执行的动作、镜头、构图或句式，说明图文如何配合。用户的禁区和已有素材不可改变。不要写示例广告语、额外商品特性或任何新商业事实。",
+                f"method 选 moment/question/invite，style 选 {'/'.join(TREATMENTS)}，pace 选 steady/quiet/brisk。优先明确要求与已选版式。"
+                "返回 directions 对象，只填写媒介需要的 copy/image/video 键。构思 image 时先比较从实物动作和从材质入手的两种画面，只交与商品及标题关系更紧的一种。用两句话点名观众第一眼看见的事件、标题借哪条轮廓或光影落位。原图观察是视觉依据，不可用来添加经营声明。video 交代在哪个动作或形状上切镜、下一镜多看见什么。遵守指定版式和禁区，不写示例广告语。",
                 {
                     "需求": plan["original"],
                     "档案": {
@@ -124,6 +150,8 @@ def optimize(spec, *, infer=True, previous=None):
                     "输出规格": plan.get("output"),
                     "初步分析": reading,
                     "有商品图": bool(spec["asset"]),
+                    "素材形态": plan.get("visualSource"),
+                    "原图观察": plan.get("sourceReview", {}).get("reason", ""),
                 },
                 320,
             )
@@ -159,6 +187,7 @@ def optimize(spec, *, infer=True, previous=None):
                             "kind": kind,
                             "design": plan.get("design"),
                             "directions": candidates,
+                            "原图观察": plan.get("sourceReview", {}).get("reason", ""),
                         },
                         80,
                     )
@@ -181,6 +210,10 @@ def optimize(spec, *, infer=True, previous=None):
     plan["audience"] = reading["audience"]
     design = plan.get("design")
     if design:
+        if requested_style(plan["original"]) == design["id"] or (
+            reading["style"] == "ipscene" and not spec.get("asset")
+        ):
+            reading["style"] = design["id"]
         if design["selection"] == "auto" and reading["style"] != design["id"]:
             plan["design"] = {
                 **choose_style(plan, reading["style"]),
@@ -240,33 +273,50 @@ def optimize(spec, *, infer=True, previous=None):
     prompts = {"copy": copy}
     if kind != "copy":
         out = plan.get("output") or {}
-        art = DIRECTIONS.get(plan.get("sector"), DIRECTIONS["general"])
-        visual = (
-            f"围绕「{product}」设计全幅主视觉。"
-            + TREATMENTS[reading["style"]]
-            + art["shot"]
-        )
+        art_direction = direct(plan, reading["style"], product, reading["focus"])
+        if refinements.get("image"):
+            art_direction["modelConcept"] = refinements["image"]
+        plan["posterArt"] = art_direction
+        visual = art_direction["concept"]
         if out:
             visual += f"按 {out['width']} × {out['height']} 构图。"
         if reading["visual"]:
             visual += "商家的视觉要求：「" + reading["visual"] + "」。"
-        visual += (
-            "只设计空背景，商家原图主体在本地合成。"
-            if spec["asset"]
-            else "制作无品牌概念场景。"
-        ) + "文字另行排版。"
+        if art_direction["composition"] == "material" or art_direction["print"]:
+            visual += "从原片取材，保留独立的商品与文字层。"
+        elif plan.get("visualSource") == "photograph":
+            visual += "保留完整实拍环境，标题排在延展区。"
+        elif spec["asset"]:
+            visual += "环境层单独制作，主体留空，与实物合成后排字。"
+        else:
+            visual += "制作无品牌概念场景，文字另行排版。"
+        plan["identityRegion"] = spec.get("identityRegion")
         prompts["image"] = visual
     if kind == "video":
         prompts["video"] = (
-            f"以「{product}」为主体。0–3 秒{plan['angle']}，3–6 秒推进商品细节，6–9 秒回到全景并给出行动。镜头节奏采用{PACE[reading['pace']]}。"
+            f"以「{product}」为主体。0–3 秒建立{art_direction['mechanism']}的画面关系，3–6 秒切近{art_direction['feature']}，6–9 秒回到全景并给出行动。镜头节奏采用{PACE[reading['pace']]}。"
         )
     if "video" in prompts and action:
         prompts["video"] += "末镜清楚显示本次" + action["goal"] + "行动。"
     if "video" in prompts and wenan.no_cta(plan):
         prompts["video"] = prompts["video"].replace("并给出行动", "并以品牌或品名收束")
     for channel in prompts:
+        if retrieved := plan.get("retrievedMethod"):
+            prompts[channel] += (
+                " 跨媒介借用「"
+                + retrieved["title"]
+                + "」的方法："
+                + retrieved["lesson"]
+            )
+        learned = plan.get("learnedMethod")
+        if learned and (not retrieved or learned.get("id") != retrieved.get("id")):
+            prompts[channel] += (
+                " 参考「" + learned["case"] + "」的表现方法：" + learned["lesson"]
+            )
         if channel in refinements:
             prompts[channel] += " " + refinements[channel]
         if constraints:
             prompts[channel] += " 原文要求：" + "；".join(constraints) + "。"
     plan["promptBrief"] = {"reading": reading, "engine": engine, "prompts": prompts}
+    if kind != "copy":
+        plan["promptBrief"]["visualConstraints"] = constraints

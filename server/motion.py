@@ -25,6 +25,7 @@ def frame(plan, shot, index, asset, size, variant, background, ts):
     )
     # Start close to the object, move onto one detail, then reveal its complete silhouette.
     factor = (1.13, 2.25, 1)[index]
+    ts.camera = (0, 0, w, h)
     if factor > 1:
         center_x = 0.73 if wide else 0.64
         center_y = 0.60
@@ -53,9 +54,8 @@ def frame(plan, shot, index, asset, size, variant, background, ts):
         cw, ch = round(w / factor), round(h / factor)
         left = min(w - cw, max(0, round(center_x * w - cw / 2)))
         top = min(h - ch, max(0, round(center_y * h - ch / 2)))
-        im = im.crop((left, top, left + cw, top + ch)).resize(
-            size, Image.Resampling.LANCZOS
-        )
+        ts.camera = (left, top, left + cw, top + ch)
+        im = im.crop(ts.camera).resize(size, Image.Resampling.LANCZOS)
     # A continuous light falloff keeps captions legible while the original image fills the frame.
     horizontal = wide
     gradient = Image.new("L", (256, 1) if horizontal else (1, 256))
@@ -94,7 +94,20 @@ def frame(plan, shot, index, asset, size, variant, background, ts):
         31,
         "display",
     )
-    if wide:
+    if style == "editorial":
+        # Keep the photograph intact and set the headline in an editorial margin.
+        text(
+            shot["line"],
+            (0.05, 0.34, 0.44, 0.63) if wide else (0.05, 0.824, 0.84, 0.92),
+            84,
+            "serif",
+        )
+        text(
+            shot["caption"],
+            (0.05, 0.68, 0.44, 0.88) if wide else (0.05, 0.925, 0.94, 0.976),
+            30,
+        )
+    elif wide:
         text(
             shot["line"],
             (0.05, 0.34, 0.49, 0.66),

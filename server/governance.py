@@ -18,6 +18,28 @@ def active_rule(c, tenant):
     return dict(id="baseline", name="创意策略 v1", method="moment")
 
 
+def retrieve_method(c, brief, profile):
+    context = " ".join(
+        [brief, *(profile.get(k, "") for k in ("product", "industry", "audience"))]
+    ).casefold()
+    best = None
+    best_score = 0
+    for row in c.execute("""SELECT r.id rule,c.id,c.title,c.kind,c.source,c.license,c.lesson,c.scenario,c.tags,r.method
+            FROM rules r JOIN cases c ON c.id=r.case_id WHERE r.retrievable=1
+            AND c.status='approved' AND c.category!='反面案例' ORDER BY r.created DESC,r.rowid DESC"""):
+        terms = {
+            s.casefold()
+            for s in re.split(r"[，、,；;\s/]+", row["tags"] + " " + row["scenario"])
+            if len(s) >= 2
+        }
+        matched = sorted(s for s in terms if s in context)
+        score = sum(len(s) for s in matched)
+        if score > best_score:
+            best_score = score
+            best = {**dict(row), "matched": matched}
+    return best
+
+
 def extracted_method(title, summary=""):
     text = title + " " + summary
     for words, method in [
@@ -121,7 +143,7 @@ def discover_feed():
             ):
                 continue
             cur = c.execute(
-                "INSERT OR IGNORE INTO cases VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO cases(id,title,source,license,kind,category,lesson,issue,status,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     ident(),
                     title[:150],
@@ -185,7 +207,8 @@ def discover():
     with db(True) as c:
         for entry in entries:
             added += c.execute(
-                "INSERT OR IGNORE INTO cases VALUES(?,?,?,?,?,?,?,?,?,?)", entry
+                "INSERT OR IGNORE INTO cases(id,title,source,license,kind,category,lesson,issue,status,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                entry,
             ).rowcount
         if entries:
             audit(c, "system", "Pinterest 画板同步", str(len(entries)))

@@ -5,5 +5,27 @@
 <view class="panel"><text selectable>{{version.body}}</text><view class="spaced">{{version.cta}}</view></view>
 <button wx:if="{{work.kind!=='copy'}}" class="primary" disabled="{{busy || !media}}" loading="{{busy}}" bindtap="save">保存到相册</button>
 <button class="secondary spaced" bindtap="copy">复制文案</button>
+<button wx:if="{{version.fullPosterPrompt}}" class="link" bindtap="copyPosterPrompt">复制整张海报直出提示词</button>
+<view class="panel">
+  <view class="heading">专业建议</view>
+  <view class="note">换个开场：{{version.suggestion.title}}</view>
+  <button class="secondary" data-action="revision" bindtap="revise" disabled="{{busy}}">应用文案建议</button>
+  <block wx:if="{{version.layoutSuggestion}}">
+    <view class="note">{{version.layoutSuggestion.intent}}</view>
+    <button class="secondary" data-action="layout" bindtap="revise" disabled="{{busy}}">应用{{version.layoutSuggestion.name}}版式</button>
+  </block>
+  <button class="link" data-action="redesign" bindtap="revise" disabled="{{busy}}">换个创意</button>
+  <view class="sub">本次修改免费，原版本可随时查看。</view>
+</view>
+<view class="panel">
+  <view wx:if="{{work.kind!=='copy'}}"><view class="label">检查记录</view>
+<view wx:for="{{version.quality}}" wx:key="label" class="note">{{item.label}} · {{item.detail}}</view></view>
+  <view class="label">原始需求</view><text selectable>{{version.brief}}</text>
+  <view wx:if="{{version.plan.topic}}" class="note">本周主题 · {{version.plan.topic.title}}</view>
+  <picker wx:if="{{versionLabels.length > 1}}" range="{{versionLabels}}" value="{{versionIndex}}" disabled="{{busy}}" bindchange="selectVersion">
+    <view class="line between"><text>版本对照</text><text>{{versionLabels[versionIndex]}}　›</text></view>
+  </picker>
+  <button wx:if="{{version.n !== work.current}}" class="secondary spaced" disabled="{{busy}}" bindtap="restore">设为当前版本</button>
+</view>
 </block><block wx:else><view class="title">{{state==='failed'?'制作未完成':state==='error'?'暂时无法显示':'正在制作'}}</view><view class="note">{{error || '完成后可以在「我的」重新打开作品。'}}</view><button wx:if="{{state==='failed' || state==='error'}}" class="primary" bindtap="retry" disabled="{{busy}}">重试</button></block>
 <button class="link spaced" bindtap="mine">我的作品</button></view>

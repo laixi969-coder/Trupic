@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -10,7 +11,10 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 from server.design import DIRECTIONS, STYLES, choose_style
 from server.posters import poster
-from server.typography import SANS
+from server.typography import SANS, Typesetter
+from server.campaign_frame import campaign_frame
+from server.art_direction import direct
+from server.poster_composition import LAYOUTS
 
 
 def sample(key, style, tea_offer=False):
@@ -33,6 +37,42 @@ def sample(key, style, tea_offer=False):
         offer="28元 / 杯" if tea_offer else ex["offer"],
         terms="仅限堂食。" if tea_offer else ex["terms"],
     )
+    if style in {"riso", "ipscene", *LAYOUTS}:
+        if style == "food-motion":
+            plan.update(
+                original="日式美食海报，居酒屋暗调",
+                profile={"name": "炉边小馆", "product": "牛肉火锅"},
+                scenePhoto="hotpot",
+            )
+            copy.update(title="趁这一锅还在冒热气", body="", offer="", terms="", cta="到店开锅。")
+        elif style == "ipscene":
+            plan.update(
+                original="吉祥物在橘园伸手摘橘子",
+                profile={"name": "橘园来信", "product": "橘子吉祥物"},
+            )
+            copy.update(title="摘一颗太阳", body="", offer="", terms="", cta="")
+        plan["posterArt"] = direct(plan, style, plan["profile"]["product"], "")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "subject.png"
+            if style in ("riso", "quiet-light"):
+                scene = ROOT / "server/scenes"
+                with Image.open(scene / (art["plate"] + ".webp")) as product:
+                    photo = product.convert("RGBA")
+                with Image.open(scene / "masks" / (art["plate"] + ".png")) as matte:
+                    photo.putalpha(matte.convert("L").resize(photo.size))
+                photo.save(source)
+            elif style == "ipscene":
+                source = (
+                    Path(__file__).resolve().parent.parent
+                    / "references/orchard-character.webp"
+                )
+            else:
+                source = ROOT / "server/scenes" / (plan["scenePhoto"] + ".webp")
+            scene, ink, _ = campaign_frame(
+                plan, copy, None, (1080, 1440), source, None, Typesetter(), 0
+            )
+            scene.paste(ink, mask=ink.getchannel("A"))
+            return scene
     return poster(plan, copy, None, (1080, 1440))
 
 
@@ -55,8 +95,9 @@ def save_sheet(cards, path, columns):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sheets", type=Path, help="Directory for review sheets")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "public/designs")
     args = parser.parse_args()
-    out = ROOT / "public/designs"
+    out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
     industries, styles = [], []
     for key in ("tea", "commerce", "auto", "clean", "home", "retail", "beauty"):
@@ -67,7 +108,8 @@ def main():
         )
         industries.append((art["name"] + " · " + art["example"]["title"], img))
     for key in STYLES:
-        img = sample("tea", key, True)
+        sample_sector = {"quiet-light": "beauty", "photo-grid": "auto"}.get(key, "tea")
+        img = sample(sample_sector, key, sample_sector == "tea")
         img.resize((600, 800), Image.Resampling.LANCZOS).save(
             out / f"{key}.webp", quality=90, method=5
         )
@@ -75,7 +117,7 @@ def main():
     if args.sheets:
         args.sheets.mkdir(parents=True, exist_ok=True)
         save_sheet(industries[:6], args.sheets / "响指出片-六行业海报.png", 3)
-        save_sheet(styles, args.sheets / "响指出片-四种海报实排.png", 4)
+        save_sheet(styles, args.sheets / "响指出片-海报风格实排.png", 4)
         industries[-1][1].save(args.sheets / "响指出片-香水海报.png")
 
 

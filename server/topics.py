@@ -19,13 +19,13 @@ def weekly(c, tenant, profile, history):
         ),
     ).fetchall()
     signature = hashlib.sha256(
-        dump([profile, [dict(e) for e in events], history[:3]]).encode()
+        dump([profile, [dict(e) for e in events], history]).encode()
     ).hexdigest()
     old = c.execute(
         "SELECT * FROM topics WHERE tenant=? AND week=?", (tenant, week)
     ).fetchone()
     if old and old["signature"] == signature:
-        return json.loads(old["items"])
+        return topic_status(c, tenant, json.loads(old["items"]))
     items = recommendations(profile, history)
     if events:
         e = events[0]
@@ -33,7 +33,7 @@ def weekly(c, tenant, profile, history):
         item = {
             "id": week + "-" + e["id"],
             "title": e["title"],
-            "tag": "本地活动",
+            "tag": e["category"],
             "brief": f"{e['city']}的「{e['title']}」将在 {e['starts']} 至 {e['ends']} 举行。结合{subject}写一份面向附近顾客的邀请，请勿暗示门店与活动有合作。",
             "icon": "calendar",
             "week": week,
@@ -45,4 +45,31 @@ def weekly(c, tenant, profile, history):
         "INSERT INTO topics VALUES(?,?,?,?,?) ON CONFLICT(tenant,week) DO UPDATE SET signature=excluded.signature,items=excluded.items,updated=excluded.updated",
         (tenant, week, signature, dump(items), now()),
     )
-    return items
+    return topic_status(c, tenant, items)
+
+
+def topic_status(c, tenant, items):
+    result = []
+    for item in items:
+        # A merchant can change their product during the same calendar week.
+        key = hashlib.sha256(dump(item).encode()).hexdigest()[:24]
+        row = c.execute(
+            "SELECT first_work FROM topic_record WHERE tenant=? AND id=?", (tenant, key)
+        ).fetchone()
+        if row is None:
+            # Attribute older completed works only when their exact saved topic matches.
+            legacy = c.execute(
+                """SELECT w.id FROM work w JOIN version v ON v.work=w.id AND v.n=1
+                   WHERE w.tenant=? AND json_extract(v.spec,'$.source')=?
+                   AND json_extract(v.spec,'$.plan.original')=? ORDER BY w.created LIMIT 1""",
+                (tenant, item["id"], item["brief"]),
+            ).fetchone()
+            work = legacy[0] if legacy else None
+            c.execute(
+                "INSERT OR IGNORE INTO topic_record VALUES(?,?,?,?)",
+                (tenant, key, dump(item), work),
+            )
+        else:
+            work = row["first_work"]
+        result.append({**item, "topicId": key, "adopted": bool(work)})
+    return sorted(result, key=lambda item: item["adopted"])

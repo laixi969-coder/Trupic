@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import threading
-from fractions import Fraction
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,27 +26,43 @@ from io import BytesIO
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import model
+from . import model, providers
 from .background import make_scene
 from .creative import (
     CASES,
     METHODS,
     NUMCLAIM,
     RISK,
+    draft_copy,
     generate_copy,
     next_suggestion,
     prepare,
 )
-from .governance import active_rule, discover, run_tests
+from .governance import active_rule, discover, run_tests, retrieve_method
 from .media import ROOT, SIZES, inspect_upload, render
 from .store import DATA, audit, db, dump, ident, init, now, secret, tenant_new
 from .topics import weekly
 from .formats import output_spec
-from .design import STYLES, choose_style, next_style, industry_examples
+from .design import (
+    STYLES,
+    choose_style,
+    next_style,
+    industry_examples,
+    layout_alternative,
+)
 from .typography import Typesetter, inspect_face
 from .lettering import OPTIONS as LETTERING_OPTIONS
 from .campaign import storyboard
-from .prompt_agent import optimize
+from .prompt_agent import full_poster_prompt, optimize
+from .visual_review import (
+    FIDELITY,
+    LayoutOverflow,
+    inspect_export,
+    validate_region,
+    content_review,
+    image_message,
+    preflight,
+)
 
 app = Flask(__name__, static_folder=None)
 app.config.update(
@@ -153,12 +168,24 @@ def asset_json(row):
 def history(c, t):
     res = []
     for row in c.execute(
-        "SELECT v.* FROM version v JOIN work w ON w.id=v.work AND w.current=v.n WHERE w.tenant=? ORDER BY w.created DESC,w.rowid DESC LIMIT 35",
+        """SELECT v.spec,v.copy, json_extract(tr.item,'$.tag') AS topic_tag,
+                  (EXISTS(SELECT 1 FROM downloads d WHERE d.work=w.id AND d.count>0)
+                   OR EXISTS(SELECT 1 FROM version edited WHERE edited.work=w.id AND edited.n>1)) AS engaged
+           FROM work w JOIN version v ON v.work=w.id AND w.current=v.n
+           LEFT JOIN topic_record tr ON tr.tenant=w.tenant AND tr.id=json_extract(v.spec,'$.plan.topic.id')
+           WHERE w.tenant=? ORDER BY w.created DESC,w.rowid DESC LIMIT 35""",
         (t,),
     ):
         p = json.loads(row["spec"])["plan"]
         cp = json.loads(row["copy"])
-        res.append(dict(title=cp["title"], method=p["method"], original=p["original"]))
+        res.append(
+            dict(
+                title=cp["title"],
+                method=p["method"],
+                original=p["original"],
+                preferredTag=row["topic_tag"] if row["engaged"] else None,
+            )
+        )
     return res
 
 
@@ -174,12 +201,16 @@ def pack(c, w, all_versions=False):
         copy = json.loads(r["copy"])
         n = r["n"]
         base = f"/api/works/{w['id']}/v/{n}"
+        folder = DATA / w["tenant"] / "works" / w["id"] / str(n)
         suggestion = next_suggestion(spec, copy)[1] if all_versions else {}
         versions.append(
             dict(
                 n=n,
                 created=r["created"],
                 suggestion=suggestion,
+                layoutSuggestion=layout_alternative(spec["plan"], copy)
+                if all_versions and w["kind"] != "copy"
+                else None,
                 **copy,
                 brief=spec["plan"]["original"],
                 plan=spec["plan"],
@@ -188,6 +219,16 @@ def pack(c, w, all_versions=False):
                 ratio=spec["ratio"],
                 poster=base + "/poster",
                 download=base + "/download",
+                designSource=base + "/design-source"
+                if w["kind"] == "poster"
+                and (folder / "poster.svg").is_file()
+                else None,
+                editSource=base + "/edit-source"
+                if w["kind"] == "video" and (folder / "edit.zip").is_file()
+                else None,
+                openDesignSource=base + "/open-design-source"
+                if w["kind"] == "video" and (folder / "open-design.zip").is_file()
+                else None,
                 video=base + "/video" if w["kind"] == "video" else None,
             )
         )
@@ -260,6 +301,16 @@ def state():
             jobs=jobs,
             prices=COST,
         )
+
+
+@app.get("/api/topics")
+def get_topics():
+    t = reqtenant()
+    with db() as c:
+        profile = json.loads(
+            c.execute("SELECT profile FROM merchant WHERE id=?", (t,)).fetchone()[0]
+        )
+        return jsonify(weekly(c, t, profile, history(c, t)))
 
 
 @app.post("/api/profile")
@@ -447,22 +498,20 @@ def plan_spec(c, t, v):
             and not v.get("assetConfirmed")
         ):
             raise ValueError("请先核对并确认商品主体及标识清晰完整。")
-    if (
-        not asset
-        and kind != "copy"
-        and any(
-            word in brief.lower()
-            for word in (
-                "还原包装",
-                "还原我的商品",
-                "还原商品外观",
-                "保留logo",
-                "原样还原",
-                "保留包装文字",
+    region = v.get("identityRegion") if kind != "copy" else None
+    if kind != "copy" and FIDELITY.search(brief):
+        if not asset:
+            raise ValueError(
+                "这项需求需要还原实际商品，请先添加能看清包装与标识的原图。"
             )
-        )
-    ):
-        raise ValueError("这项需求需要还原实际商品，请先添加能看清包装与标识的原图。")
+        if not region or v.get("assetConfirmed") is not True:
+            raise ValueError("请核对原图并标出要保真的商品标识或包装文字。")
+    if region is not None:
+        if not asset:
+            raise ValueError("请先选择商品原图。")
+        if v.get("assetConfirmed") is not True:
+            raise ValueError("请核对原图并确认标识清晰完整。")
+        validate_region(DATA / t / "assets" / asset / "original.png", region)
     prof = json.loads(
         c.execute("SELECT profile FROM merchant WHERE id=?", (t,)).fetchone()[0]
     )
@@ -478,25 +527,36 @@ def plan_spec(c, t, v):
         "做张海报",
     ):
         raise ValueError("想宣传什么商品或门店？请补充一句，或先填写商家档案。")
+    rule = active_rule(c, t)
+    retrieved = retrieve_method(c, brief, prof)
+    if retrieved:
+        rule = {**rule, "method": retrieved["method"]}
     plan = prepare(
         brief,
         prof,
         history(c, t),
-        active_rule(c, t),
+        rule,
         string(v.get("reference")),
         string(v.get("facts"), 250),
     )
     ref = c.execute(
-        "SELECT c.title,c.lesson FROM cases c JOIN rules r ON c.id=r.case_id WHERE r.id=? AND c.status='approved' AND c.category!='反面案例'",
+        "SELECT c.id,c.title,c.lesson,c.kind,c.source,c.license FROM cases c JOIN rules r ON c.id=r.case_id WHERE r.id=? AND c.status='approved' AND c.category!='反面案例'",
         (plan["ruleId"],),
     ).fetchone()
     plan["output"] = output
     plan["kind"] = kind
     if kind in ("poster", "video"):
+        plan["visualSource"] = (
+            "concept" if not asset else
+            "cutout" if policy != "original" and json.loads(a["info"])["file"] == "subject.png"
+            else "photograph"
+        )
         plan["lettering"] = string(v.get("lettering") or "auto")
         if plan["lettering"] not in LETTERING_OPTIONS:
             raise ValueError("请选择支持的图形文字组合。")
         plan["design"] = choose_style(plan, string(v.get("posterStyle") or "auto"))
+        if plan["design"]["id"] == "ipscene" and not asset:
+            raise ValueError("请先上传品牌角色参考图，才能保留角色的轮廓、配件和颜色。")
         font_id = string(v.get("fontId") or "profile", 64)
         if font_id == "profile":
             font_id = prof.get("brandFont", "")
@@ -504,15 +564,34 @@ def plan_spec(c, t, v):
             row = owner(c, "brand_font", font_id, t)
             plan["brandType"] = {"id": font_id, "name": json.loads(row["info"])["name"]}
     if ref:
-        plan["learnedMethod"] = {"case": ref["title"], "lesson": ref["lesson"]}
+        plan["learnedMethod"] = {
+            "case": ref["title"],
+            **{k: ref[k] for k in ("id", "lesson", "kind", "source", "license")},
+        }
+    if retrieved:
+        plan["retrievedMethod"] = retrieved
+    source = string(v.get("source") or "一句话创作", 100)
+    if topic_id := string(v.get("topicId"), 64):
+        record = c.execute(
+            "SELECT item FROM topic_record WHERE tenant=? AND id=?", (t, topic_id)
+        ).fetchone()
+        if not record:
+            raise ValueError("此主题已不可用，请重新选题。")
+        item = json.loads(record["item"])
+        plan["topic"] = {
+            k: item[k] for k in ("title", "week", "basis", "source") if k in item
+        }
+        plan["topic"]["id"] = topic_id
+        source = item["id"]
     return dict(
         plan=plan,
         kind=kind,
         ratio=ratio,
         asset=asset,
         assetMode=policy,
+        identityRegion=region,
         variant=0,
-        source=string(v.get("source") or "一句话创作", 100),
+        source=source,
     )
 
 
@@ -521,9 +600,11 @@ def preview():
     t = reqtenant()
     with db() as c:
         s = plan_spec(c, t, body())
+    preflight(s, DATA / t / "assets")
     optimize(s)
     return jsonify(
         plan=s["plan"],
+        fullPosterPrompt=full_poster_prompt(s["plan"], draft_copy(s["plan"])) if s["kind"] == "poster" else None,
         cost=COST[s["kind"]],
         kind=s["kind"],
         ratio=s["ratio"],
@@ -571,14 +652,24 @@ def enqueue(t, v, work=None):
             ).fetchone()[0]
             s["variant"] = nxt - 1
             cost = 0
-            s["plan"], suggestion = next_suggestion(s, json.loads(r["copy"]))
-            if v.get("action") == "redesign":
-                s.pop("replacement", None)
-                design = s["plan"].get("design")
-                if design and design["selection"] == "auto":
-                    s["plan"]["design"] = next_style(design)
+            current_copy = json.loads(r["copy"])
+            action = v.get("action", "revision")
+            if action == "layout":
+                if s["kind"] == "copy":
+                    raise ValueError("纯文案作品无需调整画面版式。")
+                s["plan"]["design"] = layout_alternative(s["plan"], current_copy)
+                s["replacement"] = current_copy
             else:
-                s["replacement"] = suggestion
+                s["plan"], suggestion = next_suggestion(s, current_copy)
+                if action == "redesign":
+                    s.pop("replacement", None)
+                    design = s["plan"].get("design")
+                    if design and design["selection"] == "auto":
+                        s["plan"]["design"] = next_style(design)
+                elif action == "revision":
+                    s["replacement"] = suggestion
+                else:
+                    raise ValueError("请选择有效的修改方式。")
             optimize(s, infer=False, previous=s["plan"].get("promptBrief"))
         else:
             if v.get("quote"):
@@ -634,13 +725,36 @@ def produce(id):
     p.setdefault("kind", s["kind"])
     dest = DATA / t / "works" / work / str(n)
     try:
+        preflight(s, DATA / t / "assets")
         if not p.get("promptBrief"):
             optimize(s)
             with db(True) as c:
                 c.execute("UPDATE job SET spec=? WHERE id=?", (dump(s), id))
-        cp = s.get("replacement") or generate_copy(p, 0)
+        cached_copy = j["copy_checkpoint"]
+        cp = (
+            json.loads(cached_copy)
+            if cached_copy
+            else s.get("replacement") or generate_copy(p, 0)
+        )
         if s["kind"] == "video":
             cp["storyboard"] = storyboard(p, cp)
+        if s["kind"] == "poster" and p.get("posterArt") and p.get("output"):
+            cp["fullPosterPrompt"] = full_poster_prompt(p, cp)
+        known = (
+            p["original"]
+            + " "
+            + p["facts"]
+            + " "
+            + json.dumps(p["profile"], ensure_ascii=False)
+        )
+        words = cp["title"] + " " + cp["body"] + " " + cp["cta"]
+        if RISK.search(words) or any(
+            claim not in known for claim in NUMCLAIM.findall(words)
+        ):
+            raise ValueError("检测到未经确认的经营声明，请补充事实后重新创作。")
+        if not cached_copy:
+            with db(True) as c:
+                c.execute("UPDATE job SET copy_checkpoint=? WHERE id=?", (dump(cp), id))
         ap = None
         if s["asset"]:
             with db() as c:
@@ -663,17 +777,113 @@ def produce(id):
             with db() as c:
                 record = owner(c, "brand_font", p["brandType"]["id"], t)
             custom_font = DATA / t / "fonts" / record["id"]
-        layout = render(
-            dest,
-            p,
-            cp,
-            s["kind"],
-            ap,
-            s["ratio"],
-            s["variant"],
-            background,
-            custom_font,
-        )
+        output = p.get("output") or output_spec(s["kind"], s["ratio"])
+        visual = None
+        if s["kind"] == "copy":
+            layout = render(
+                dest,
+                p,
+                cp,
+                s["kind"],
+                ap,
+                s["ratio"],
+                s["variant"],
+                background,
+                custom_font,
+            )
+        else:
+            original = ap.with_name("original.png") if ap else None
+            previous = json.loads(j["visual_review"] or "{}")
+            visual = {"status": "checking", "attempts": previous.get("attempts", [])}
+            for repair in (False, True):
+                chosen = ap
+                if repair and ap:
+                    last_issues = visual["attempts"][-1]["issues"]
+                    intact_mask = ap.name == "subject.png" and not any(
+                        "抠图" in issue or "蒙版" in issue for issue in last_issues
+                    )
+                    chosen = ap if intact_mask else original
+                visual.pop("content", None)
+                try:
+                    layout = render(
+                        dest,
+                        p,
+                        cp,
+                        s["kind"],
+                        chosen,
+                        s["ratio"],
+                        s["variant"],
+                        background,
+                        custom_font,
+                        repair=repair,
+                    )
+                    try:
+                        issues = inspect_export(
+                            dest,
+                            layout,
+                            original,
+                            chosen,
+                            s.get("identityRegion"),
+                            cp,
+                            output,
+                        )
+                    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                        issues = ["导出文件读取失败：" + str(exc)[:100]]
+                    try:
+                        review = content_review(dest, original, s, cp, layout)
+                    except (
+                        OSError,
+                        ValueError,
+                        KeyError,
+                        IndexError,
+                        TypeError,
+                        subprocess.SubprocessError,
+                    ):
+                        # A damaged first export can also prevent preparing the model input.
+                        review = (
+                            None
+                            if issues and not repair
+                            else {
+                                "status": "unavailable",
+                                "reason": "已配置的视觉模型未返回有效结果，请重试。",
+                            }
+                        )
+                    if review:
+                        visual["content"] = review
+                        if review["status"] != "pass":
+                            issues.append(review["reason"])
+                except LayoutOverflow as exc:
+                    issues = [str(exc)]
+                terminal = visual.get("content", {}).get("status") in (
+                    "source",
+                    "unavailable",
+                )
+                visual["attempts"].append(
+                    {
+                        "repair": repair,
+                        "issues": issues,
+                        "content": visual.get("content"),
+                    }
+                )
+                visual["status"] = (
+                    ("blocked" if repair or terminal else "repairing")
+                    if issues
+                    else ("repaired" if repair else "passed")
+                )
+                with db(True) as c:
+                    c.execute(
+                        "UPDATE job SET visual_review=? WHERE id=?", (dump(visual), id)
+                    )
+                if not issues:
+                    break
+                if terminal:
+                    raise ValueError(visual["content"]["reason"])
+                if repair:
+                    raise ValueError(
+                        "成品复检未通过："
+                        + "；".join(i.rstrip("。") for i in issues[:3])
+                        + "。请更换近景原图或调整文案后重新创作。"
+                    )
         files = ["poster.png", "copy.txt"] + (
             ["video.mp4"] if s["kind"] == "video" else []
         )
@@ -681,7 +891,6 @@ def produce(id):
             not (dest / f).is_file() or not (dest / f).stat().st_size for f in files
         ):
             raise ValueError("文件生成失败，请重试。")
-        output = p.get("output") or output_spec(s["kind"], s["ratio"])
         dims = (output["width"], output["height"])
         with Image.open(dest / "poster.png") as img:
             if img.size != dims:
@@ -691,18 +900,6 @@ def produce(id):
             ):
                 raise ValueError("PNG 印刷精度与已确认设置不一致。")
             img.verify()
-        known = (
-            p["original"]
-            + " "
-            + p["facts"]
-            + " "
-            + json.dumps(p["profile"], ensure_ascii=False)
-        )
-        words = cp["title"] + " " + cp["body"] + " " + cp["cta"]
-        if RISK.search(words) or any(
-            claim not in known for claim in NUMCLAIM.findall(words)
-        ):
-            raise ValueError("检测到未经确认的经营声明，请补充事实后重新创作。")
         checks = [
             {
                 "label": "事实检查",
@@ -714,7 +911,7 @@ def produce(id):
                 + p["angle"]
                 + "」。"
                 + (
-                    "使用商家已核对的照片。"
+                    "使用商家上传的照片。"
                     if ap
                     else (
                         "内置场景图已标注为创意示意。"
@@ -730,6 +927,84 @@ def produce(id):
                 + " 像素画幅及文案文件。",
             },
         ]
+        if renderer := layout.get("videoRenderer"):
+            checks.append({"label": "短片渲染引擎", "detail": renderer})
+        if visual:
+            coverage = "已检查导出 PNG" + (
+                "及 MP4 全部 216 帧，抽查三个镜头首、中、尾共九帧"
+                if s["kind"] == "video"
+                else ""
+            )
+            checks.append(
+                {
+                    "label": "成品视觉审核",
+                    "detail": coverage + "的画面、文字边界、字号与对比度。",
+                }
+            )
+            if ap:
+                checks.append(
+                    {
+                        "label": "商品原图比对",
+                        "detail": "按成品中的商品位置逐区比对原图。"
+                        + (
+                            "已单独比对商家框选的标识。"
+                            if s.get("identityRegion")
+                            else ""
+                        ),
+                    }
+                )
+            if review := visual.get("content"):
+                checks.append(
+                    {
+                        "label": "画面语义复核",
+                        "detail": review["model"] + " · " + review["reason"],
+                    }
+                )
+            if visual["status"] == "repaired":
+                checks.append(
+                    {
+                        "label": "自动修复",
+                        "detail": "；".join(visual["attempts"][-2]["issues"])
+                        + "。已重制摄影构图和文字层"
+                        + ("，商品像素来自实拍原图" if ap else "")
+                        + "，复检通过。",
+                    }
+                )
+        if art := p.get("posterArt"):
+            checks.append(
+                {
+                    "label": "海报美术指导",
+                    "detail": "、".join(art.get("methods", ["hiccai-poster"]))
+                    + " · "
+                    + art["mechanism"]
+                    + " · "
+                    + art["concept"],
+                }
+            )
+        if reference := p.get("learnedMethod"):
+            checks.append(
+                {
+                    "label": "引用的案例方法",
+                    "detail": reference["case"] + " · " + reference["lesson"],
+                }
+            )
+        if reference := p.get("retrievedMethod"):
+            checks.append(
+                {
+                    "label": "跨案例检索",
+                    "detail": reference["kind"]
+                    + " · "
+                    + reference["title"]
+                    + " · 命中「"
+                    + "、".join(reference["matched"])
+                    + "」 · "
+                    + reference["lesson"],
+                }
+            )
+        if flag := cp.get("reviewFlag"):
+            checks.append(
+                {"label": "待抽查", "detail": flag + "，已采用本地规则成稿。"}
+            )
         if writing := cp.get("writingSkill"):
             checks.append(
                 {
@@ -744,7 +1019,11 @@ def produce(id):
             checks.append(
                 {
                     "label": "版式与用字",
-                    "detail": style["name"]
+                    "detail": (
+                        "摄影主视觉（自动修复）"
+                        if visual["status"] == "repaired"
+                        else style["name"]
+                    )
                     + " · 实际用字："
                     + font_info
                     + (
@@ -755,33 +1034,6 @@ def produce(id):
                 }
             )
         if s["kind"] == "video":
-            probe = subprocess.run(
-                [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-of",
-                    "json",
-                    "-show_streams",
-                    "-show_format",
-                    str(dest / "video.mp4"),
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=12,
-            )
-            meta = json.loads(probe.stdout)
-            if {a["codec_type"] for a in meta["streams"]} != {
-                "video",
-                "audio",
-            } or not 8.9 <= float(meta["format"]["duration"]) <= 9.1:
-                raise ValueError("短片未通过轨道或时长检查，请重试。")
-            video = next(a for a in meta["streams"] if a["codec_type"] == "video")
-            if (video["width"], video["height"]) != dims or Fraction(
-                video["avg_frame_rate"]
-            ) != 24:
-                raise ValueError("短片画幅或帧率与确认规格不符。")
             checks.append(
                 {
                     "label": "短片检查",
@@ -793,6 +1045,18 @@ def produce(id):
                 c.execute(
                     "INSERT INTO work VALUES(?,?,?,?,?)", (work, t, s["kind"], 1, now())
                 )
+                if topic := p.get("topic"):
+                    c.execute(
+                        "UPDATE topic_record SET first_work=? WHERE tenant=? AND id=? AND first_work IS NULL",
+                        (work, t, topic["id"]),
+                    )
+                elif "-W" in s.get("source", ""):
+                    # Also accept a signed preview issued before topic IDs were introduced.
+                    c.execute(
+                        """UPDATE topic_record SET first_work=? WHERE tenant=? AND first_work IS NULL
+                           AND json_extract(item,'$.id')=? AND json_extract(item,'$.brief')=?""",
+                        (work, t, s["source"], p["original"]),
+                    )
             c.execute(
                 "INSERT INTO version VALUES(?,?,?,?,?,?)",
                 (work, n, dump(s), dump(cp), dump(checks), now()),
@@ -806,7 +1070,10 @@ def produce(id):
                     "INSERT INTO ledger(tenant,job,delta,note,created)VALUES(?,?,?,?,?)",
                     (t, id, -j["cost"], LABEL[s["kind"]] + " · " + cp["title"], now()),
                 )
-            c.execute("UPDATE job SET state='complete',error=NULL WHERE id=?", (id,))
+            c.execute(
+                "UPDATE job SET state='complete',error=NULL,copy_checkpoint=NULL WHERE id=?",
+                (id,),
+            )
     except Exception as e:
         app.logger.exception("Generation failed for %s", id)
         msg = str(e) if isinstance(e, ValueError) else "制作中断，已保留需求。请重试。"
@@ -874,6 +1141,9 @@ def output(id, n, mode):
             abort(404)
     file = {
         "poster": "poster.png",
+        "design-source": "poster.svg",
+        "edit-source": "edit.zip",
+        "open-design-source": "open-design.zip",
         "video": "video.mp4",
         "download": {"copy": "copy.txt", "poster": "poster.png", "video": "video.mp4"}[
             w["kind"]
@@ -888,10 +1158,11 @@ def output(id, n, mode):
                 "INSERT INTO downloads VALUES(?,?,1) ON CONFLICT(work,n) DO UPDATE SET count=count+1",
                 (id, n),
             )
+    suffix = "-OpenDesign.zip" if mode == "open-design-source" else path.suffix
     return send_file(
         path,
-        as_attachment=mode == "download",
-        download_name="响指出片-" + json.loads(r["copy"])["title"] + path.suffix,
+        as_attachment=mode in ("download", "design-source", "edit-source", "open-design-source"),
+        download_name="响指出片-" + json.loads(r["copy"])["title"] + suffix,
         conditional=True,
     )
 
@@ -903,17 +1174,53 @@ def admin_state():
     with db() as c:
         works = []
         for row in c.execute(
-            """SELECT w.id,w.kind,v.n,v.copy,v.quality,r.rating,r.tags,r.metrics,e.views,e.clicks,e.inquiries,e.visits,v.created FROM work w JOIN version v ON v.work=w.id AND v.n=w.current LEFT JOIN review r ON r.work=w.id AND r.n=v.n LEFT JOIN effect e ON e.work=w.id AND e.n=v.n ORDER BY (r.rating IS NULL) DESC,v.n DESC,v.created DESC LIMIT 150"""
+            """SELECT w.id,w.kind,v.n,v.copy,v.quality,r.rating,r.tags,r.metrics,
+                      e.views,e.clicks,e.inquiries,e.visits,v.created,
+                      (SELECT MAX(n)-1 FROM version WHERE work=w.id) AS revisions,
+                      json_extract(v.copy,'$.reviewFlag') AS flag,
+                      EXISTS(SELECT 1 FROM review WHERE work=w.id AND rating='不合格') AS had_issue
+               FROM work w JOIN version v ON v.work=w.id AND v.n=w.current
+               LEFT JOIN review r ON r.work=w.id AND r.n=v.n
+               LEFT JOIN effect e ON e.work=w.id AND e.n=v.n
+               ORDER BY (r.rating IS NULL) DESC, had_issue DESC, (flag IS NOT NULL) DESC,
+                        revisions DESC,v.created DESC LIMIT 150"""
         ):
             val = dict(row)
             val["copy"] = json.loads(val["copy"])
             val["quality"] = json.loads(val["quality"])
+            val["reviewReasons"] = [
+                reason
+                for reason in (
+                    "曾评为不合格" if val["had_issue"] else "",
+                    val["flag"],
+                    f"已修改 {val['revisions']} 次" if val["revisions"] >= 2 else "",
+                )
+                if reason
+            ]
             works.append(val)
         return jsonify(
+            modelPlatforms=providers.overview(c),
+            modelUsage=[
+                dict(r)
+                for r in c.execute(
+                    """SELECT platform,model,kind,COUNT(*) calls,SUM(ok) succeeded,ROUND(AVG(ms)) meanMs,
+                    SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,
+                    COUNT(input_tokens) inputReports,COUNT(output_tokens) outputReports FROM model_call
+                    WHERE day=? GROUP BY platform,model,kind ORDER BY calls DESC""",
+                    (now()[:10],),
+                )
+            ],
+            visualReviews=[
+                {**dict(row), "report": json.loads(row["report"])}
+                for row in c.execute("""SELECT j.id,j.work,j.version,j.state,j.created,j.error,j.visual_review report,
+                    json_extract(j.spec,'$.kind') kind,json_extract(j.spec,'$.plan.original') brief
+                    FROM job j WHERE j.visual_review IS NOT NULL
+                    ORDER BY (json_extract(j.visual_review,'$.status')='blocked') DESC,j.created DESC,j.rowid DESC LIMIT 100""")
+            ],
             effects=[
                 dict(row)
                 for row in c.execute(
-                    """SELECT json_extract(v.spec,'$.plan.rule') strategy,COUNT(*) reports,SUM(e.views) views,SUM(e.clicks) clicks,SUM(e.inquiries) inquiries,SUM(e.visits) visits FROM effect e JOIN version v ON v.work=e.work AND v.n=e.n GROUP BY strategy"""
+                    """SELECT json_extract(v.spec,'$.plan.ruleId') strategyId,json_extract(v.spec,'$.plan.rule') strategy, COUNT(CASE WHEN e.views>0 AND e.clicks IS NOT NULL THEN 1 END) ctrSamples, ROUND(100.0*SUM(CASE WHEN e.views>0 THEN e.clicks END)/NULLIF(SUM(CASE WHEN e.views>0 AND e.clicks IS NOT NULL THEN e.views END),0),2) ctr,COUNT(*) reports,SUM(e.views) views,SUM(e.clicks) clicks,SUM(e.inquiries) inquiries,SUM(e.visits) visits FROM effect e JOIN version v ON v.work=e.work AND v.n=e.n GROUP BY strategyId,strategy"""
                 )
             ],
             events=[
@@ -921,6 +1228,13 @@ def admin_state():
                 for x in c.execute("SELECT * FROM event ORDER BY starts DESC LIMIT 50")
             ],
             settings={
+                "callsToday": {
+                    r["kind"]: r["calls"]
+                    for r in c.execute(
+                        "SELECT kind,calls FROM provider_usage WHERE day=?",
+                        (now()[:10],),
+                    )
+                },
                 **{
                     k: cfg[k]
                     for k in (
@@ -932,6 +1246,7 @@ def admin_state():
                         "pinRights",
                         "imageUrl",
                         "imageModel",
+                        "visionModel",
                     )
                 },
                 "hasPinToken": bool(cfg["pinToken"]),
@@ -998,8 +1313,35 @@ def admin_action(action):
     target = string(v.get("id"), 90)
     if action == "discover":
         return jsonify(count=discover())
+    if action in ("model-platform", "model-routes"):
+        with db(True) as c:
+            (providers.save if action == "model-platform" else providers.select)(
+                c, t, v
+            )
+        return jsonify(ok=True)
+    if action == "test-vision":
+        import secrets
+
+        cfg = model.route("vision")
+        if not (cfg["model"] and cfg["url"]):
+            raise ValueError("请先保存并选择视觉审核模型。")
+        color = secrets.choice(["red", "blue", "green", "yellow"])
+        content = image_message(
+            'Which color fills the image? Respond only with JSON {"color":"red|blue|green|yellow"}.',
+            Image.new("RGB", (224, 224), color),
+        )
+        try:
+            result = model.chat_request(
+                cfg, cfg["model"], [{"role": "user", "content": content}], 150, "vision"
+            )
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            raise ValueError("视觉连接失败，请核对接口、密钥和模型的图片输入能力。")
+        if result.get("color") != color:
+            raise ValueError("模型已响应，但未正确识别测试图片。")
+        return jsonify(ok=True, model=cfg["model"])
     if action == "settings":
         cfg = model.settings()
+        old_urls = cfg["url"], cfg["imageUrl"]
         for field in (
             "url",
             "model",
@@ -1011,6 +1353,14 @@ def admin_action(action):
             "imageModel",
         ):
             cfg[field] = string(v.get(field), 1200)
+        if "visionModel" in v:
+            cfg["visionModel"] = string(v.get("visionModel"), 180)
+        if cfg.get("visionModel") and not (cfg["url"] or cfg["visionUrl"]):
+            raise ValueError("请填写支持图片输入的模型接口地址。")
+        if old_urls[0] != cfg["url"]:
+            cfg["key"] = ""
+        if old_urls[1] != cfg["imageUrl"]:
+            cfg["imageKey"] = ""
         if v.get("key"):
             cfg["key"] = string(v.get("key"), 1200)
         if v.get("imageKey"):
@@ -1031,7 +1381,8 @@ def admin_action(action):
             cfg["board"].isdigit() and cfg["pinRights"] and cfg["pinToken"]
         ):
             raise ValueError("请填写画板数字 ID、访问令牌及使用条件。")
-        if bool(cfg["model"]) != bool(cfg["url"]):
+        shared_vision = cfg.get("visionModel") and not cfg["visionUrl"]
+        if bool(cfg["model"] or shared_vision) != bool(cfg["url"]):
             raise ValueError("模型名称和服务地址需要同时填写。")
         if cfg["url"]:
             ep = urlparse(cfg["url"])
@@ -1059,6 +1410,9 @@ def admin_action(action):
         return jsonify(ok=True, model=name)
     with db(True) as c:
         if action == "event":
+            category = string(v.get("category") or "本地活动", 20)
+            if category not in ("本地活动", "节假日", "公开热点"):
+                raise ValueError("请选择有效的事件类型。")
             title = string(v.get("title"), 100)
             city = string(v.get("city"), 80)
             source = string(v.get("source"), 1000)
@@ -1076,7 +1430,7 @@ def admin_action(action):
                 raise ValueError("请核实并填写活动日期、地区及官方来源。")
             target = ident()
             c.execute(
-                "INSERT INTO event VALUES(?,?,?,?,?,?,?)",
+                "INSERT INTO event(id,title,city,starts,ends,source,created,category) VALUES(?,?,?,?,?,?,?,?)",
                 (
                     target,
                     title,
@@ -1085,6 +1439,7 @@ def admin_action(action):
                     ends.isoformat(),
                     source,
                     now(),
+                    category,
                 ),
             )
         elif action == "review":
@@ -1141,7 +1496,7 @@ def admin_action(action):
                 raise ValueError("这个来源已经收录。")
             target = ident()
             c.execute(
-                "INSERT INTO cases VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO cases(id,title,source,license,kind,category,lesson,issue,status,created,tags,scenario) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     target,
                     title,
@@ -1153,16 +1508,28 @@ def admin_action(action):
                     issue,
                     "pending",
                     now(),
+                    string(v.get("tags"), 160),
+                    string(v.get("scenario"), 200),
                 ),
             )
         elif action == "approve":
-            lesson = string(v.get("lesson"), 300)
-            if lesson:
-                c.execute("UPDATE cases SET lesson=? WHERE id=?", (lesson, target))
             r = c.execute("SELECT * FROM cases WHERE id=?", (target,)).fetchone()
-            if not r or not r["lesson"]:
+            if not r:
+                abort(404)
+            if r["status"] != "pending":
+                raise ValueError("该案例已经审核入库。")
+            lesson = string(v.get("lesson") or r["lesson"], 300)
+            if not lesson:
                 raise ValueError("请先填写可迁移的创意方法。")
-            c.execute("UPDATE cases SET status='approved' WHERE id=?", (target,))
+            c.execute(
+                "UPDATE cases SET lesson=?,tags=?,scenario=?,status='approved' WHERE id=?",
+                (
+                    lesson,
+                    string(v.get("tags", r["tags"]), 160),
+                    string(v.get("scenario", r["scenario"]), 200),
+                    target,
+                ),
+            )
         elif action == "rule":
             name = string(v.get("name"), 80)
             method = string(v.get("method"))
@@ -1206,6 +1573,25 @@ def admin_action(action):
                     case_id,
                 ),
             )
+        elif action == "retrieval":
+            r = c.execute(
+                """SELECT r.tests,r.status,c.status approved,c.category FROM rules r JOIN cases c ON c.id=r.case_id WHERE r.id=?""",
+                (target,),
+            ).fetchone()
+            enabled = v.get("enabled")
+            if type(enabled) is not bool or not r:
+                raise ValueError("请选择已关联案例的策略。")
+            if enabled:
+                tests = json.loads(r["tests"])
+                if (
+                    r["status"] == "failed"
+                    or r["approved"] != "approved"
+                    or r["category"] == "反面案例"
+                    or not tests
+                    or not all(x["ok"] for x in tests)
+                ):
+                    raise ValueError("只有通过固定测试且已审核的方法可用于检索。")
+            c.execute("UPDATE rules SET retrievable=? WHERE id=?", (enabled, target))
         elif action in ("pilot", "release", "rollback"):
             r = c.execute("SELECT * FROM rules WHERE id=?", (target,)).fetchone()
             if (
@@ -1239,7 +1625,8 @@ def admin_action(action):
             c,
             t,
             {
-                "event": "核实本地活动",
+                "event": "核实营销事件",
+                "retrieval": "启用方法检索" if v.get("enabled") else "停用方法检索",
                 "review": "作品抽查",
                 "case": "添加案例",
                 "approve": "审核入库",

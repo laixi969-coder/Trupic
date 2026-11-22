@@ -425,16 +425,16 @@ def generate_copy(plan, variant=0):
                 <= len(val[k].strip())
                 <= maxlen
             ):
-                return base
+                return {**base, "reviewFlag": "模型草稿格式异常"}
         if spec and (
             val["title"].strip() != spec or val["body"].strip() or val["cta"].strip()
         ):
-            return base
+            return {**base, "reviewFlag": "模型草稿格式异常"}
         if wenan.no_cta(plan):
             val["cta"] = ""
         detail = val.get("detailLine", "")
         if not isinstance(detail, str) or len(detail) > 32:
-            return base
+            return {**base, "reviewFlag": "模型草稿格式异常"}
         locked = LOCKED.search(plan["original"])
         if locked:
             val["title"] = locked.group(1)
@@ -467,7 +467,7 @@ def generate_copy(plan, variant=0):
             or any(x not in known for x in NUMCLAIM.findall(content))
             or any(x in content and x not in known for x in guarded)
         ):
-            return base
+            return {**base, "reviewFlag": "模型草稿含未经确认的声明"}
         headline_review = (
             " 单独遮住正文和行动号召审主标题：第一眼读懂了吗，商品和这句话有什么关系？"
             "请在心里指出哪条已知卖点或产品用途让哪种顾客情绪成立；移除卖点后若同一句还成立，退稿。资料不足时只允许有根据的用途。核对目标受众与情绪是否相符。"
@@ -505,7 +505,11 @@ def generate_copy(plan, variant=0):
             or (headline_review and review.get("headlineOk") is not True)
             or (benefit and review.get("benefitEvidence") != benefit["evidence"])
         ):
-            return {**base, "review": "模型草稿未通过复核，已使用保守版本。"}
+            return {
+                **base,
+                "reviewFlag": "模型草稿复核未通过",
+                "review": "模型草稿未通过复核，已使用保守版本。",
+            }
         if action and (
             review.get("closingOk") is not True
             or not val["cta"].strip()
@@ -541,7 +545,11 @@ def generate_copy(plan, variant=0):
             "review": str(review.get("reason", "已复核创意与经营事实。"))[:200],
         }
     except Exception:
-        return {**base, "review": "模型未返回可用内容，已使用本地创意规则。"}
+        return {
+            **base,
+            "reviewFlag": "模型调用未完成",
+            "review": "模型未返回可用内容，已使用本地创意规则。",
+        }
 
 
 def next_suggestion(spec, current):
@@ -560,8 +568,6 @@ def next_suggestion(spec, current):
         and not (result["offer"] and not result["cta"])
     ):
         result["title"] = p["subject"] + "，从这件小事开始"
-    if "满屏字" in p["original"]:
-        result["body"] = result["body"].split("。")[0] + "。"
     return p, result
 
 
@@ -623,7 +629,12 @@ def recommendations(profile, history):
         )
     rotation = (week.week + uidnum(subject)) % 3
     entries = entries[rotation:] + entries[:rotation]
-    entries.sort(key=lambda e: sum(e[0] in h.get("original", "") for h in history))
+    entries.sort(
+        key=lambda e: (
+            sum(e[0] in h.get("original", "") for h in history),
+            -sum(h.get("preferredTag") == e[1] for h in history),
+        )
+    )
     return [
         dict(
             id=f"{key}-{e[3]}",

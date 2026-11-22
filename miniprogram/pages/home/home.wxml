@@ -10,6 +10,11 @@
     </view>
     <button class="primary" bindtap="preview" loading="{{busy}}" disabled="{{busy}}">预览创作方案</button>
   </view>
+  <view wx:if="{{topics.length || topicsError}}" class="section">
+    <view class="heading">本周营销主题</view>
+    <button wx:for="{{topics}}" wx:key="topicId" class="topic line between" data-id="{{item.topicId}}" bindtap="useTopic"><text>{{item.title}}</text><text class="sub">{{item.adopted?'已制作':'用这个主题'}} ›</text></button>
+    <button wx:if="{{topicsError}}" class="link" bindtap="loadTopics">重新加载本周主题</button>
+  </view>
   <view class="between"><view class="heading">找个灵感开始</view><button class="link" bindtap="gallery">查看全部</button></view>
   <button class="hero" bindtap="sample" data-id="tea"><image src="/images/tea-hero.jpg" mode="aspectFill"/><view class="heroTitle">抹茶拿铁<view>上新海报</view></view><view class="heroLink">查看茶饮样张</view></button>
   <button class="mini row" bindtap="sample" data-id="auto"><image src="/images/auto.jpg" mode="aspectFill"/><view><view>周末试驾</view><view class="sub">汽车海报</view></view></button>
@@ -27,8 +32,14 @@
     <block wx:else>
       <image wx:if="{{assetImage}}" class="photo" src="{{assetImage}}" mode="aspectFit"/>
       <view class="line between">使用上传原图<switch checked="{{assetMode==='original'}}" bindchange="togglePhoto" color="#184b32"/></view>
+      <button wx:if="{{!asset.risk}}" class="link" bindtap="startMark">{{identityRegion?'重新标注原图区域':'标注需保真的标识或包装文字'}}</button>
+      <block wx:if="{{marking}}">
+        <view class="note">{{firstCorner?'再点选区对角':identityRegion?'请确认框内标识清晰、无遮挡。':'在原图上点选标识的一角，再点对角。'}}</view>
+        <view class="region-wrap"><image class="region-image" src="{{regionImage}}" mode="widthFix" bindtap="markPoint"/><view wx:if="{{identityRegion}}" class="region-outline" style="{{regionStyle}}"/></view>
+      </block>
+      <button wx:if="{{identityRegion}}" class="link" bindtap="clearRegion">清除选区</button>
       <view wx:if="{{asset.risk}}" class="error">图片质量不足，建议移除后更换清晰原图。</view>
-      <button class="primary spaced" disabled="{{!assetImage}}" bindtap="acceptPhoto">确认素材</button>
+      <button class="primary spaced" disabled="{{!assetImage || firstCorner || asset.risk}}" bindtap="acceptPhoto">确认素材</button>
       <button class="secondary spaced" bindtap="removePhoto">移除素材</button>
     </block>
   </view>

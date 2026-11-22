@@ -6,6 +6,8 @@ Page({
     work: null,
     version: null,
     media: "",
+    versionLabels: [],
+    versionIndex: 0,
     busy: false,
   },
   onLoad(options) {
@@ -14,12 +16,15 @@ Page({
     this.epoch = 0;
   },
   onShow() {
-    this.refresh();
+    this.visible = true;
+    return this.refresh();
   },
   onHide() {
+    this.visible = false;
     this.stop();
   },
   onUnload() {
+    this.visible = false;
     this.stop();
   },
   stop() {
@@ -41,18 +46,91 @@ Page({
         }
         this.id = j.work;
         this.job = null;
+        this.selected = null;
       }
       const work = await api.request("works/" + this.id);
-      const version = work.versions.find((v) => v.n === work.current);
       if (epoch !== this.epoch) return;
-      this.setData({ state: "complete", error: "", work, version, media: "" });
-      if (work.kind !== "copy") {
-        const media = await api.download(version.video || version.poster);
-        if (epoch === this.epoch) this.setData({ media });
-      }
+      const index = work.versions.findIndex(
+        (v) => v.n === (this.selected || work.current),
+      );
+      this.setData({
+        work,
+        versionLabels: work.versions.map(
+          (v) => "版本 " + v.n + (v.n === work.current ? " · 当前" : ""),
+        ),
+      });
+      await this.displayVersion(index < 0 ? 0 : index);
     } catch (e) {
       if (epoch === this.epoch)
         this.setData({ state: "error", error: e.message });
+    }
+  },
+  async displayVersion(index) {
+    this.stop();
+    const epoch = this.epoch;
+    const work = this.data.work;
+    const version = work.versions[index];
+    this.selected = version.n;
+    this.setData({
+      state: "complete",
+      error: "",
+      version,
+      versionIndex: index,
+      media: "",
+    });
+    if (work.kind === "copy") return;
+    try {
+      const media = await api.download(version.video || version.poster);
+      if (epoch === this.epoch) this.setData({ media });
+    } catch (e) {
+      if (epoch === this.epoch)
+        this.setData({ state: "error", error: e.message });
+    }
+  },
+  selectVersion(e) {
+    return this.displayVersion(Number(e.detail.value));
+  },
+  async revise(e) {
+    if (this.data.busy || this.job) return;
+    const action = e.currentTarget.dataset.action;
+    const base = this.data.version.n;
+    const operation = base + "-" + action;
+    if (this.operation !== operation) {
+      this.operation = operation;
+      this.requestKey =
+        "wx-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    }
+    this.setData({ busy: true });
+    try {
+      const job = await api.request("works/" + this.id + "/revise", "POST", {
+        action,
+        base,
+        requestKey: this.requestKey,
+      });
+      this.job = job.id;
+      this.operation = null;
+      this.setData({ state: "queued" });
+      if (this.visible !== false) await this.refresh();
+    } catch (e) {
+      api.message(e);
+    } finally {
+      this.setData({ busy: false });
+    }
+  },
+  async restore() {
+    if (this.data.busy) return;
+    this.setData({ busy: true });
+    try {
+      await api.request(
+        "works/" + this.id + "/restore/" + this.data.version.n,
+        "POST",
+        {},
+      );
+      if (this.visible !== false) await this.refresh();
+    } catch (e) {
+      api.message(e);
+    } finally {
+      this.setData({ busy: false });
     }
   },
   async retry() {
@@ -73,6 +151,9 @@ Page({
     wx.setClipboardData({
       data: [v.title, v.body, v.cta].filter(Boolean).join("\n\n"),
     });
+  },
+  copyPosterPrompt() {
+    wx.setClipboardData({ data: this.data.version.fullPosterPrompt });
   },
   async save() {
     if (this.data.busy) return;

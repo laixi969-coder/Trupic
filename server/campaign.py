@@ -239,6 +239,8 @@ def complete_body(plan, body, offer, terms):
 def storyboard(plan, copy):
     row = copy_route(plan) or {}
     line = copy.get("detailLine") or row.get("reveal") or copy["body"].split("。")[0]
+    if detail := plan.get("posterArt", {}).get("detail"):
+        line = detail
     if line.rstrip("。！？") == copy["title"].rstrip("。！？"):
         line = next(
             (
@@ -248,14 +250,26 @@ def storyboard(plan, copy):
             ),
             plan["subject"],
         )
-    return [
+    closing = copy["cta"] or plan["profile"].get("name") or copy["title"]
+    if not copy["cta"] and closing == copy["title"] and plan.get("posterArt", {}).get("composition") == "material":
+        closing = plan.get("promptBrief", {}).get("reading", {}).get("product") or closing
+    if not copy["cta"] and plan.get("posterArt", {}).get("optics"):
+        product = plan["profile"].get("product", "").strip()
+        closing = re.sub(r"\s*(?:相机机身|单反机身|机身)$", "", product).strip() or closing
+    shots = [
         dict(start=0, end=3, camera="近景切入", line=copy["title"], caption=""),
         dict(start=3, end=6, camera="推进细节", line=line, caption=""),
         dict(
             start=6,
             end=9,
             camera="全景收束",
-            line=copy["cta"] or plan["profile"].get("name") or copy["title"],
+            line=closing,
             caption=" · ".join(filter(None, (copy.get("offer"), copy.get("terms")))),
         ),
     ]
+    art = plan.get("posterArt") or {}
+    if art:
+        shots[0]["purpose"] = art["concept"]
+        shots[1]["purpose"] = "切近" + art["feature"] + "，让观众在实物上看到前镜提出的细节。"
+        shots[2]["purpose"] = "退回完整外形并停住，让观众读完「" + closing + "」。"
+    return shots

@@ -72,6 +72,12 @@ def init():
         CREATE TABLE IF NOT EXISTS version(work TEXT NOT NULL,n INTEGER NOT NULL,spec TEXT NOT NULL,copy TEXT NOT NULL,quality TEXT NOT NULL,created TEXT NOT NULL,PRIMARY KEY(work,n));
         CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY,tenant TEXT NOT NULL,job TEXT UNIQUE,delta INTEGER NOT NULL,note TEXT NOT NULL,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS topics(tenant TEXT,week TEXT,signature TEXT,items TEXT,updated TEXT,PRIMARY KEY(tenant,week));
+        CREATE TABLE IF NOT EXISTS topic_record(tenant TEXT,id TEXT,item TEXT NOT NULL,first_work TEXT,PRIMARY KEY(tenant,id));
+        CREATE TABLE IF NOT EXISTS provider_usage(day TEXT,kind TEXT,calls INTEGER NOT NULL,PRIMARY KEY(day,kind));
+        CREATE TABLE IF NOT EXISTS model_provider(id TEXT PRIMARY KEY,url TEXT NOT NULL,key TEXT NOT NULL,text TEXT NOT NULL,vision TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS model_route(kind TEXT PRIMARY KEY,platform TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS model_call(id INTEGER PRIMARY KEY,day TEXT NOT NULL,kind TEXT NOT NULL,platform TEXT NOT NULL,model TEXT NOT NULL,ok INTEGER NOT NULL,ms INTEGER NOT NULL,input_tokens INTEGER,output_tokens INTEGER);
+        CREATE INDEX IF NOT EXISTS model_call_day ON model_call(day);
         CREATE TABLE IF NOT EXISTS event(id TEXT PRIMARY KEY,title TEXT,city TEXT,starts TEXT,ends TEXT,source TEXT,created TEXT);
         CREATE TABLE IF NOT EXISTS effect(work TEXT,n INTEGER,views INTEGER,clicks INTEGER,inquiries INTEGER,visits INTEGER,source TEXT,PRIMARY KEY(work,n));
         CREATE TABLE IF NOT EXISTS downloads(work TEXT,n INTEGER,count INTEGER,PRIMARY KEY(work,n));
@@ -81,8 +87,15 @@ def init():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor TEXT,action TEXT,target TEXT,created TEXT);
         """)
         for table, column, datatype in (
+            ("model_provider", "label", "TEXT NOT NULL DEFAULT ''"),
+            ("cases", "tags", "TEXT DEFAULT ''"),
+            ("cases", "scenario", "TEXT DEFAULT ''"),
             ("rules", "case_id", "TEXT DEFAULT ''"),
             ("job", "worker_pid", "INTEGER"),
+            ("job", "copy_checkpoint", "TEXT"),
+            ("job", "visual_review", "TEXT"),
+            ("rules", "retrievable", "INTEGER NOT NULL DEFAULT 0"),
+            ("event", "category", "TEXT NOT NULL DEFAULT '本地活动'"),
         ):
             if column not in [
                 r["name"] for r in c.execute(f"PRAGMA table_info({table})")

@@ -23,8 +23,12 @@ Page({
     brief: "",
     style: "auto",
     source: "一句话创作",
+    topicId: "",
+    topics: [],
+    topicsError: "",
     format: defaults.poster,
     asset: null,
+    identityRegion: null,
     assetMode: "original",
     assetConfirmed: false,
     assetImage: "",
@@ -39,7 +43,11 @@ Page({
       wx.getStorageSync("trupic.formats") || {},
     );
     const draft = wx.getStorageSync("trupic.draft");
-    if (draft) this.setData(draft);
+    if (draft)
+      this.setData({
+        ...draft,
+        regionStyle: this.regionStyle(draft.identityRegion),
+      });
     this.setData({ format: this.formats[this.data.kind] || defaults.poster });
   },
   onShow() {
@@ -51,11 +59,38 @@ Page({
         brief: s.brief,
         style: s.style,
         source: "灵感选集 · " + s.name,
+        topicId: "",
         format: this.formats.poster,
       });
       app.globalData.sample = null;
       this.save();
     }
+    return this.loadTopics();
+  },
+  async loadTopics() {
+    const request = (this.topicRequest || 0) + 1;
+    this.topicRequest = request;
+    try {
+      const topics = await api.request("topics");
+      if (request === this.topicRequest)
+        this.setData({ topics: topics.slice(0, 2), topicsError: "" });
+    } catch (e) {
+      if (request === this.topicRequest)
+        this.setData({ topicsError: e.message });
+    }
+  },
+  useTopic(e) {
+    const topic = this.data.topics.find(
+      (t) => t.topicId === e.currentTarget.dataset.id,
+    );
+    if (!topic) return;
+    this.setData({
+      brief: topic.brief,
+      style: "auto",
+      source: topic.id,
+      topicId: topic.topicId,
+    });
+    this.save();
   },
   save() {
     const { kind, brief, style, source, asset, assetMode, assetConfirmed } =
@@ -65,13 +100,18 @@ Page({
       brief,
       style,
       source,
+      topicId: this.data.topicId,
       asset,
       assetMode,
       assetConfirmed,
+      identityRegion: this.data.identityRegion,
     });
   },
   input(e) {
-    this.setData({ brief: e.detail.value });
+    this.setData({
+      brief: e.detail.value,
+      ...(e.detail.value.trim() ? {} : { topicId: "", source: "一句话创作" }),
+    });
     this.save();
   },
   changeKind(e) {
@@ -120,6 +160,9 @@ Page({
           const asset = await api.upload(r.tempFiles[0].tempFilePath);
           this.setData({
             asset,
+            identityRegion: null,
+            regionStyle: "",
+            marking: false,
             assetMode: "processed",
             assetConfirmed: false,
             assetImage: "",
@@ -136,7 +179,12 @@ Page({
     });
   },
   async showPhoto() {
-    this.setData({ sheet: "asset", assetImage: "" });
+    this.setData({
+      sheet: "asset",
+      assetImage: "",
+      marking: false,
+      firstCorner: null,
+    });
     const { asset, assetMode } = this.data;
     try {
       const src = await api.download(
@@ -160,14 +208,79 @@ Page({
     this.save();
     this.showPhoto();
   },
+  regionStyle(area) {
+    return area
+      ? "left:" +
+          area[0] * 100 +
+          "%;top:" +
+          area[1] * 100 +
+          "%;width:" +
+          (area[2] - area[0]) * 100 +
+          "%;height:" +
+          (area[3] - area[1]) * 100 +
+          "%"
+      : "";
+  },
+  async startMark() {
+    const asset = this.data.asset;
+    try {
+      const image = await api.download(asset.original);
+      if (asset.id !== this.data.asset?.id || this.data.sheet !== "asset")
+        return;
+      this.setData({ marking: true, regionImage: image, firstCorner: null });
+    } catch (e) {
+      api.message(e);
+    }
+  },
+  markPoint(e) {
+    const { clientX, clientY } = e.changedTouches[0];
+    this.createSelectorQuery()
+      .select(".region-image")
+      .boundingClientRect((rect) => {
+        if (!rect || !this.data.marking) return;
+        const clamp = (n) => Math.max(0, Math.min(1, n));
+        const x = clamp((clientX - rect.left) / rect.width),
+          y = clamp((clientY - rect.top) / rect.height);
+        const first = this.data.firstCorner;
+        if (!first) return this.setData({ firstCorner: [x, y] });
+        const area = [
+          Math.min(first[0], x),
+          Math.min(first[1], y),
+          Math.max(first[0], x),
+          Math.max(first[1], y),
+        ];
+        if (area[0] === area[2] || area[1] === area[3]) return;
+        this.setData({
+          identityRegion: area,
+          regionStyle: this.regionStyle(area),
+          firstCorner: null,
+          assetConfirmed: false,
+        });
+        this.save();
+      })
+      .exec();
+  },
+  clearRegion() {
+    this.setData({
+      identityRegion: null,
+      firstCorner: null,
+      regionStyle: "",
+      marking: false,
+      assetConfirmed: false,
+    });
+    this.save();
+  },
   acceptPhoto() {
-    if (!this.data.assetImage) return;
+    if (!this.data.assetImage || this.data.firstCorner) return;
     this.setData({ assetConfirmed: true, sheet: "" });
     this.save();
   },
   removePhoto() {
     this.setData({
       asset: null,
+      identityRegion: null,
+      regionStyle: "",
+      marking: false,
       assetImage: "",
       assetConfirmed: false,
       sheet: "",
@@ -206,11 +319,17 @@ Page({
         resolution: format.resolution,
         dpi: format.dpi,
         posterStyle: style,
+        identityRegion: this.data.identityRegion,
         source,
+        topicId: this.data.topicId,
       });
       getApp().globalData.preview = result;
       wx.navigateTo({ url: "/pages/confirm/confirm" });
     } catch (e) {
+      if (asset && /标出要保真|所选标识|原图标识区域/.test(e.message)) {
+        await this.showPhoto();
+        await this.startMark();
+      }
       api.message(e);
     } finally {
       this.setData({ busy: false });

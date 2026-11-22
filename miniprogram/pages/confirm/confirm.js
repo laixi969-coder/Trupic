@@ -13,6 +13,9 @@ Page({
         "wx-" + Date.now() + "-" + Math.random().toString(36).slice(2);
     this.setData({ preview, label: labels[preview.kind] });
   },
+  copyPosterPrompt() {
+    wx.setClipboardData({ data: this.data.preview.fullPosterPrompt });
+  },
   async submit() {
     const p = this.data.preview;
     if (!p || this.data.busy) return;

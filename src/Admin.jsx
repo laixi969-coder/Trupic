@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
   ShieldCheck,
+  ScanLine,
   BookOpen,
   GitBranch,
   History,
@@ -12,13 +13,16 @@ import {
   CalendarDays,
 } from "lucide-react";
 import { api, Blank, Busy, Field, Modal, PageHead, dateText } from "./ui.jsx";
+import ModelPlatforms from "./ModelPlatforms.jsx";
 const tabs = [
   ["works", "作品抽查", ShieldCheck],
+  ["visual", "成品视觉审核", ScanLine],
   ["cases", "案例与方法", BookOpen],
   ["rules", "策略版本", GitBranch],
   ["audit", "审计日志", History],
+  ["platforms", "模型平台", Settings2],
   ["settings", "服务连接", Settings2],
-  ["events", "本地活动", CalendarDays],
+  ["events", "营销日历", CalendarDays],
 ];
 const states = {
   live: "全量启用",
@@ -57,10 +61,11 @@ export default function Admin({ tip }) {
       tip(
         name === "discover"
           ? "发现 " + r.count + " 个新参考"
-          : name === "test-model"
+          : name === "test-model" || name === "test-vision"
             ? "模型连接成功"
             : "已保存管理操作",
       );
+      return true;
     } catch (e) {
       error(e.message);
     } finally {
@@ -96,6 +101,14 @@ export default function Admin({ tip }) {
         <p>{err || "正在载入…"}</p>
       ) : (
         <>
+          {tab === "platforms" && (
+            <ModelPlatforms
+              config={d.modelPlatforms}
+              usage={d.modelUsage}
+              busy={busy}
+              act={act}
+            />
+          )}
           {tab === "works" && (
             <>
               <div className="sectionhead">
@@ -124,6 +137,9 @@ export default function Admin({ tip }) {
                       <p>
                         版本 {w.n} · {dateText(w.created)} · {w.copy.engine}
                       </p>
+                      {w.reviewReasons.length > 0 && (
+                        <p>{w.reviewReasons.join(" · ")}</p>
+                      )}
                     </div>
                     <span className="pill">{w.rating || "待抽查"}</span>
                     <button
@@ -143,6 +159,73 @@ export default function Admin({ tip }) {
                 />
               )}
             </>
+          )}
+          {tab === "visual" && (
+            <section>
+              <div className="sectionhead">
+                <h2>成品视觉审核</h2>
+                <button
+                  className="secondary"
+                  onClick={() => refresh().catch((e) => error(e.message))}
+                >
+                  刷新记录
+                </button>
+              </div>
+              {!d.visualReviews.length && (
+                <p>海报和短片生成后，这里会保留检查及修复记录。</p>
+              )}
+              {d.visualReviews.map((v) => (
+                <details className="formpanel" key={v.id}>
+                  <summary>
+                    {
+                      {
+                        passed: "通过",
+                        repaired: "已修复并通过",
+                        repairing: "修复中",
+                        blocked: "已拦截",
+                      }[v.report.status]
+                    }{" "}
+                    · {v.kind === "video" ? "短片" : "海报"} · {v.brief}
+                  </summary>
+                  <p>
+                    版本 {v.version} · {dateText(v.created)}
+                  </p>
+                  {v.report.attempts.map((a, i) => (
+                    <div key={i}>
+                      <b>{a.repair ? "自动修复后复检" : "初检"}</b>
+                      {a.issues.length ? (
+                        a.issues.map((issue, j) => <p key={j}>{issue}</p>)
+                      ) : (
+                        <p>通过</p>
+                      )}
+                    </div>
+                  ))}
+                  {v.report.content && (
+                    <p>
+                      {v.report.content.model} · {v.report.content.reason}
+                    </p>
+                  )}
+                  {v.report.content?.compositionNote && <p>全幅画面观察 · {v.report.content.compositionNote}</p>}
+                  {v.error && <p className="error">{v.error}</p>}
+                  {v.state === "complete" && (
+                    <a
+                      href={
+                        "/api/admin/preview/" +
+                        v.work +
+                        "/" +
+                        v.version +
+                        "/" +
+                        (v.kind === "video" ? "video" : "poster")
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      查看该版本成品
+                    </a>
+                  )}
+                </details>
+              ))}
+            </section>
           )}
           {tab === "cases" && (
             <>
@@ -171,13 +254,22 @@ export default function Admin({ tip }) {
               </div>
               <input
                 className="searchinput"
-                placeholder="搜索类型、来源或创意方法"
+                placeholder="搜索案例、标签、适用场景或方法"
                 value={query}
                 onChange={(e) => search(e.target.value)}
               />
               {d.cases
                 .filter((c) =>
-                  [c.title, c.kind, c.category, c.lesson, c.source]
+                  [
+                    c.title,
+                    c.kind,
+                    c.category,
+                    c.tags,
+                    c.scenario,
+                    c.issue,
+                    c.lesson,
+                    c.source,
+                  ]
                     .join(" ")
                     .includes(query),
                 )
@@ -189,6 +281,9 @@ export default function Admin({ tip }) {
                         {c.kind} · {c.category} · {c.license}
                       </p>
                       <p>{c.lesson || "待补充方法拆解"}</p>
+                      {c.issue && <p>具体问题 · {c.issue}</p>}
+                      {c.scenario && <p>适用场景 · {c.scenario}</p>}
+                      {c.tags && <p>标签 · {c.tags}</p>}
                       <a href={c.source} target="_blank" rel="noreferrer">
                         查看来源 <ExternalLink size={12} />
                       </a>
@@ -219,13 +314,19 @@ export default function Admin({ tip }) {
                 <div className="formpanel">
                   <h3>已核实的实际效果</h3>
                   {d.effects.map((e) => (
-                    <div key={e.strategy} className="adminrow">
+                    <div key={e.strategyId || e.strategy} className="adminrow">
                       <div>
                         <b>{e.strategy}</b>
                         <p>
                           {e.reports} 条来源记录 · 展示 {e.views ?? "—"} · 点击{" "}
                           {e.clicks ?? "—"} · 咨询 {e.inquiries ?? "—"} · 到店{" "}
                           {e.visits ?? "—"}
+                          {e.ctr != null &&
+                            " · 点击率 " +
+                              e.ctr +
+                              "%（" +
+                              e.ctrSamples +
+                              " 条同时记录点击与展示）"}
                         </p>
                       </div>
                     </div>
@@ -280,6 +381,12 @@ export default function Admin({ tip }) {
                 <span className="pill">{d.settings.engine}</span>
               </div>
               <p className="fineprint">
+                今日外部调用（UTC） · 文案及策划{" "}
+                {d.settings.callsToday.text || 0} 次 · 图像{" "}
+                {d.settings.callsToday.image || 0} 次 · 视觉复核{" "}
+                {d.settings.callsToday.vision || 0} 次
+              </p>
+              <p className="fineprint">
                 可连接本机或已获授权的 Chat Completions
                 服务。连接后，创作需求与商家已确认资料会发往该服务，用于文案生成及事实复核。
               </p>
@@ -314,18 +421,22 @@ export default function Admin({ tip }) {
                   移除已保存的密钥
                 </label>
               )}
+              {field("visionModel", "成品视觉复核模型（选填）")}
+              <p className="fineprint">
+                填写后，系统会把商家原图、PNG
+                和视频抽帧发给上方文案接口进行语义复核。模型需支持图片输入。复核中断可重试。
+              </p>
               <div className="sectionhead">
-                <h2>场景图像生成</h2>
+                <h2>图像生成</h2>
               </div>
               <p className="fineprint">
-                可连接支持 Images Generations 且返回 base64
-                图片的服务，生成概念配图或摄影背景。商品主体仍取自商家原图。调用按服务商规则计费。
+                百炼 Qwen-Image 可供海报 agent 携带商品参考图生成整稿。工作台的分层导出用该连接生成场景，商品主体取自原图。调用按服务商规则计费。
               </p>
               {field("imageUrl", "图像生成接口地址", {
                 limit: 1200,
                 placeholder: "https://…/v1/images/generations",
               })}
-              {field("imageModel", "图像模型名称")}
+              {field("imageModel", "图像模型名称", { placeholder: "qwen-image-3.0-pro" })}
               <label className="field">
                 图像服务密钥
                 <input
@@ -379,7 +490,7 @@ export default function Admin({ tip }) {
                   disabled={busy}
                   onClick={() => act("test-model", {})}
                 >
-                  验证已保存的模型连接
+                  验证已保存的文案连接
                 </button>
                 <button className="primary" disabled={busy}>
                   保存配置
@@ -390,8 +501,11 @@ export default function Admin({ tip }) {
           {tab === "events" && (
             <>
               <div className="sectionhead">
-                <h2>已核实活动</h2>
-                <button className="primary" onClick={() => open("event", {})}>
+                <h2>已核实营销事件</h2>
+                <button
+                  className="primary"
+                  onClick={() => open("event", { category: "本地活动" })}
+                >
                   <Plus size={15} />
                   录入活动
                 </button>
@@ -402,7 +516,7 @@ export default function Admin({ tip }) {
                     <div>
                       <b>{e.title}</b>
                       <p>
-                        {e.city} · {e.starts} 至 {e.ends}
+                        {e.category} · {e.city} · {e.starts} 至 {e.ends}
                       </p>
                     </div>
                     <a href={e.source} target="_blank" rel="noreferrer">
@@ -413,8 +527,8 @@ export default function Admin({ tip }) {
               ) : (
                 <Blank
                   icon={CalendarDays}
-                  title="暂无已核实的本地活动"
-                  desc="填写活动官方来源，符合地区和日期的商家会在每周选题中看到。"
+                  title="暂无已核实的营销事件"
+                  desc="核实官方来源、地区和日期后，事件可以进入商家每周选题。"
                 />
               )}
             </>
@@ -460,7 +574,10 @@ export default function Admin({ tip }) {
           >
             {dialog === "event" && (
               <>
-                {field("title", "活动名称", { required: true })}
+                {field("category", "事件类型", {
+                  options: ["本地活动", "节假日", "公开热点"],
+                })}
+                {field("title", "事件名称", { required: true })}
                 {field("city", "所在地区", { required: true })}
                 <div className="fieldgrid">
                   {[
@@ -510,6 +627,20 @@ export default function Admin({ tip }) {
                 )}
                 <h3>{f.copy.title}</h3>
                 <p className="pre">{f.copy.body}</p>
+                {(f.quality || [])
+                  .filter((q) =>
+                    [
+                      "成品视觉审核",
+                      "自动修复",
+                      "商品原图比对",
+                      "画面语义复核",
+                    ].includes(q.label),
+                  )
+                  .map((q) => (
+                    <p key={q.label}>
+                      {q.label} · {q.detail}
+                    </p>
+                  ))}
                 {field("rating", "审核结论", {
                   options: ["优秀", "合格", "不合格"],
                 })}
@@ -584,6 +715,12 @@ export default function Admin({ tip }) {
                 })}
               </>
             )}
+            {(dialog === "case" || dialog === "approve") && (
+              <>
+                {field("scenario", "适用场景", { limit: 200 })}
+                {field("tags", "检索标签", { limit: 160 })}
+              </>
+            )}
             {dialog === "rule" && (
               <>
                 {field("name", "版本名称", { required: true })}
@@ -639,6 +776,20 @@ export default function Admin({ tip }) {
                     <small>{t.ok ? "通过" : "未通过"}</small>
                   </div>
                 ))}
+                {f.case_id && f.status !== "failed" && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() =>
+                      act("retrieval", { id: f.id, enabled: !f.retrievable })
+                    }
+                  >
+                    {f.retrievable
+                      ? "停用跨案例检索"
+                      : "允许按场景与标签检索此方法"}
+                  </button>
+                )}
                 {["tested", "archived", "pilot"].includes(f.status) && (
                   <div className="modalfoot">
                     {f.status !== "pilot" && (
@@ -672,7 +823,7 @@ export default function Admin({ tip }) {
                   <Busy />
                 ) : (
                   {
-                    event: "保存已核实活动",
+                    event: "保存已核实营销事件",
                     review: "保存审核",
                     case: "提交待审",
                     approve: "确认入库",
