@@ -4,7 +4,7 @@ import json
 import threading
 from . import model
 from .campaign import LOCKED
-from .creative import generate_copy
+from .creative import draft_copy, generate_copy
 from .store import db, dump
 
 COPY_LOCK = threading.Lock()
@@ -29,8 +29,14 @@ def shared_copy(spec):
             writing['kind'] = 'copy'
             try:
                 approved = generate_copy(writing)
-                if approved.get('reviewFlag'):
-                    raise ValueError('文案模型未通过资料复核，请检查文案连接或补充需求后重试。')
+                flag = approved.get("reviewFlag")
+                if flag == "模型调用未完成":
+                    raise ValueError("文案服务未返回有效结果，请检查连接后重试。")
+                if flag:
+                    # Rebuild from verified merchant inputs; never release the rejected draft.
+                    approved = draft_copy(writing)
+                    approved.update(reviewFlag=flag, review=f"{flag}，使用已确认资料重新成稿。",
+                                    attemptedModel=model.route("text")["model"])
                 if locked := LOCKED.search(plan['original']):
                     approved['title'] = locked.group(1)
                 # Exact commercial details remain shared, including all caveats.
@@ -46,7 +52,7 @@ def shared_copy(spec):
                 raise ValueError(summary['copyError']) from exc
             with db(True) as c:
                 c.execute('UPDATE creative_run SET plan=?,title=? WHERE id=?', (dump(summary),approved['title'],run_id))
-    result.update({k:approved[k] for k in ('title','body','cta','engine','review') if k in approved})
+    result.update({k:approved[k] for k in ('title','body','cta','engine','review','writingSkill','reviewFlag','attemptedModel','detailLine') if k in approved})
     role = plan.get('bundleRole')
     if role in ('scene','white','livebackground','box','bag','card'):
         result['title'] = ''
@@ -54,5 +60,5 @@ def shared_copy(spec):
         result['title'] = result.get('offer') or approved['title']
     elif role == 'closing':
         result['title'] = approved['cta'] or approved['title']
-    result['detailLine'] = result['body']
+    result['detailLine'] = result.get('detailLine') or result['body']
     return result

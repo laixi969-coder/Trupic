@@ -75,6 +75,7 @@ Page({
       state: "complete",
       error: "",
       version,
+      densePosterAdvice: work.kind === "poster" && version.n === 1 && version.brief.includes("满屏字"),
       versionIndex: index,
       media: "",
     });

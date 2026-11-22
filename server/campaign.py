@@ -188,6 +188,15 @@ def copy_angle(plan, index, use_social=False):
     if row["latin"] == "BREAK" and "学生" in (brief + plan["audience"]) and index == 0:
         title = "下课铃一响，谁还敢说没空打球？" if use_social else "下课铃响，轮到开球"
         body = "把课表合上，喊上想一起打球的人。先到球桌的那个，来开第一杆。"
+    brief_goal = plan.get("briefGoal", plan.get("goal"))
+    if row["latin"] == "TABLE" and brief_goal == "邀请新客进店":
+        title = ("第一次来，第一筷想涮什么？", "先挑锅底，还是先问同桌？", "把最想吃的那盘放在手边")[index]
+        body = "第一次围上这口锅，先和同桌说说喜欢的口味。照着菜单，挑一盘大家都想动筷的。"
+        reveal, cta = "从桌上最想尝的那一口开始。", "约个饭搭子，一起来选。"
+    elif row["latin"] == "TABLE" and brief_goal == "邀请老客再次到店":
+        title = ("上次那一筷，还记得吗？", "这次换谁先下菜？", "把上回那桌人再叫齐")[index]
+        body = "想一想上回哪一盘最先见底。把名字发到群里，问问那桌老朋友，这次还想涮什么。"
+        reveal, cta = "上回最惦记的是哪一口？", "把这句发给上次同桌的人。"
     if row["latin"] == "SCENT" and "试香" in brief:
         cta = "到店，亲自闻一闻。"
     if row["latin"] == "MARKET" and not OFFER.search(known):

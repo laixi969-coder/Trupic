@@ -41,7 +41,8 @@ from .creative import (
 from .governance import active_rule, discover, run_tests, retrieve_method
 from .media import ROOT, SIZES, inspect_upload, render
 from .store import DATA, audit, db, dump, ident, init, now, secret, tenant_new
-from .topics import weekly
+from . import event_sources, costs
+from .topics import weekly, check_topic
 from .formats import output_spec
 from .design import (
     STYLES,
@@ -58,7 +59,7 @@ from .product_bundle import register as register_bundles
 from .auto_creation import register as register_creations
 from .auto_pipeline import shared_copy
 from .model_tools import register as register_model_tools
-from .skill_library import attach as attach_skills, catalog as skill_library_catalog
+from .skill_library import attach as attach_skills, catalog as skill_library_catalog, effective_versions, manage_version
 from .visual_review import (
     FIDELITY,
     LayoutOverflow,
@@ -608,12 +609,13 @@ def plan_spec(c, t, v):
         if not record:
             raise ValueError("此主题已不可用，请重新选题。")
         item = json.loads(record["item"])
+        check_topic(c, t, item)
         plan["topic"] = {
-            k: item[k] for k in ("title", "week", "basis", "source") if k in item
+            k: item[k] for k in ("title", "week", "basis", "source", "relevance", "recentUses", "eventId", "starts", "ends") if k in item
         }
         plan["topic"]["id"] = topic_id
         source = item["id"]
-    attach_skills(plan, kind)
+    attach_skills(plan, kind, overrides=effective_versions(c, t))
     return dict(
         plan=plan,
         kind=kind,
@@ -689,6 +691,7 @@ def enqueue(t, v, work=None):
                 if s["kind"] == "copy":
                     raise ValueError("纯文案作品无需调整画面版式。")
                 s["plan"]["design"] = layout_alternative(s["plan"], current_copy)
+                s["plan"]["layoutOverride"] = True
                 s["replacement"] = current_copy
             else:
                 s["plan"], suggestion = next_suggestion(s, current_copy)
@@ -711,6 +714,7 @@ def enqueue(t, v, work=None):
                 if q["tenant"] != t:
                     abort(403)
                 s = q["spec"]
+                check_topic(c, t, s["plan"].get("topic"))
                 if s["asset"]:
                     owner(c, "asset", s["asset"], t)
             else:
@@ -766,7 +770,7 @@ def produce(id):
         cp = (
             json.loads(cached_copy)
             if cached_copy
-            else shared_copy(s) if p.get("autoCreation") else s.get("replacement") or generate_copy(p, 0)
+            else shared_copy(s) if p.get("autoCreation") and n == 1 else s.get("replacement") or generate_copy(p, 0)
         )
         if s["kind"] == "video":
             cp["storyboard"] = storyboard(p, cp)
@@ -1051,7 +1055,7 @@ def produce(id):
             )
         if flag := cp.get("reviewFlag"):
             checks.append(
-                {"label": "待抽查", "detail": flag + "，已采用本地规则成稿。"}
+                {"label": "待抽查", "detail": (cp["attemptedModel"] + " · " if cp.get("attemptedModel") else "") + flag + "，已采用本地规则成稿。"}
             )
         if writing := cp.get("writingSkill"):
             checks.append(
@@ -1255,6 +1259,7 @@ def admin_state():
         return jsonify(
             adminAuth={"environmentManaged": bool(os.getenv("TRUPIC_ADMIN_KEY")), "customPassword": admin_credential(c)[1]},
             modelPlatforms={**providers.overview(c), "defaults": {kind:{k:v for k,v in model.default_connection(kind).items() if k in ("url","model")} for kind in providers.KINDS}, "effective": {kind:{k:v for k,v in model.route(kind).items() if k in ("provider","url","model","protocol")} for kind in providers.KINDS}},
+            modelCosts=costs.overview(c),
             modelUsage=[
                 dict(r)
                 for r in c.execute(
@@ -1278,9 +1283,10 @@ def admin_state():
                     """SELECT json_extract(v.spec,'$.plan.ruleId') strategyId,json_extract(v.spec,'$.plan.rule') strategy, COUNT(CASE WHEN e.views>0 AND e.clicks IS NOT NULL THEN 1 END) ctrSamples, ROUND(100.0*SUM(CASE WHEN e.views>0 THEN e.clicks END)/NULLIF(SUM(CASE WHEN e.views>0 AND e.clicks IS NOT NULL THEN e.views END),0),2) ctr,COUNT(*) reports,SUM(e.views) views,SUM(e.clicks) clicks,SUM(e.inquiries) inquiries,SUM(e.visits) visits FROM effect e JOIN version v ON v.work=e.work AND v.n=e.n GROUP BY strategyId,strategy"""
                 )
             ],
+            eventFeeds=[dict(x) for x in c.execute("SELECT id,name,url,city,category,keywords,enabled,checked,error FROM event_feed ORDER BY rowid")],
             events=[
                 dict(x)
-                for x in c.execute("SELECT * FROM event ORDER BY starts DESC LIMIT 50")
+                for x in c.execute("SELECT e.* FROM event e LEFT JOIN event_feed f ON f.id=e.feed_id WHERE e.feed_id IS NULL OR f.enabled=1 ORDER BY (ends >= date('now')) DESC, CASE WHEN ends >= date('now') THEN starts END, starts DESC LIMIT 100")
             ],
             settings={
                 "callsToday": {
@@ -1309,7 +1315,7 @@ def admin_state():
                 "hasKey": bool(cfg["key"]),
                 "engine": model.engine_name(),
             },
-            skills=skill_library_catalog(),
+            skills=skill_library_catalog(c),
             works=works,
             cases=[
                 dict(i)
@@ -1385,6 +1391,28 @@ def admin_action(action):
             c.execute("INSERT INTO admin_auth VALUES(1,?) ON CONFLICT(id) DO UPDATE SET password_hash=excluded.password_hash", (encoded,))
             audit(c, t, "修改管理密码", "")
             session["admin"] = admin_token(encoded)
+        return jsonify(ok=True)
+    if action == "provider-bill":
+        with db(True) as c:
+            costs.reconcile(c, t, v)
+        return jsonify(ok=True)
+    if action == "skill-version":
+        with db(True) as c:
+            manage_version(c, t, v)
+        return jsonify(ok=True)
+    if action == "event-sync":
+        return jsonify(count=event_sources.refresh_source(target, t))
+    if action == "event-feed":
+        with db(True) as c:
+            return jsonify(id=event_sources.add_source(c, t, v))
+    if action == "event-toggle":
+        if type(v.get("enabled")) is not bool:
+            raise ValueError("请选择启用状态。")
+        with db(True) as c:
+            if not c.execute("""UPDATE event_feed SET enabled=?,lease='',due='',checked=NULL WHERE id=?""",
+                             (v["enabled"], target)).rowcount:
+                abort(404)
+            audit(c, t, "启用事件来源" if v["enabled"] else "暂停事件来源", target)
         return jsonify(ok=True)
     if action == "discover":
         return jsonify(count=discover())
@@ -1772,6 +1800,7 @@ def start():
         last_sync = 0
         last_week = None
         while True:
+            event_sources.refresh_due()
             cfg = model.settings()
             week = dt.date.today().isocalendar()[:2]
             if last_week != week:

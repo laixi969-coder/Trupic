@@ -13,7 +13,7 @@ from PIL import Image
 from .store import db, DATA, ident, now, dump
 from .skill_catalog import SKILLS, ROLE_NAMES, VIDEO_ROLES
 from .formats import output_spec
-from .skill_library import attach as attach_skills
+from .skill_library import attach as attach_skills, effective_versions
 
 ROLES = {"hero": "主图", "benefit": "卖点图", "scene": "场景图", "white": "白底图"}
 
@@ -154,6 +154,7 @@ def register(app, services):
                     "fontId": kit.get("font") or "profile",
                 },
             )
+            overrides = effective_versions(c, t)
             asset = json.loads(owner(c, "asset", s["asset"], t)["info"])
         asset["path"] = DATA / t / "assets" / s["asset"] / "subject.png"
         white = qualified_cutout(asset, v.get("assetConfirmed") is True)
@@ -272,7 +273,7 @@ def register(app, services):
                     r"[¥￥]?\d+(?:\.\d+)?元(?:[/／][^，。\s·]+)?", benefits
                 )
                 spec["replacement"]["offer"] = price.group() if price else ""
-            attach_skills(spec["plan"], spec["kind"], workflow=skill)
+            attach_skills(spec["plan"], spec["kind"], workflow=skill, overrides=overrides)
             specs.append(spec)
         note = SKILLS[skill]["description"]
         if skill == "launch":

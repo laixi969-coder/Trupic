@@ -10,7 +10,7 @@ import time
 import urllib.request
 
 from .store import DATA, db, now
-from . import providers
+from . import providers, costs
 
 SETTINGS = DATA / "integrations.json"
 
@@ -126,6 +126,7 @@ def reserve_provider_call(kind):
         ).fetchone()
         if cap is not None and (row[0] if row else 0) >= cap:
             raise ValueError("已达当日外部服务调用上限。")
+        costs.reserve(c, day, kind)
         c.execute(
             """INSERT INTO provider_usage VALUES(?,?,1)
                ON CONFLICT(day,kind) DO UPDATE SET calls=calls+1""",
@@ -173,10 +174,19 @@ def ask(instructions, payload, max_tokens=650):
     return response_object(raw), name
 
 
+class InvalidModelOutput(ValueError):
+    """The service responded, but its generated content failed validation."""
+
+
 def response_object(raw):
-    obj = json.loads(re.sub(r"^\s*```(?:json)?|```\s*$", "", raw.strip()))
+    if not isinstance(raw, str):
+        raise InvalidModelOutput("模型未返回有效对象。")
+    try:
+        obj = json.loads(re.sub(r"^\s*```(?:json)?|```\s*$", "", raw.strip()))
+    except json.JSONDecodeError as exc:
+        raise InvalidModelOutput("模型生成的内容不是有效 JSON。") from exc
     if not isinstance(obj, dict):
-        raise ValueError("模型未返回有效对象。")
+        raise InvalidModelOutput("模型未返回有效对象。")
     return obj
 
 

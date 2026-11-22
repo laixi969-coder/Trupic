@@ -235,8 +235,8 @@ def prepare(brief, profile, history, rule, reference="", facts=""):
         (
             label
             for pattern, label in [
-                ("新客|第一次", "邀请新客进店"),
-                ("复购|回购|老客", "邀请老客再次到店"),
+                ("新客|第一次|首次到店|初次体验", "邀请新客进店"),
+                ("复购|回购|老客|回头客|再次到店", "邀请老客再次到店"),
                 ("知识|科普", "分享实用知识"),
                 ("预订|预约", "引导咨询预约"),
                 ("上新|新品", "介绍新商品"),
@@ -285,6 +285,7 @@ def prepare(brief, profile, history, rule, reference="", facts=""):
         method=method,
         angle=METHODS[method],
         goal=goal,
+        briefGoal=goal,
         audience=audience,
         subject=sc[1],
         reference=match["method"],
@@ -544,6 +545,8 @@ def generate_copy(plan, variant=0):
             "engine": engine,
             "review": str(review.get("reason", "已复核创意与经营事实。"))[:200],
         }
+    except model.InvalidModelOutput:
+        return {**base, "reviewFlag": "模型回复格式异常"}
     except Exception:
         return {
             **base,
@@ -643,6 +646,8 @@ def recommendations(profile, history):
             brief=e[0] + "。" + e[2],
             icon=e[3],
             week=key,
+            recentUses=sum(e[0] in h.get("original", "") for h in history),
+            relevance=f"结合{subject}与{profile.get('audience') or '目标顾客'}的{e[1]}。",
             basis="按本周日历与北半球季节推算，结合商家档案选题。",
         )
         for e in entries

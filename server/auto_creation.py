@@ -14,7 +14,7 @@ from .design import visual_requests
 from .formats import output_spec
 from .product_bundle import qualified_cutout
 from .prompt_agent import optimize
-from .skill_library import attach
+from .skill_library import attach, effective_versions
 from .store import DATA, db, dump, ident, now
 
 LABELS = {"copy": "推广文案", "poster": "营销海报", "hero": "商品主图", "benefit": "卖点图", "scene": "场景图", "white": "白底图", "cover": "小红书封面", "detail": "卖点展开页", "closing": "收尾页", "campaign": "活动海报", "price": "价格图", "banner": "活动横幅", "announcement": "直播预告", "livecover": "直播封面", "livebackground": "直播背景", "overlay": "透明贴片", "motion": "九秒商品短片", "box": "包装盒样机", "bag": "手提袋样机", "card": "品牌卡样机"}
@@ -61,7 +61,7 @@ def route_request(brief):
 def factual_lines(brief, extra, profile):
     """Keep user-provided product facts, excluding requests and sample instructions."""
     values = []
-    for text in (profile.get("facts", ""), extra, brief):
+    for text, confirmed in ((profile.get("facts", ""), True), (extra, True), (brief, False)):
         for clause in re.split(r"[。；;\n，,]", text):
             clause = clause.strip(" ·")
             if not clause or LOCKED.search(clause):
@@ -72,7 +72,9 @@ def factual_lines(brief, extra, profile):
                 continue
             if re.search(r"(?:秒|[:：]\d+|像素|分辨率|画幅).*(?:短片|视频|海报|组图)|^(?:横版|竖屏|方形|\d+[:：]\d+)$", clause):
                 continue
-            if re.search(r"\d|搭配|材质|配料|成分|可拆|冲调|尺寸|规格|开播|仅限|不与|售后|保修|口味|适用|不限|全店|全场|同享|不叠加|无其他限制|今天|明天|本周|周末|长期|买.{1,4}送", clause):
+            if not confirmed and re.search(r"策划|做一份|写一[条份封段]|设计一[次份张]|做[一张套].*(?:宣传|海报|视频|邀约)|面向.*(?:宣传|内容)|请勿|给.*做|仅要|只要|做促销", clause):
+                continue
+            if confirmed or re.search(r"\d|搭配|材质|配料|成分|可拆|冲调|尺寸|规格|开播|仅限|不与|售后|保修|口味|适用|不限|全店|全场|同享|不叠加|无其他限制|今天|明天|本周|周末|长期|买.{1,4}送", clause):
                 values.append(clause)
     return list(dict.fromkeys(values))
 
@@ -84,17 +86,25 @@ def coordinate(services, c, tenant, v):
     route = route_request(brief)
     if route.get("unsupported"):
         return dict(ready=False, message=route["unsupported"], questions=[])
-    if not v.get("asset"):
-        return dict(ready=False, message="先上传一张商品图。", questions=[])
-    asset_row = services["owner"](c, "asset", v["asset"], tenant)
-    asset = json.loads(asset_row["info"])
-    if asset["risk"]:
-        return dict(ready=False, message="这张图片清晰度不足，请换一张能看清商品的照片。", questions=[])
+    asset_id = services["string"](v.get("asset"), 60)
+    asset = json.loads(services["owner"](c, "asset", asset_id, tenant)["info"]) if asset_id else {}
+    roles = list(route["roles"])
+    visual = roles != ["copy"]
+    fidelity = visual and services["FIDELITY"].search(brief)
+    confirmed = v.get("assetConfirmed") is True
+    if not asset and (fidelity or route["workflow"] in ("launch", "mockup", "live")):
+        return dict(ready=False, message="请上传能看清商品外观与标识的照片。", questions=[])
+    if visual and asset.get("risk"):
+        return dict(ready=False, message=asset["detail"], questions=[])
+    if fidelity and not (v.get("identityRegion") and confirmed):
+        return dict(ready=False, message="请核对商品素材，框选要保真的标识或包装文字并确认。", questions=[])
+    if visual and asset.get("action") == "主体抠图" and not asset.get("suppliedTransparency") and not confirmed:
+        return dict(ready=False, message="请核对商品素材，确认抠图轮廓，或选择使用原图。", questions=[])
     profile = json.loads(c.execute("SELECT profile FROM merchant WHERE id=?", (tenant,)).fetchone()[0])
     lines = factual_lines(brief, extra, profile)
     facts = "；".join(lines)
     questions = []
-    if route["workflow"] == "promotion":
+    if route["workflow"] == "promotion" or re.search(r"促销|优惠|折扣|满减", visual_requests(brief)):
         if not re.search(r"\d+(?:\.\d+)?\s*(?:元|折)|[￥¥]\s*\d|买.{1,4}送|满.{1,6}减", facts):
             questions.append("请补充实际价格或优惠内容。")
         if not re.search(r"\d+月\d+日|\d{4}[-/]\d|周[一二三四五六日末]|今天|明天|本周|长期", facts):
@@ -109,18 +119,27 @@ def coordinate(services, c, tenant, v):
     kit = json.loads(kit_row[0]) if kit_row else {}
     if kit.get("logo"):
         services["owner"](c, "asset", kit["logo"], tenant)
-    # Full original is always safe to use. Only supplied transparency is eligible
-    # for automatic cutout use; machine-extracted masks still need human review.
-    asset["path"] = DATA / tenant / "assets" / v["asset"] / "subject.png"
-    cutout = bool(asset.get("suppliedTransparency")) and qualified_cutout(asset, True)
-    roles = list(route["roles"])
+    cutout = False
+    mode = "original"
+    if asset and v.get("assetMode") != "original":
+        asset["path"] = DATA / tenant / "assets" / asset_id / "subject.png"
+        cutout = qualified_cutout(asset, confirmed or bool(asset.get("suppliedTransparency")))
+        if cutout:
+            mode = "cutout"
+        elif asset["file"] == "adjusted.png":
+            mode = "processed"
     if "white" in roles and not cutout:
         return dict(ready=False, message="制作白底图需要合格的透明底商品图，请更换图片；也可以先制作主图、卖点图或海报。", questions=[])
     if route["workflow"] == "launch" and cutout and all(role in roles for role in ("hero", "benefit", "scene")) and "white" not in roles:
         roles.insert(roles.index("scene") + 1, "white")
-    common_request = dict(brief=brief, facts=facts, kind="poster", asset=v["asset"], assetMode="cutout" if cutout else "original", assetConfirmed=True, ratio="portrait", resolution=1080, lettering="off", fontId=kit.get("font") or "profile")
-    if services["FIDELITY"].search(brief):
-        common_request["identityRegion"] = [0, 0, 1, 1]
+    common_request = dict(
+        brief=brief, facts=facts, kind="poster" if visual else "copy", asset=asset_id,
+        assetMode=mode, assetConfirmed=confirmed or bool(asset.get("suppliedTransparency") and not fidelity and not v.get("identityRegion")),
+        identityRegion=v.get("identityRegion"), ratio="portrait", resolution=1080,
+        lettering=v.get("lettering") or "off", posterStyle=v.get("posterStyle") or "auto",
+        fontId=v.get("fontId") or kit.get("font") or "profile",
+        topicId=v.get("topicId"), source=v.get("source"), reference=v.get("reference"),
+    )
     base = services["plan_spec"](c, tenant, common_request)
     if kit.get("name"):
         base["plan"]["profile"]["name"] = kit["name"]
@@ -132,8 +151,10 @@ def coordinate(services, c, tenant, v):
     cp["title"] = locked.group(1) if locked else cp["title"]
     if not locked and "抹茶" in brief + product and "牛奶" in facts:
         cp["title"] = "给牛奶加一点" + (kit.get("name") or profile.get("name") or "抹茶")
-    cp["body"] = "；".join(lines) if lines else product + "，看看商品的细节。"
-    cp["cta"] = "查看商品规格" if not re.search(r"不要行动|不需要行动|不加引导", brief) else ""
+    if lines:
+        cp["body"] = "；".join(lines)
+    if re.search(r"不要行动|不需要行动|不加引导", brief):
+        cp["cta"] = ""
     cp["detailLine"] = cp["body"]
     cp["terms"] = "；".join(line for line in lines if re.search(r"仅限|适用|不与|同享|不叠加|月\d+日|周末|长期", line)) if route["workflow"] == "promotion" else ""
     cp["offer"] = ""
@@ -142,8 +163,9 @@ def coordinate(services, c, tenant, v):
         cp["offer"] = price.group()
     cp["review"] = "文案、画面与分镜共用本次商品资料；原图像素和成品文字在导出后复检。"
     shared_id = ident()
-    common = dict(id=shared_id, product=product, request=brief, facts=lines, title=cp["title"], body=cp["body"], cta=cp["cta"], terms=cp["terms"], offer=cp["offer"], concept=base["plan"].get("posterArt",{}).get("concept",""), sourceAsset=v["asset"], brand=kit, roles=roles)
+    common = dict(id=shared_id, product=product, request=brief, facts=lines, title=cp["title"], body=cp["body"], cta=cp["cta"], terms=cp["terms"], offer=cp["offer"], concept=base["plan"].get("posterArt",{}).get("concept",""), sourceAsset=asset_id, brand=kit, roles=roles)
     specs=[]
+    overrides = effective_versions(c, tenant)
     for role in roles:
         spec=copy.deepcopy(base)
         kind="copy" if role=="copy" else "video" if role=="motion" else "poster"
@@ -156,7 +178,7 @@ def coordinate(services, c, tenant, v):
         p=spec["plan"]
         p.update(kind=kind,autoCreation=True,coordination=common,brandKit=kit)
         p["output"]=output_spec(kind,ratio,720 if kind=="video" else 1080)
-        attach(p,kind,workflow=route["workflow"])
+        attach(p,kind,workflow=route["workflow"], overrides=overrides)
         # Recompile the visual brief for each output, retaining the shared facts
         # and exact copy. No model/API calls are needed for this path.
         optimize(spec,infer=False)
@@ -173,7 +195,7 @@ def coordinate(services, c, tenant, v):
             spec["replacement"]["storyboard"]=storyboard(p,spec["replacement"])
         specs.append(dict(role=role,label=LABELS[role],spec=spec))
     from . import model
-    notes = ["商品与文字保留原图及已确认资料。"]
+    notes = ["已采用商家提供的商品图与资料。" if asset else "根据经营需求与已确认资料创作，配图使用示意场景或文字构图。"]
     if model.route("text")["model"]:
         notes.append("文案由后台所选模型制作，并统一用于图片和短片。")
     if "motion" in roles:
@@ -193,7 +215,11 @@ def register(app, services):
             spec=json.loads(job["spec"])
             base=f"/api/works/{job['work']}/v/{job['version']}"
             done=job["state"]=="complete"
-            cp=json.loads(job["copy_checkpoint"]) if job["copy_checkpoint"] else spec["replacement"]
+            if done:
+                cp = json.loads(c.execute("SELECT copy FROM version WHERE work=? AND n=?",
+                                          (job["work"], job["version"])).fetchone()[0])
+            else:
+                cp = json.loads(job["copy_checkpoint"]) if job["copy_checkpoint"] else spec["replacement"]
             items.append({**item,"kind":spec["kind"],"state":job["state"],"error":job["error"],"work":job["work"],"preview":base+"/poster" if done and spec["kind"]!="copy" else None,"video":base+"/video" if done and spec["kind"]=="video" else None,"text":"\n\n".join(cp[k] for k in ("title","body","cta") if cp.get(k)) if done and spec["kind"]=="copy" else None,"download":base+"/download" if done else None})
         complete=all(i["state"]=="complete" for i in items)
         return dict(id=row["id"],requestKey=row["request_key"],title=row["title"],brief=row["brief"],created=row["created"],items=items,complete=complete,active=any(i["state"] in ("queued","running") for i in items),download=f"/api/creations/{row['id']}/download",summary=json.loads(row["plan"]))
@@ -212,20 +238,40 @@ def register(app, services):
         t,v=tenant(),services["body"]()
         key=services["string"](v.get("requestKey"),90)
         if not key: raise ValueError("缺少请求标识，请刷新后重试。")
-        ids=[]
+        with db() as c:
+            old = c.execute("SELECT * FROM creative_run WHERE tenant=? AND request_key=?", (t, key)).fetchone()
+            if old:
+                return jsonify(details(c, old))
+            try:
+                q = quotes.loads(v.get("quote", ""), max_age=1800)
+            except BadSignature:
+                raise ValueError("方案已过期，请稍后重新开始创作。")
+            if not q.get("autoCreation") or q["tenant"] != t:
+                abort(403)
+            if type(v.get("confirmedCost")) is not int or v["confirmedCost"] != q["cost"]:
+                raise ValueError("创作费用已更新，请查看按钮旁的积分后重试。")
+            services["enough"](c, t, q["cost"])
+            visual_spec = next((e["spec"] for e in q["items"] if e["spec"]["kind"] != "copy"), None)
+            if visual_spec and visual_spec["asset"]:
+                owner(c, "asset", visual_spec["asset"], t)
+        if visual_spec and visual_spec["asset"]:
+            services["preflight"](visual_spec, DATA / t / "assets")
+            if review := visual_spec["plan"].get("sourceReview"):
+                for entry in q["items"]:
+                    entry["spec"]["plan"]["sourceReview"] = review
+        ids = []
         with db(True) as c:
-            old=c.execute("SELECT * FROM creative_run WHERE tenant=? AND request_key=?",(t,key)).fetchone()
-            if old: return jsonify(details(c,old))
-            try: q=quotes.loads(v.get("quote",""),max_age=1800)
-            except BadSignature: raise ValueError("方案已过期，请稍后重新开始创作。")
-            if not q.get("autoCreation") or q["tenant"]!=t: abort(403)
-            if v.get("confirmedCost")!=q["cost"]: raise ValueError("创作费用已更新，请查看按钮旁的积分后重试。")
-            services["enough"](c,t,q["cost"])
+            old = c.execute("SELECT * FROM creative_run WHERE tenant=? AND request_key=?", (t, key)).fetchone()
+            if old:
+                return jsonify(details(c, old))
+            services["enough"](c, t, q["cost"])
+            services["check_topic"](c, t, q["items"][0]["spec"]["plan"].get("topic"))
             rid=ident(); items=[]
             for entry in q["items"]:
                 spec=entry["spec"]
                 spec["plan"]["creationRun"]=rid
-                owner(c,"asset",spec["asset"],t)
+                if spec["asset"]:
+                    owner(c, "asset", spec["asset"], t)
                 jid,wid=ident(),ident()
                 c.execute("INSERT INTO job(id,tenant,request_key,spec,state,cost,work,version,error,created)VALUES(?,?,?,?,?,?,?,?,?,?)",(jid,t,f"auto:{rid}:{entry['role']}",dump(spec),"queued",services["COST"][spec["kind"]],wid,1,None,now()))
                 items.append(dict(job=jid,role=entry["role"],label=entry["label"]))
@@ -262,5 +308,8 @@ def register(app, services):
                     archive.write(path,f"{n:02d}-{item['label']}{path.suffix}")
                     for optional in ("edit.zip","open-design.zip") if item["kind"]=="video" else ():
                         if (folder/optional).is_file(): archive.write(folder/optional,f"{n:02d}-{item['label']}-{optional}")
+                    c.execute("""INSERT INTO downloads VALUES(?,?,1)
+                                 ON CONFLICT(work,n) DO UPDATE SET count=count+1""",
+                              (job["work"], job["version"]))
         stream.seek(0)
         return send_file(stream,mimetype="application/zip",as_attachment=True,download_name="创作成品.zip")

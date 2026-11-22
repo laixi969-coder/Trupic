@@ -18,6 +18,18 @@ def active_rule(c, tenant):
     return dict(id="baseline", name="创意策略 v1", method="moment")
 
 
+# Business intent can transfer between industries and media.
+INTENTS = (
+    ("新客", "首次到店", "第一次来", "初次体验", "拉新"),
+    ("老客", "老顾客", "复购", "回头客", "再次到店"),
+    ("上新", "新品", "新款", "新口味", "上市"),
+    ("预约", "预订", "订位", "订座"),
+    ("聚餐", "组局", "相聚", "聚会"),
+    ("午休", "午间", "午餐时间"),
+    ("特写", "微距", "近景", "放大细节"),
+)
+
+
 def retrieve_method(c, brief, profile):
     context = " ".join(
         [brief, *(profile.get(k, "") for k in ("product", "industry", "audience"))]
@@ -33,7 +45,10 @@ def retrieve_method(c, brief, profile):
             if len(s) >= 2
         }
         matched = sorted(s for s in terms if s in context)
-        score = sum(len(s) for s in matched)
+        related = [word for word in sorted(terms - set(matched))
+                   if any(word in group and any(alias in context for alias in group) for group in INTENTS)]
+        score = 2 * sum(len(s) for s in matched) + sum(len(s) for s in related)
+        matched.extend(related)
         if score > best_score:
             best_score = score
             best = {**dict(row), "matched": matched}
@@ -113,6 +128,18 @@ def run_tests(rule):
     return output
 
 
+def reference_kind(node):
+    types = [e.get("type", "") for e in node.iter()]
+    if any(t.startswith("video/") for t in types):
+        return "视频"
+    if any(t.startswith("image/") for t in types):
+        return "图片"
+    title = node.findtext("{*}title") or ""
+    if re.search(r"视频|短片|镜头|video|film", title, re.I):
+        return "视频"
+    return "图片" if re.search(r"海报|摄影|构图|配色|poster|photo|design", title, re.I) else "文案"
+
+
 def discover_feed():
     # Sources are operator-configured feeds with explicit use conditions; only metadata is retained.
     cfg = settings()
@@ -133,7 +160,7 @@ def discover_feed():
     with db(True) as c:
         for node in entries[:16]:
             title = (node.findtext("{*}title") or "").strip()
-            link = node.find("{*}link")
+            link = next((link for link in node.findall("{*}link") if link.get("rel", "alternate") == "alternate"), None)
             source = (
                 (link.text or link.get("href", "")).strip() if link is not None else ""
             )
@@ -149,7 +176,7 @@ def discover_feed():
                     title[:150],
                     source[:1000],
                     license[:200],
-                    "图片",
+                    reference_kind(node),
                     "优秀案例",
                     extracted_method(title, node.findtext("{*}description") or ""),
                     "",

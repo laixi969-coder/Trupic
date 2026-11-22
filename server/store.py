@@ -73,6 +73,8 @@ def init():
         CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY,tenant TEXT NOT NULL,job TEXT UNIQUE,delta INTEGER NOT NULL,note TEXT NOT NULL,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS topics(tenant TEXT,week TEXT,signature TEXT,items TEXT,updated TEXT,PRIMARY KEY(tenant,week));
         CREATE TABLE IF NOT EXISTS topic_record(tenant TEXT,id TEXT,item TEXT NOT NULL,first_work TEXT,PRIMARY KEY(tenant,id));
+        CREATE TABLE IF NOT EXISTS provider_reserve(day TEXT PRIMARY KEY,amount INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS provider_bill(day TEXT,platform TEXT,model TEXT,kind TEXT,currency TEXT,amount INTEGER NOT NULL,source TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(day,platform,model,kind,currency));
         CREATE TABLE IF NOT EXISTS provider_usage(day TEXT,kind TEXT,calls INTEGER NOT NULL,PRIMARY KEY(day,kind));
         CREATE TABLE IF NOT EXISTS model_provider(id TEXT PRIMARY KEY,url TEXT NOT NULL,key TEXT NOT NULL,text TEXT NOT NULL,vision TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS model_route(kind TEXT PRIMARY KEY,platform TEXT NOT NULL);
@@ -85,6 +87,8 @@ def init():
         CREATE TABLE IF NOT EXISTS review(work TEXT NOT NULL,n INTEGER NOT NULL,rating TEXT,tags TEXT,metrics TEXT,created TEXT,PRIMARY KEY(work,n));
         CREATE TABLE IF NOT EXISTS cases(id TEXT PRIMARY KEY,title TEXT,source TEXT UNIQUE,license TEXT,kind TEXT,category TEXT,lesson TEXT,issue TEXT,status TEXT,created TEXT);
         CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,name TEXT,method TEXT,reason TEXT,tests TEXT,status TEXT,percent INTEGER,created TEXT);
+        CREATE TABLE IF NOT EXISTS skill_version(skill TEXT NOT NULL,n INTEGER NOT NULL,instructions TEXT NOT NULL,reason TEXT NOT NULL,tests TEXT NOT NULL,status TEXT NOT NULL,created TEXT NOT NULL,published TEXT,PRIMARY KEY(skill,n));
+        CREATE UNIQUE INDEX IF NOT EXISTS skill_active_version ON skill_version(skill,status) WHERE status IN ('pilot','live');
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor TEXT,action TEXT,target TEXT,created TEXT);
         """)
         for table, column, datatype in (
@@ -97,12 +101,17 @@ def init():
             ("job", "copy_checkpoint", "TEXT"),
             ("job", "visual_review", "TEXT"),
             ("rules", "retrievable", "INTEGER NOT NULL DEFAULT 0"),
+            ("event", "is_news", "INTEGER NOT NULL DEFAULT 0"),
+            ("event", "feed_id", "TEXT"),
+            ("event", "keywords", "TEXT NOT NULL DEFAULT ''"),
             ("event", "category", "TEXT NOT NULL DEFAULT '本地活动'"),
         ):
             if column not in [
                 r["name"] for r in c.execute(f"PRAGMA table_info({table})")
             ]:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}")
+        from .event_sources import init_sources
+        init_sources(c)
         if not c.execute("SELECT 1 FROM rules LIMIT 1").fetchone():
             c.execute(
                 "INSERT INTO rules(id,name,method,reason,tests,status,percent,created) VALUES(?,?,?,?,?,?,?,?)",

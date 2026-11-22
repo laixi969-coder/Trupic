@@ -11,7 +11,7 @@
   <view class="note">换个开场：{{version.suggestion.title}}</view>
   <button class="secondary" data-action="revision" bindtap="revise" disabled="{{busy}}">应用文案建议</button>
   <block wx:if="{{version.layoutSuggestion}}">
-    <view class="note">{{version.layoutSuggestion.intent}}</view>
+    <view class="note">{{densePosterAdvice ? '把主标题和正文分开排，保留原文和原版供对照。' : version.layoutSuggestion.intent}}</view>
     <button class="secondary" data-action="layout" bindtap="revise" disabled="{{busy}}">应用{{version.layoutSuggestion.name}}版式</button>
   </block>
   <button class="link" data-action="redesign" bindtap="revise" disabled="{{busy}}">换个创意</button>
@@ -21,7 +21,7 @@
   <view wx:if="{{work.kind!=='copy'}}"><view class="label">检查记录</view>
 <view wx:for="{{version.quality}}" wx:key="label" class="note">{{item.label}} · {{item.detail}}</view></view>
   <view class="label">原始需求</view><text selectable>{{version.brief}}</text>
-  <view wx:if="{{version.plan.topic}}" class="note">本周主题 · {{version.plan.topic.title}}</view>
+  <view wx:if="{{version.plan.topic}}" class="note">本周主题 · {{version.plan.topic.title}}。{{version.plan.topic.basis}}{{version.plan.topic.relevance}}<text selectable="{{true}}" wx:if="{{version.plan.topic.source}}"> 来源 {{version.plan.topic.source}}</text></view>
   <picker wx:if="{{versionLabels.length > 1}}" range="{{versionLabels}}" value="{{versionIndex}}" disabled="{{busy}}" bindchange="selectVersion">
     <view class="line between"><text>版本对照</text><text>{{versionLabels[versionIndex]}}　›</text></view>
   </picker>

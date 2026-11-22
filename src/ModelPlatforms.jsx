@@ -3,7 +3,7 @@ import { api, Field } from "./ui.jsx";
 
 const kinds = [["text", "策划与文案"], ["image", "图片生成"], ["video", "视频生成"], ["vision", "商品与成品视觉审核"]];
 const descriptions = {text: "写标题、卖点和短片脚本，只需要文本模型。", image: "生成图片环境，商品原图与准确文案在本地合成。", video: "生成动态环境，再合成商品原图、三镜字幕和配乐。", vision: "接收图片，检查商品与成品；不是图片生成模型。"};
-const protocols = {chat: "Chat Completions", images: "Images Generations（同步图片）", "ark-video": "方舟视频任务（异步）"};
+const protocols = {chat: "Chat Completions", images: "Images Generations（同步图片）", "ark-video": "方舟视频任务", "dashscope-video": "百炼异步文生视频", "atlas-video": "Atlas 视频预测任务"};
 const localLabels = {text:"本地文案规则",image:"本地商品排版",video:"本地镜头运动",vision:"本地像素与文字检查"};
 
 function Connection({ kind, platform, busy, act }) {
@@ -50,7 +50,7 @@ function Connection({ kind, platform, busy, act }) {
   return <form className="formpanel integration" onSubmit={async e => {e.preventDefault(); if (await act("model-platform",form)) set({...form,key:"",clearKey:false});}}>
     <h3>{platform.label} · {kinds.find(k => k[0] === kind)[1]}</h3>
     {platform.id.startsWith("custom-") && <Field label="连接名称" name="label" form={form} set={set} required limit={60} />}
-    <label className="field">接口协议<select value={form.protocol} onChange={e => set({...form,protocol:e.target.value})}><option value={form.protocol}>{protocols[form.protocol]}</option></select></label>
+    <label className="field">接口协议<select value={form.protocol} onChange={e => set({...form,protocol:e.target.value})}>{(kind === "video" && platform.id.startsWith("custom") ? ["ark-video","dashscope-video","atlas-video"] : [configured.protocol]).map(id => <option key={id} value={id}>{protocols[id]}</option>)}</select></label>
     <Field label="此能力的完整 API 地址" name="url" form={form} set={set} required limit={1200} placeholder={kind === "video" ? "https://…/contents/generations/tasks" : kind === "image" ? "https://…/images/generations" : "https://…/chat/completions"} />
     <details className="original"><summary>模型列表接口（可选）</summary><Field label="Models API 完整地址" name="modelsUrl" form={form} set={set} limit={1200} placeholder="留空按当前平台地址推导，必须与调用地址同源" /></details>
     <div className="model-tests"><button type="button" className="secondary" disabled={busy||syncing||probeBusy||!form.url} onClick={sync}>{syncing?"正在同步…":"同步最新模型"}</button><small>{visibleCatalog ? "上次同步："+new Date(catalog.updated).toLocaleString() : "尚未同步该连接的模型目录"}</small></div>
@@ -66,7 +66,23 @@ function Connection({ kind, platform, busy, act }) {
   </form>;
 }
 
-export default function ModelPlatforms({config,usage,busy,act}) {
+function ProviderCosts({ costs, act, busy }) {
+  const initial = { day: new Date().toISOString().slice(0,10), kind:"text", currency:"CNY" };
+  const [bill, setBill] = useState(initial);
+  return <details className="formpanel"><summary>模型预算与账单</summary>
+    <p>{costs.limit == null ? "当前未设置每日金额上限。" : `今日已预留 ${costs.reserved} / ${costs.limit} 元（UTC）。`}</p>
+    <form onSubmit={async e => {e.preventDefault(); if (await act("provider-bill",bill)) setBill(initial);}}>
+      <p>按供应商账单录入当日合计。同日、平台、模型、用途及币种相同的记录可重新核对。</p>
+      <label className="field">账单日期（UTC）<input type="date" required value={bill.day} onChange={e => setBill({...bill,day:e.target.value})}/></label>
+      <label className="field">用途<select value={bill.kind} onChange={e => setBill({...bill,kind:e.target.value})}>{kinds.map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+      {[["platform","平台",80],["model","模型",180],["currency","币种代码",3],["amount","账单金额",30],["source","账单编号或核对来源",220]].map(([key,label,size]) => <Field key={key} name={key} label={label} limit={size} required form={bill} set={setBill} />)}
+      <button className="secondary" disabled={busy}>保存核对金额</button>
+    </form>
+    {costs.bills.map(b => <p key={JSON.stringify([b.day,b.platform,b.model,b.kind,b.currency])}>{b.day} · {b.platform} / {b.model} · {kinds.find(([id])=>id===b.kind)?.[1]} · {b.amount} {b.currency} · {b.source}</p>)}
+  </details>;
+}
+
+export default function ModelPlatforms({config,usage,costs,busy,act}) {
   const {platforms,routes} = config;
   const [selection,select] = useState(Object.fromEntries(kinds.map(([k])=>[k,routes[k]||""])));
   const [kind,chooseKind] = useState("text");
@@ -93,9 +109,10 @@ export default function ModelPlatforms({config,usage,busy,act}) {
     <div className="adminnav">{kinds.map(([k,label])=><button key={k} className={k===kind?"sel":""} onClick={()=>chooseKind(k)}>{label}</button>)}</div>
     <label className="field">{kinds.find(k=>k[0]===kind)[1]}平台<select aria-label="配置平台" value={selected.id} onChange={e=>chooseId({...ids,[kind]:e.target.value})}>{available.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
     {kind!=="text"&&<p className="fineprint">仅列出 Trupic 当前已接入此能力的连接类型。DeepSeek 的文案连接不用于生图、视频或图片审核。</p>}
-    {kind==="video"&&<p className="fineprint">目前云端视频支持方舟异步任务协议；其他协议需要对应适配器，不能直接填入文案接口。</p>}
+    {kind==="video"&&<p className="fineprint">选择已开通的文生视频模型。方舟、百炼与 Atlas 分别使用各自的异步任务接口。</p>}
     <button type="button" className="secondary" disabled={busy} onClick={()=>{const p={id:"custom-"+crypto.randomUUID().replaceAll("-",""),label:"新增兼容连接",supported:[kind],connections:{[kind]:{url:"",model:"",hasKey:false,protocol:kind==="video"?"ark-video":kind==="image"?"images":"chat"}}};setDraft(p);chooseId({...ids,[kind]:p.id});}}>新增兼容连接</button>
     <Connection key={selected.id+kind} kind={kind} platform={selected} busy={busy} act={act} />
+    {costs && <ProviderCosts costs={costs} act={act} busy={busy} />}
     <h2>今日模型调用</h2><small>UTC · 未配置的能力使用本地处理</small>
     {!usage.length&&<p className="muted">今天还没有模型请求记录。</p>}
     {usage.map(row=><div className="reviewrow" key={[row.platform,row.model,row.kind].join("/")}><strong>{platforms.find(p=>p.id===row.platform)?.label||"默认连接"} · {row.model}</strong><p>{kinds.find(k=>k[0]===row.kind)?.[1]||row.kind} · 请求 {row.calls} 次 · 成功 {row.succeeded} 次 · 平均 {(row.meanMs/1000).toFixed(1)} 秒</p><small>输入 token：{row.inputTokens??"未返回"}；输出 token：{row.outputTokens??"未返回"}</small></div>)}

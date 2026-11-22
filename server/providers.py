@@ -23,13 +23,20 @@ PRESETS = {
 KINDS = ("text", "vision", "image", "video")
 # This is the capability scope of our adapters, not a promise about every model
 # hosted by a vendor. Custom connections still require an explicit capability.
-SUPPORTED = {"deepseek": ("text",), "local": ("text", "vision"), "bailian": ("text", "vision", "image"), "atlas": ("text", "vision", "image"), "ark": KINDS, "custom": KINDS}
-PROTOCOLS = {"text": ("chat",), "vision": ("chat",), "image": ("images",), "video": ("ark-video",)}
-DEFAULT_URLS = {("ark", "image"): "https://ark.cn-beijing.volces.com/api/v3/images/generations", ("ark", "video"): "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"}
+SUPPORTED = {"deepseek": ("text",), "local": ("text", "vision"), "bailian": KINDS, "atlas": KINDS, "ark": KINDS, "custom": KINDS}
+PROTOCOLS = {"text": ("chat",), "vision": ("chat",), "image": ("images",), "video": ("ark-video","dashscope-video","atlas-video")}
+DEFAULT_VIDEO = {"ark":"ark-video", "bailian":"dashscope-video", "atlas":"atlas-video"}
+DEFAULT_URLS = {("atlas","video"): "https://api.atlascloud.ai/api/v1/model/generateVideo", ("bailian","video"): "https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis", ("ark", "image"): "https://ark.cn-beijing.volces.com/api/v3/images/generations", ("ark", "video"): "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"}
 
 
 def supported(platform):
     return SUPPORTED.get(platform, KINDS)
+
+
+def protocols_for(platform, kind):
+    if kind == "video" and platform in DEFAULT_VIDEO:
+        return (DEFAULT_VIDEO[platform],)
+    return PROTOCOLS[kind]
 
 
 def capability(record, kind):
@@ -58,8 +65,8 @@ def save_capability(c, actor, payload):
             raise ValueError("接口配置字段无效。")
         return value.strip()
     url, model, key = field("url", 1200), field("model", 180), field("key", 2400)
-    protocol = payload.get("protocol", PROTOCOLS[kind][0])
-    if protocol not in PROTOCOLS[kind]:
+    protocol = payload.get("protocol", protocols_for(platform, kind)[0])
+    if protocol not in protocols_for(platform, kind):
         raise ValueError("接口协议与用途不匹配。")
     if model:
         safe_url(url)
@@ -114,7 +121,7 @@ def overview(c):
         record = records.get(platform, dict(id=platform, label=label, url=url, key="", text="", vision=""))
         connections = {}
         for kind in supported(platform):
-            cfg = capability(record, kind) or dict(url=DEFAULT_URLS.get((platform,kind), url if kind in ("text","vision") else ""), model="",key="",protocol=PROTOCOLS[kind][0])
+            cfg = capability(record, kind) or dict(url=DEFAULT_URLS.get((platform,kind), url if kind in ("text","vision") else ""), model="",key="",protocol=protocols_for(platform, kind)[0])
             connections[kind] = {k:v for k,v in cfg.items() if k != "key"} | {"hasKey":bool(cfg.get("key"))}
             cached = c.execute("SELECT data,updated FROM model_catalog WHERE platform=? AND kind=? AND signature=?",(platform,kind,catalog_signature(cfg))).fetchone()
             if cached:
@@ -239,8 +246,8 @@ def candidate(payload, require_model=True):
         cfg["key"] = previous["key"]
     if payload.get("clearKey"):
         cfg["key"] = ""
-    cfg["protocol"] = payload.get("protocol",PROTOCOLS[kind][0])
-    if cfg["protocol"] not in PROTOCOLS[kind]:
+    cfg["protocol"] = payload.get("protocol",protocols_for(platform, kind)[0])
+    if cfg["protocol"] not in protocols_for(platform, kind):
         raise ValueError("接口协议与能力不匹配。")
     if require_model and not cfg["model"]:
         raise ValueError("请先填写或同步选择模型。")

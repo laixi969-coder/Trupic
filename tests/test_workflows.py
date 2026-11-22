@@ -74,6 +74,305 @@ class WorkflowTests(unittest.TestCase):
         q = response.json
         return q, dict(quote=q["quote"], confirmed=True, confirmedCost=q["cost"], requestKey=uuid.uuid4().hex)
 
+    def test_home_brief_without_photo_revision_and_adoption(self):
+        q = post(self.c, "creations/plan", brief="帮我宣传台球室").json
+        self.assertTrue(q["ready"], q)
+        self.assertEqual(q["cost"], 4)
+        topic = self.state()["recs"][0]
+        q = post(self.c, "creations/plan", brief=topic["brief"], topicId=topic["topicId"]).json
+        run = post(self.c, "creations", confirmedCost=q["cost"], quote=q["quote"], requestKey=uuid.uuid4().hex).json
+        for item in run["items"]:
+            self.assertEqual(self.finish(item["job"])["state"], "complete")
+        poster = run["items"][1]["work"]
+        initial = self.c.get("/api/works/" + poster).json["versions"][0]
+        self.assertEqual(initial["plan"]["topic"]["id"], topic["topicId"])
+        self.assertNotIn("商品规格", initial["cta"])
+        for action in ("revision", "layout", "redesign"):
+            result = post(self.c, "works/" + poster + "/revise", base=1, action=action, requestKey=uuid.uuid4().hex)
+            done = self.finish(result.json["id"])
+            self.assertEqual(done["state"], "complete", done)
+            latest = self.c.get("/api/works/" + poster).json["versions"][0]
+            if action == "revision":
+                self.assertEqual(latest["title"], initial["suggestion"]["title"])
+            if action == "layout":
+                self.assertEqual(latest["body"], initial["body"])
+        self.assertTrue(next(r for r in self.state()["recs"] if r["topicId"] == topic["topicId"])["adopted"])
+        with self.c.get(run["download"]) as downloaded:
+            self.assertEqual(downloaded.status_code, 200)
+        with studio.db() as c:
+            self.assertTrue(all(c.execute("SELECT count FROM downloads WHERE work=?", (i["work"],)).fetchone()[0] == 1 for i in run["items"]))
+        self.assertEqual(self.state()["credits"], 116)
+
+    def test_dense_poster_can_apply_layout_without_losing_original_or_copy(self):
+        brief = "给台球室做一张满屏字海报，约朋友下班组局。"
+        quote = post(self.c, "creations/plan", brief=brief).json
+        run = post(self.c, "creations", quote=quote["quote"], confirmedCost=quote["cost"], requestKey=uuid.uuid4().hex).json
+        poster = next(item for item in run["items"] if item["role"] == "poster")
+        self.assertEqual(self.finish(poster["job"])["state"], "complete")
+        url = "works/" + poster["work"]
+        version = self.c.get("/api/" + url).json["versions"][0]
+        with self.c.get(version["poster"]) as response:
+            before = response.data
+        revision = post(self.c, url + "/revise", base=1, action="layout", requestKey=uuid.uuid4().hex).json
+        self.assertEqual(self.finish(revision["id"])["state"], "complete")
+        latest, original = self.c.get("/api/" + url).json["versions"]
+        self.assertEqual((latest["title"], latest["body"]), (original["title"], original["body"]))
+        with self.c.get(latest["poster"]) as response:
+            self.assertNotEqual(response.data, before)
+        self.assertEqual(post(self.c, url + "/restore/1").status_code, 200)
+
+    def test_home_hotpot_copy_addresses_first_visit_and_return_visit(self):
+        def draft(brief):
+            plan = post(self.c, "creations/plan", brief=brief).json
+            return studio.quotes.loads(plan["quote"])["items"][0]["spec"]["replacement"]
+        new = draft("给首次到店的顾客写一份菌菇火锅推广文案")
+        returning = draft("给回头客写一份菌菇火锅邀约文案")
+        self.assertIn("喜欢的口味", new["body"])
+        self.assertIn("上回", returning["body"])
+        self.assertNotEqual(new["title"], returning["title"])
+
+    def test_home_fidelity_uses_merchant_region_and_preflight_before_jobs(self):
+        bundle, _ = self.bundle_plan(cutout=True)
+        asset = studio.quotes.loads(bundle["quote"])["specs"][0]["asset"]
+        req = dict(brief="做一张抹茶海报，保留包装文字", asset=asset)
+        self.assertFalse(post(self.c, "creations/plan", **req).json["ready"])
+        self.assertFalse(post(self.c, "creations/plan", **req, assetConfirmed=True).json["ready"])
+        region = [0.2,0.2,0.8,0.8]
+        q = post(self.c, "creations/plan", **req, assetConfirmed=True, identityRegion=region).json
+        self.assertTrue(q["ready"],q)
+        self.assertEqual(studio.quotes.loads(q["quote"])["items"][-1]["spec"]["identityRegion"],region)
+        with patch.object(studio,"preflight",side_effect=ValueError("关键标识已遮挡")):
+            response = post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex)
+        self.assertEqual(response.status_code,400)
+        self.assertFalse(self.state()["jobs"])
+        self.assertEqual(self.state()["credits"],120)
+
+    def test_hk_handshake_retry_only_for_the_official_feed_and_active_http_proxy(self):
+        import ssl
+        import urllib.error
+        from server import event_sources as feeds
+
+        with (
+            patch("urllib.request.build_opener") as opener,
+            patch("urllib.request.getproxies", return_value={"https": "http://localhost:8080"}),
+            patch("urllib.request.proxy_bypass", return_value=False) as bypass,
+            patch.object(feeds, "read_hk_via_resolved_proxy", return_value=b'{"vcalendar": []}') as retry,
+        ):
+            opener.return_value.open.side_effect = urllib.error.URLError(ssl.SSLEOFError("EOF"))
+            self.assertEqual(feeds.read_calendar(feeds.HK_URL), {"vcalendar": []})
+            self.assertEqual(retry.call_args.args[0].port, 8080)
+            retry.reset_mock()
+            with self.assertRaises(urllib.error.URLError):
+                feeds.read_calendar(feeds.APPLE_NEWS)
+            bypass.return_value = True
+            with self.assertRaises(urllib.error.URLError):
+                feeds.read_calendar(feeds.HK_URL)
+            bypass.return_value = False
+            opener.return_value.open.side_effect = urllib.error.URLError(ssl.SSLCertVerificationError("certificate"))
+            with self.assertRaises(urllib.error.URLError):
+                feeds.read_calendar(feeds.HK_URL)
+            opener.return_value.open.side_effect = urllib.error.HTTPError(feeds.HK_URL, 403, "Forbidden", {}, None)
+            with self.assertRaises(urllib.error.HTTPError):
+                feeds.read_calendar(feeds.HK_URL)
+            retry.assert_not_called()
+
+    def test_hk_proxy_connects_by_public_address_and_verifies_official_hostname(self):
+        from urllib.parse import urlsplit
+        from server import event_sources as feeds
+
+        with (
+            patch("urllib.request.urlopen") as dns,
+            patch("http.client.HTTPConnection") as connection,
+            patch("ssl.create_default_context") as tls,
+        ):
+            dns_body = dns.return_value.__enter__.return_value.read
+            records = [{"type": 1, "data": "127.0.0.1"}, {"type": 1, "data": "45.119.93.185"}]
+            dns_body.return_value = json.dumps({"Status": 0, "Answer": records}).encode()
+            conn = connection.return_value
+            response = conn.getresponse.return_value.__enter__.return_value
+            response.status, response.read.return_value = 200, b"calendar"
+            proxy = urlsplit("http://localhost:1082")
+            self.assertEqual(feeds.read_hk_via_resolved_proxy(proxy), b"calendar")
+            conn.set_tunnel.assert_called_once_with("45.119.93.185", 443, headers={})
+            self.assertEqual(tls.return_value.wrap_socket.call_args.kwargs["server_hostname"], "www.1823.gov.hk")
+            self.assertEqual(conn.request.call_args.kwargs["headers"]["Host"], "www.1823.gov.hk")
+            response.read.assert_called_once_with(2_000_001)
+            response.status = 302
+            with self.assertRaisesRegex(ValueError, "HTTP 302"):
+                feeds.read_hk_via_resolved_proxy(proxy)
+            dns_body.return_value = json.dumps({"Status": 0, "Answer": records[:1]}).encode()
+            with self.assertRaisesRegex(ValueError, "公网地址"):
+                feeds.read_hk_via_resolved_proxy(proxy)
+
+    def test_event_discovery_filters_refreshes_and_withdraws(self):
+        from server import event_sources
+        self.admin()
+        city = "杭州" + uuid.uuid4().hex[:4]
+        post(self.c,"profile",name="澄月",city=city,industry="餐饮火锅")
+        source = dict(name="主办方活动", category="公开热点",url="https://example.org/"+uuid.uuid4().hex,
+                      city=city,keywords="餐饮",verified=True)
+        sid = post(self.c, "admin/event-feed", **source).json["id"]
+        today = dt.date.today().isoformat()
+        event = {"@type":"Event", "@id":"one", "name":"餐饮交流会", "startDate":today, "endDate":today,
+                 "url":"https://example.org/food", "location":{"address":{"addressLocality":city}}}
+        with patch.object(event_sources,"read_calendar",return_value=[event]):
+            self.assertEqual(post(self.c,"admin/event-sync",id=sid).json["count"],1)
+            self.assertEqual(post(self.c,"admin/event-sync",id=sid).json["count"],1)
+        topic = self.state()["recs"][0]
+        self.assertEqual(topic["title"], event["name"])
+        self.assertEqual(topic["source"], event["url"])
+        outsider = studio.app.test_client()
+        outsider.get("/api/state")
+        post(outsider,"profile",name="书店",industry="图书",city=city)
+        self.assertNotIn(event["name"], [r["title"] for r in outsider.get("/api/topics").json])
+        q = post(self.c,"creations/plan",brief=topic["brief"],topicId=topic["topicId"]).json
+        with patch.object(event_sources,"read_calendar",side_effect=OSError()):
+            self.assertEqual(post(self.c,"admin/event-sync",id=sid).status_code,400)
+        self.assertEqual(self.state()["recs"][0]["topicId"],topic["topicId"])
+        with patch.object(event_sources,"read_calendar",return_value=[{**event,"eventStatus":"EventCancelled"}]):
+            self.assertEqual(post(self.c,"admin/event-sync",id=sid).json["count"],0)
+        self.assertNotIn(event["name"],[r["title"] for r in self.state()["recs"]])
+        self.assertEqual(post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).status_code,400)
+        self.assertEqual(post(self.c,"creations/plan",brief=topic["brief"],topicId=topic["topicId"]).status_code,400)
+        self.assertEqual(post(outsider,"admin/event-sync",id=sid).status_code,403)
+        self.assertEqual(self.state()["credits"],120)
+
+    def test_skill_revisions_are_tested_scoped_and_reversible(self):
+        from server.skill_library import BY_ID, effective_versions
+        from server.creative import uidnum
+        self.admin()
+        skill = "poster_design"
+        method = {**BY_ID[skill]["instructions"], "image":"让标题与商品之间留一个字宽。"}
+        def change(action, **more):
+            return post(self.c,"admin/skill-version",id=skill,action=action,**more)
+        def revisions():
+            return next(s for s in self.c.get("/api/admin").json["skills"] if s["id"]==skill)["versions"]
+        self.assertEqual(change("test",instructions=method,reason="核对标题留白").status_code,200)
+        n = revisions()[0]["n"]
+        try:
+            change("pilot",n=n)
+            with studio.db() as c:
+                for pilot in (True,False):
+                    tenant = next(str(i) for i in range(300) if (uidnum(str(i))%100<10) == pilot)
+                    self.assertEqual(skill in effective_versions(c,tenant),pilot)
+            change("release",n=n)
+            req = dict(brief="为台球室做海报")
+            q = post(self.c,"creations/plan",**req).json
+            saved = studio.quotes.loads(q["quote"])["items"][-1]["spec"]["plan"]
+            self.assertIn(method["image"],saved["promptBrief"]["prompts"]["image"])
+            self.assertEqual(change("rollback",n=0).status_code,200)
+            again = post(self.c,"creations/plan",**req).json
+            self.assertNotIn(method["image"],studio.quotes.loads(again["quote"])["items"][-1]["spec"]["plan"]["promptBrief"]["prompts"]["image"])
+            change("test",instructions={**method,"copy":"编造优惠价格"},reason="固定测试")
+            failed = revisions()[0]
+            self.assertEqual(failed["status"],"failed")
+            self.assertEqual(change("release",n=failed["n"]).status_code,400)
+        finally:
+            change("rollback",n=0)
+
+    def test_provider_money_budget_and_sourced_bill(self):
+        self.admin()
+        with patch.dict(os.environ,{"TRUPIC_DAILY_BUDGET_CNY":"0.25","TRUPIC_VIDEO_RESERVE_CNY":"0.2"}):
+            studio.model.reserve_provider_call("video")
+            with self.assertRaisesRegex(ValueError,"金额预算"):
+                studio.model.reserve_provider_call("video")
+            self.assertEqual(self.c.get("/api/admin").json["modelCosts"]["reserved"],0.2)
+        bill = dict(platform="billing-fixture",model="video",kind="video",day=studio.now()[:10],source="核对账单",amount="0.180003",currency="CNY")
+        for _ in range(2):
+            self.assertEqual(post(self.c,"admin/provider-bill",**bill).status_code,200)
+        rows = [r for r in self.c.get("/api/admin").json["modelCosts"]["bills"] if r["platform"]=="billing-fixture"]
+        self.assertEqual([r["amount"] for r in rows],["0.180003"])
+        self.assertEqual(post(self.c,"admin/provider-bill",**{**bill,"amount":"nan"}).status_code,400)
+        self.assertEqual(self.state()["credits"],120)
+
+    def test_atlas_and_dashscope_task_protocols(self):
+        from server import video_api as video
+        self.admin()
+        for platform,protocol,submitted,completed,poll in [
+            ("atlas","atlas-video",{"data":{"id":"abc"}},{"data":{"status":"completed","outputs":["https://cdn.example/clip.mp4"]}},"/api/v1/model/prediction/abc"),
+            ("bailian","dashscope-video",{"output":{"task_id":"abc"}},{"output":{"task_status":"SUCCEEDED","video_url":"https://cdn.example/clip.mp4"}},"/api/v1/tasks/abc")]:
+            config = next(p for p in self.c.get("/api/admin").json["modelPlatforms"]["platforms"] if p["id"]==platform)["connections"]["video"]
+            self.assertEqual(config["protocol"],protocol)
+            config.update(key="test",model="wan2.7-t2v")
+            with patch.object(video,"request_json",side_effect=[submitted,completed]) as remote:
+                self.assertEqual(video.submit(config,"test","9:16"),"abc")
+                self.assertEqual(video.poll_task(config,"abc")[1],"https://cdn.example/clip.mp4")
+                self.assertTrue(remote.call_args.args[1].endswith(poll))
+                payload = remote.call_args_list[0].args[2]
+                self.assertEqual(payload.get("prompt") or payload["input"]["prompt"],"test")
+
+    def test_publisher_news_dates_scoping_and_expiry(self):
+        from xml.etree import ElementTree as ET
+        from server import event_sources
+        self.admin()
+        today = dt.date.today()
+        with studio.db() as c:
+            feed = c.execute("SELECT * FROM event_feed WHERE id='apple-developer'").fetchone()
+        def item(slug, date, link):
+            return f"<entry><title>{slug}</title><published>{date}T10:00:00+08:00</published><link href='{link}'/></entry>"
+        publisher = "https://developer.apple.com/news/"
+        atom = ET.fromstring("<feed xmlns='http://www.w3.org/2005/Atom'>" +
+                             item("近期公告", today, publisher+"a") +
+                             item("过期公告", today-dt.timedelta(days=8), publisher+"b") +
+                             item("外部转载", today, "https://elsewhere.example/x") + "</feed>")
+        with patch.object(event_sources,"read_calendar",return_value=atom):
+            self.assertEqual(post(self.c,"admin/event-sync",id=feed["id"]).json["count"],2)
+        post(self.c,"profile",name="课程工作室",industry="编程培训",city="上海")
+        first = self.state()["recs"][0]
+        self.assertEqual(first["title"],"近期公告")
+        self.assertIn("发布",first["brief"])
+        self.assertNotIn("举行",first["brief"])
+        with studio.db(True) as c:
+            c.execute("UPDATE event_feed SET checked=datetime('now','-3 days') WHERE id=?", (feed["id"],))
+        self.assertNotIn(first["title"],[r["title"] for r in self.state()["recs"]])
+
+    def test_cross_industry_intent_only_uses_approved_methods(self):
+        from server.governance import retrieve_method
+        method_id = uuid.uuid4().hex
+        with studio.db(True) as c:
+            c.execute("""INSERT INTO cases(id,title,kind,category,status,tags,scenario,lesson)
+                         VALUES(?, '饮品试饮邀请','视频','创意方法','approved','新客','午休','先提问，再展示选择。')""",(method_id,))
+            c.execute("""INSERT INTO rules(id,case_id,method,retrievable) VALUES(?,?,'question',1)""",(method_id,method_id))
+            for brief in ("火锅店首次到店怎么点菜", "台球室第一次来怎么组局", "午间书店海报"):
+                self.assertEqual(retrieve_method(c,brief,{})["id"],method_id)
+            c.execute("UPDATE cases SET status='pending' WHERE id=?", (method_id,))
+            self.assertIsNone(retrieve_method(c,"给首次到店的顾客做一张展览海报",{}))
+            c.execute("DELETE FROM rules WHERE id=?", (method_id,))
+            c.execute("DELETE FROM cases WHERE id=?", (method_id,))
+
+    def test_malformed_model_content_is_distinct_from_connection_failure(self):
+        from server import model
+
+        quote = post(self.c, "creations/plan", brief="给台球室写一条邀约文案").json
+        plan = studio.quotes.loads(quote["quote"])["items"][0]["spec"]["plan"]
+        with patch.object(model, "engine_name", return_value="test-model"):
+            with patch.object(model, "ask", side_effect=lambda *args: model.response_object("无效格式")):
+                self.assertEqual(generate_copy(plan)["reviewFlag"], "模型回复格式异常")
+            with patch.object(model, "ask", side_effect=TimeoutError()):
+                self.assertEqual(generate_copy(plan)["reviewFlag"], "模型调用未完成")
+
+    def test_rejected_shared_draft_uses_checked_fallback_and_records_model(self):
+        from server import providers
+        platform = 'custom-' + uuid.uuid4().hex
+        try:
+            with studio.db(True) as c:
+                providers.save(c,"test",dict(id=platform,label="固定模型",capability="text",model="text-proof",url="https://example.org/chat"))
+                providers.select(c,"test",dict(text=platform))
+            q = post(self.c,"creations/plan",brief="给台球室写一条邀约文案").json
+            rejected = dict(title="虚构的标题",reviewFlag="模型草稿复核未通过")
+            with patch("server.auto_pipeline.generate_copy",return_value=rejected):
+                run = post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
+                done = self.finish(run["items"][0]["job"])
+            self.assertEqual(done["state"],"complete",done)
+            work = self.c.get("/api/works/"+done["work"]).json["versions"][0]
+            self.assertEqual(work["engine"],"本地创意规则")
+            self.assertNotEqual(work["title"],rejected["title"])
+            self.assertTrue(any(q["label"]=="待抽查" and "text-proof" in q["detail"] for q in work["quality"]))
+        finally:
+            with studio.db(True) as c:
+                c.execute("DELETE FROM model_route WHERE platform=?",(platform,))
+                c.execute("DELETE FROM model_provider WHERE id=?",(platform,))
+
     def test_reference_sources_cannot_overwrite_model_configuration(self):
         from pathlib import Path
         from server import model

@@ -302,7 +302,7 @@ function App() {
     topicId = "",
   ) {
     go("home");
-    patch({ brief, reference, source, topicId });
+    patch({ brief, reference, source, topicId, extraFacts: "" });
     setTimeout(() => {
       textarea.current?.focus();
       textarea.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -450,6 +450,7 @@ function App() {
       </div>
     );
   const versionData = work?.versions.find((v) => v.n === version);
+  const densePosterAdvice = work?.kind === "poster" && version === 1 && versionData?.brief.includes("满屏字");
   const currentCases = data.cases.filter(
     (c) =>
       (filter === "全部" || c.industry === filter) &&
@@ -570,7 +571,12 @@ function App() {
                   <p>为你的生意，创作文案、海报与短片。</p>
                 </div>
               </div>
-              <AutoCreate assets={data.assets} draft={draft} patch={patch} refresh={refresh} textRef={textarea} />
+              <AutoCreate assets={data.assets} draft={draft} patch={patch} refresh={refresh} textRef={textarea}
+                checkAsset={(asset) => { setAssetItem(asset); open("checkAsset"); }}
+                options={<details open={showParams} onToggle={(e) => setParams(e.currentTarget.open)}>
+                  <summary>版式与字体</summary>
+                  <PosterOptions draft={draft} patch={patch} data={data} refresh={refresh} />
+                </details>} />
               <div className="recline">
                 <span>
                   <Lightbulb size={15} />
@@ -1130,18 +1136,19 @@ function App() {
                         专业建议
                       </span>
                       <h3>
-                        {versionData.brief.includes("满屏字") && version === 1
+                        {densePosterAdvice
                           ? "给标题多留一点空间"
                           : "试试另一种开场方式"}
                       </h3>
                       <p>
-                        建议换成「{versionData.suggestion?.title}
-                        」，保留原始版本供对照。
+                        {densePosterAdvice
+                          ? "把主标题和正文分开排，保留原文和原版供对照。"
+                          : `建议换成「${versionData.suggestion?.title}」，保留原始版本供对照。`}
                       </p>
                       <button
                         className="secondary"
                         disabled={!!busy || !!job}
-                        onClick={() => launch("revision")}
+                        onClick={() => launch(densePosterAdvice ? "layout" : "revision")}
                       >
                         <Check size={14} />
                         一键应用建议
@@ -1175,6 +1182,9 @@ function App() {
                         <p>
                           本周主题 · {versionData.plan.topic.title} ·{" "}
                           {versionData.plan.topic.basis}
+                          {versionData.plan.topic.relevance && " " + versionData.plan.topic.relevance}
+                          {versionData.plan.topic.recentUses != null && " 近期相同主题已用 " + versionData.plan.topic.recentUses + " 次。"}
+                          {versionData.plan.topic.source && <a href={versionData.plan.topic.source} target="_blank" rel="noreferrer">查看事件来源</a>}
                         </p>
                       )}
                       <p>推测受众 · {versionData.plan.audience}</p>

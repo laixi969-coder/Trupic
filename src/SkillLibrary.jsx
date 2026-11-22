@@ -12,7 +12,39 @@ const stages = {
   qa: "验收条件",
 };
 
-export default function SkillLibrary({ skills = [] }) {
+function Versions({ skill, busy, act }) {
+  const [editing, setEditing] = useState(false);
+  const [reason, setReason] = useState("");
+  const [instructions, setInstructions] = useState(skill.instructions);
+  const change = (action, n) => act("skill-version", { id: skill.id, action, n });
+  const labels = { tested: "测试通过", failed: "未通过", pilot: "10% 灰度", live: "已发布", archived: "历史版本" };
+  return <section>
+    <button className="secondary" onClick={() => {
+      setInstructions(skill.instructions); setReason(""); setEditing(!editing);
+    }}>{editing ? "收起编辑" : "修改并测试技能"}</button>
+    {editing && <form className="formpanel" onSubmit={async e => {
+      e.preventDefault();
+      if (await act("skill-version", { id: skill.id, action: "test", instructions, reason })) setEditing(false);
+    }}>
+      {Object.entries(stages).map(([k,label]) => <label className="field" key={k}>{label}
+        <textarea maxLength={900} value={instructions[k]} onChange={e => setInstructions({...instructions,[k]:e.target.value})} />
+      </label>)}
+      <label className="field">更新原因<input required maxLength={220} value={reason} onChange={e => setReason(e.target.value)} /></label>
+      <button className="primary" disabled={busy}>运行固定测试</button>
+    </form>}
+    {skill.versions?.map(v => <details className="formpanel" key={v.n}>
+      <summary>修订 {v.n} · {labels[v.status]} · {v.reason}</summary>
+      <small>测试于 {new Date(v.created).toLocaleString()}{v.published && "，最近启用于 " + new Date(v.published).toLocaleString()}</small>
+      {Object.entries(v.instructions).filter(([,value]) => value).map(([k,value]) => <p key={k}>{stages[k]} · {value}</p>)}
+      {v.tests.map(t => <p key={t.name}>{t.name} · {t.ok ? "通过" : "未通过"}{t.changed?.length > 0 && " · 已更新" + t.changed.map(k => stages[k]).join("、")}</p>)}
+      {["tested","archived"].includes(v.status) && <button className="secondary" disabled={busy} onClick={() => change("pilot",v.n)}>10% 灰度</button>}
+      {["tested","pilot","archived"].includes(v.status) && <button className="secondary" disabled={busy} onClick={() => change(v.status === "archived" ? "rollback" : "release",v.n)}>{v.status === "archived" ? "回退到此修订" : "全量启用"}</button>}
+    </details>)}
+    {skill.versions?.some(v => ["live","pilot"].includes(v.status)) && <button className="textbtn" disabled={busy} onClick={() => change("rollback",0)}>恢复内置版本</button>}
+  </section>;
+}
+
+export default function SkillLibrary({ skills = [], busy, act }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const rows = skills.filter(
@@ -85,6 +117,7 @@ export default function SkillLibrary({ skills = [] }) {
             版本 {skill.version} · {skill.source.kind} · 核对日期{" "}
             {skill.source.observed}
           </p>
+          {skill.status !== "reserve" && <Versions skill={skill} busy={busy} act={act} />}
           {skill.source.url ? (
             <a href={skill.source.url} target="_blank" rel="noreferrer">
               参考来源：{skill.source.title}

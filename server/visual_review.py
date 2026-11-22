@@ -599,6 +599,7 @@ def content_review(dest, original, spec, copy, layout=None):
                     "标识选区": spec.get("identityRegion"),
                     "分镜": copy.get("storyboard", []),
                     "美术命题": spec["plan"].get("posterArt", {}),
+                    "技能验收要求": spec["plan"].get("skillPlan", {}).get("instructions", {}).get("qa", []),
                 },
                 ensure_ascii=False,
             ),

@@ -9,7 +9,7 @@ import subprocess
 import time
 import urllib.request
 import urllib.error
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 from . import model
 from .store import db, now
 
@@ -21,6 +21,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def request_json(cfg, url, payload=None, limit=1_000_000):
     headers = {'Content-Type':'application/json'}
+    if cfg.get('protocol') == 'dashscope-video' and payload is not None:
+        headers['X-DashScope-Async'] = 'enable'
     if cfg['key']:
         headers['Authorization'] = 'Bearer ' + cfg['key']
     request = urllib.request.Request(url, json.dumps(payload).encode() if payload is not None else None, headers)
@@ -45,16 +47,44 @@ def download(url, path):
             output.write(block)
 
 
+def submit(cfg, prompt, ratio):
+    protocol, name = cfg["protocol"], cfg["model"]
+    if protocol == "dashscope-video":
+        params = {"resolution":"720P", "ratio":ratio, "duration":9} if name.startswith("wan2.7") else {}
+        result = request_json(cfg, cfg["url"], {"model":name, "input":{"prompt":prompt}, "parameters":params})
+        return result.get("output", {}).get("task_id")
+    if protocol == "atlas-video":
+        result = request_json(cfg, cfg["url"], {"model":name, "prompt":prompt})
+        return result.get("data", {}).get("id")
+    result = request_json(cfg, cfg["url"], dict(model=name, content=[dict(type="text",text=prompt)],
+                                               duration=9, ratio=ratio, resolution="720p", generate_audio=False))
+    return result.get("id")
+
+
+def poll_task(cfg, task_id):
+    if cfg["protocol"] == "dashscope-video":
+        result = request_json(cfg, urljoin(cfg["url"], "/api/v1/tasks/" + task_id))["output"]
+        return result["task_status"].lower(), result.get("video_url")
+    if cfg["protocol"] == "atlas-video":
+        result = request_json(cfg, urljoin(cfg["url"], "prediction/" + task_id))["data"]
+        urls = result.get("outputs") or []
+        return result["status"].lower(), urls[0] if urls else None
+    result = request_json(cfg, cfg["url"].rstrip("/") + "/" + task_id)
+    return result["status"], (result.get("content") or {}).get("video_url")
+
+
 def prepare_background(folder, plan, copy, cfg=None):
     cfg = cfg or model.route('video')
-    if cfg.get('protocol') != 'ark-video' or not cfg['url'] or not cfg['model']:
-        raise ValueError('请配置支持方舟任务协议的视频模型。')
+    if cfg.get('protocol') not in ('ark-video','dashscope-video','atlas-video') or not cfg['url'] or not cfg['model']:
+        raise ValueError('请配置受支持的异步文生视频连接。')
     folder.mkdir(parents=True, exist_ok=True)
     frames = folder / 'video-background'
     if (frames / '216.jpg').is_file():
         return frames
     checkpoint = folder / 'video-task.json'
     signature = hashlib.sha256((cfg['url']+'\n'+cfg['model']).encode()).hexdigest()
+    if cfg["protocol"] != "ark-video":
+        signature = hashlib.sha256((signature + cfg["protocol"]).encode()).hexdigest()
     task = json.loads(checkpoint.read_text()) if checkpoint.exists() else {}
     if task.get('state') in ('failed','cancelled','expired'):
         task = {}
@@ -72,8 +102,7 @@ def prepare_background(folder, plan, copy, cfg=None):
         checkpoint.write_text(json.dumps(task))
         started, ok = time.monotonic(), False
         try:
-            result = request_json(cfg,cfg['url'],dict(model=cfg['model'],content=[dict(type='text',text=prompt)],duration=9,ratio=ratio,resolution='720p',generate_audio=False))
-            task_id = result.get('id')
+            task_id = submit(cfg, prompt, ratio)
             if not isinstance(task_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task_id):
                 raise ValueError('视频接口未返回任务编号。')
             task.update(id=task_id,state='queued')
@@ -91,19 +120,20 @@ def prepare_background(folder, plan, copy, cfg=None):
         raise ValueError('视频提交结果未知，请先在视频平台确认任务；不会自动重复提交。')
     try:
         for _ in range(120):
-            result = request_json(cfg,cfg['url'].rstrip('/')+'/'+task['id'])
-            state = result.get('status')
-            if state in ('failed','cancelled','expired'):
-                task['state'] = state
+            state, video_url = poll_task(cfg, task['id'])
+            if state in ('failed','cancelled','canceled','expired'):
+                task['state'] = 'failed'
                 checkpoint.write_text(json.dumps(task))
                 raise ValueError('视频平台任务未成功，可检查模型配置后重试此项。')
-            if state == 'succeeded':
+            if state in ('succeeded','completed','success'):
+                if not isinstance(video_url, str) or not video_url:
+                    raise ValueError('任务已完成但缺少下载地址，可稍后继续查询。')
                 break
             time.sleep(2)
         else:
             raise ValueError('视频仍在平台生成中。稍后重试会继续查询同一任务，不重复提交。')
         clip = folder / 'cloud-background.mp4'
-        download(result['content']['video_url'],clip)
+        download(video_url,clip)
         frames.mkdir(exist_ok=True)
         subprocess.run(['ffmpeg','-v','error','-y','-i',str(clip),'-an','-vf',f"scale={output['width']}:{output['height']}:force_original_aspect_ratio=increase,crop={output['width']}:{output['height']},fps=24,tpad=stop_mode=clone:stop_duration=9",'-t','9','-q:v','2',str(frames/'%03d.jpg')],check=True,capture_output=True,timeout=90)
         if not (frames/'216.jpg').is_file():

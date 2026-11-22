@@ -276,6 +276,14 @@ def poster(
     text(brand, (0.05, 0.033, 0.64, 0.078), 35, "display")
     if subject != brand:
         text(subject, (0.68, 0.035, 0.95, 0.076), 22, align="right")
+    if dense and not asset_path:
+        # The merchant requested a text-led first version. Keep every transaction condition.
+        paint.rectangle(rect((0.025, 0.092, 0.975, 0.977)), fill=art["paper"])
+        text(title, (0.055, 0.11, 0.945, 0.41), 185, "display")
+        body = lead if not offer or offer in lead else offer + "。" + lead
+        text(body, (0.055, 0.43, 0.945, 0.81), 96)
+        text(cta, (0.055, 0.83, 0.945, 0.95), 68, "display", accent=True)
+        return img
     custom_photo = bool(asset_path) or (
         not background and plan.get("scenePhoto") not in CAMPAIGN | {"matcha"}
     )

@@ -63,7 +63,7 @@ export default function Admin({ tip }) {
       await refresh();
       show("");
       tip(
-        name === "discover"
+        name === "event-sync" ? "已同步 " + r.count + " 个事件" : name === "discover"
           ? "发现 " + r.count + " 个新参考"
           : name === "test-model" || name === "test-vision"
             ? "模型连接成功"
@@ -106,11 +106,12 @@ export default function Admin({ tip }) {
       ) : (
         <>
           {tab === "password" && <AdminPassword config={d.adminAuth} refresh={refresh} tip={tip} />}
-          {tab === "skills" && <SkillLibrary skills={d.skills || []} />}
+          {tab === "skills" && <SkillLibrary skills={d.skills || []} busy={busy} act={act} />}
           {tab === "platforms" && (
             <ModelPlatforms
               config={d.modelPlatforms}
               usage={d.modelUsage}
+              costs={d.modelCosts}
               busy={busy}
               act={act}
             />
@@ -431,6 +432,19 @@ export default function Admin({ tip }) {
           {tab === "events" && (
             <>
               <div className="sectionhead">
+                <h2>官方日历来源</h2>
+                <button className="secondary" onClick={() => open("event-feed", { category: "本地活动" })}>添加来源</button>
+              </div>
+              {d.eventFeeds.map(feed => <div key={feed.id} className="adminrow">
+                <div><b>{feed.name}</b><p>{feed.city} · {feed.category}{feed.keywords && " · " + feed.keywords}</p>
+                  <small>{feed.enabled ? feed.checked ? "最近核验 " + dateText(feed.checked) : "待首次同步" : "已暂停"}</small>
+                  {feed.error && <p className="error">{feed.error}</p>}
+                  <a href={feed.url} target="_blank" rel="noreferrer">查看发布方日历</a>
+                </div>
+                {!!feed.enabled && <button disabled={busy} className="secondary" onClick={() => act("event-sync", { id: feed.id })}>立即同步</button>}
+                <button disabled={busy} className="textbtn" onClick={() => act("event-toggle", { id: feed.id, enabled: !feed.enabled })}>{feed.enabled ? "暂停" : "启用"}</button>
+              </div>)}
+              <div className="sectionhead">
                 <h2>已核实营销事件</h2>
                 <button
                   className="primary"
@@ -492,6 +506,7 @@ export default function Admin({ tip }) {
               rule: "测试新策略",
               version: "策略版本详情",
               event: "录入已核实的活动",
+              "event-feed": "添加官方日历来源",
             }[dialog]
           }
           onClose={() => show("")}
@@ -502,6 +517,14 @@ export default function Admin({ tip }) {
               act(dialog, f);
             }}
           >
+            {dialog === "event-feed" && <>
+              {field("name", "发布机构或日历名称", { required: true })}
+              {field("url", "官方订阅地址（事件 JSON 或公告 RSS / Atom）", { required: true, limit: 1000 })}
+              {field("city", "经营地区（公告可填“全部地区”）", { required: true })}
+              {field("category", "事件类型", { options: ["本地活动", "节假日", "公开热点"] })}
+              {field("keywords", "适用行业或经营关键词（多个用逗号分隔）", { required: f.category === "公开热点", limit: 160 })}
+              <label className="checkline"><input type="checkbox" required checked={!!f.verified} onChange={e => form({ ...f, verified: e.target.checked })} />已核实官方发布方及订阅使用条件</label>
+            </>}
             {dialog === "event" && (
               <>
                 {field("category", "事件类型", {
@@ -754,6 +777,7 @@ export default function Admin({ tip }) {
                 ) : (
                   {
                     event: "保存已核实营销事件",
+                    "event-feed": "保存日历来源",
                     review: "保存审核",
                     case: "提交待审",
                     approve: "确认入库",

@@ -271,12 +271,12 @@ def render(
     folder.mkdir(parents=True, exist_ok=True)
     output = plan.get("output") or output_spec(kind, ratio)
     dims = (output["width"], output["height"])
-    dense = "满屏字" in plan["original"] and variant == 0
+    dense = kind == "poster" and "满屏字" in plan["original"] and variant == 0
     frames = []
     original_box = product_geometry(dims, asset_path) if asset_path else None
 
     directed = repair or bool(
-        plan.get("posterArt")
+        plan.get("posterArt") and not (dense and not asset_path)
         and (
             kind == "video"
             or plan.get("design", {}).get("id") in {"riso", "ipscene", *LAYOUTS}
@@ -301,7 +301,7 @@ def render(
         typesetter.audit_text = [] if kind != "copy" else None
         box = original_box
         layer_info = {}
-        if plan.get("bundleRole") and kind == "poster":
+        if plan.get("bundleRole") and kind == "poster" and asset_path and not plan.get("layoutOverride"):
             from .product_bundle import render_product
             image, box = render_product(plan, copy, asset_path, dims, typesetter, background)
         elif directed:
