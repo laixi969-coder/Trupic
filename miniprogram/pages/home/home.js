@@ -1,4 +1,5 @@
 const api = require("../../lib/api");
+const { confirmBriefChange } = require("../../lib/draft");
 const samples = require("../../lib/samples");
 const kinds = [
   { id: "poster", name: "海报" },
@@ -21,6 +22,8 @@ Page({
     dpis,
     kind: "poster",
     brief: "",
+    briefError: "",
+    focusBrief: false,
     style: "auto",
     source: "一句话创作",
     topicId: "",
@@ -33,6 +36,8 @@ Page({
     assetMode: "original",
     assetConfirmed: false,
     assetImage: "",
+    photoError: "",
+    uploading: false,
     sheet: "",
     busy: false,
     samples,
@@ -58,6 +63,7 @@ Page({
       this.setData({
         kind: "poster",
         brief: s.brief,
+        briefError: "",
         style: s.style,
         source: "灵感选集 · " + s.name,
         topicId: "",
@@ -65,6 +71,7 @@ Page({
       });
       app.globalData.sample = null;
       this.save();
+      wx.pageScrollTo({ scrollTop: 0, duration: 0 });
     }
     return this.loadTopics();
   },
@@ -85,13 +92,17 @@ Page({
       (t) => t.topicId === e.currentTarget.dataset.id,
     );
     if (!topic) return;
-    this.setData({
-      brief: topic.brief,
-      style: "auto",
-      source: topic.id,
-      topicId: topic.topicId,
+    confirmBriefChange(this.data.brief, topic.brief, () => {
+      this.setData({
+        brief: topic.brief,
+        briefError: "",
+        style: "auto",
+        source: topic.id,
+        topicId: topic.topicId,
+      });
+      this.save();
+      wx.pageScrollTo({ scrollTop: 0, duration: 0 });
     });
-    this.save();
   },
   save() {
     const { kind, brief, style, source, asset, assetMode, assetConfirmed } =
@@ -112,9 +123,13 @@ Page({
   input(e) {
     this.setData({
       brief: e.detail.value,
+      ...(e.detail.value.trim().length >= 2 ? { briefError: "" } : {}),
       ...(e.detail.value.trim() ? {} : { topicId: "", source: "一句话创作" }),
     });
     this.save();
+  },
+  blurBrief() {
+    this.setData({ focusBrief: false });
   },
   changeKind(e) {
     const kind = e.currentTarget.dataset.kind;
@@ -157,7 +172,7 @@ Page({
       mediaType: ["image"],
       sourceType: ["album", "camera"],
       success: async (r) => {
-        this.setData({ busy: true });
+        this.setData({ busy: true, uploading: true });
         try {
           const asset = await api.upload(r.tempFiles[0].tempFilePath);
           this.setData({
@@ -176,13 +191,16 @@ Page({
         } catch (e) {
           api.message(e);
         } finally {
-          this.setData({ busy: false });
+          this.setData({ busy: false, uploading: false });
         }
       },
     });
   },
   async showPhoto() {
+    const request = (this.photoRequest || 0) + 1;
+    this.photoRequest = request;
     this.setData({
+      photoError: "",
       sheet: "asset",
       assetImage: "",
       marking: false,
@@ -194,13 +212,15 @@ Page({
         assetMode === "original" ? asset.original : asset.url,
       );
       if (
+        this.photoRequest === request &&
         this.data.asset &&
         this.data.asset.id === asset.id &&
         this.data.assetMode === assetMode
       )
         this.setData({ assetImage: src });
     } catch (e) {
-      api.message(e);
+      if (this.photoRequest === request && this.data.asset?.id === asset.id)
+        this.setData({ photoError: e.message || "未能加载商品图。" });
     }
   },
   togglePhoto(e) {
@@ -316,7 +336,7 @@ Page({
       style,
     } = this.data;
     if (brief.trim().length < 2) {
-      wx.showToast({ title: "先写下创作需求", icon: "none" });
+      this.setData({ briefError: "请至少写两个字，描述想推广的商品或活动。", focusBrief: true });
       return;
     }
     if (asset && kind !== "copy" && !assetConfirmed) {

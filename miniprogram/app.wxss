@@ -57,7 +57,7 @@ button::after {
 .primary,
 .secondary {
   width: 100%;
-  min-height: 88rpx;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -80,11 +80,14 @@ button::after {
 }
 .link {
   color: #285b3c;
-  min-height: 80rpx;
+  min-height: 44px;
   display: flex;
   align-items: center;
 }
 .chip {
+  min-height: 44px;
+  min-width: 44px;
+  box-sizing: border-box;
   border-radius: 40rpx;
   padding: 14rpx 24rpx;
   white-space: nowrap;
@@ -139,11 +142,12 @@ button::after {
   border-radius: 32rpx 32rpx 0 0;
   padding: 28rpx 36rpx calc(32rpx + env(safe-area-inset-bottom));
   z-index: 6;
-  max-height: 78vh;
+  box-sizing: border-box;
+  max-height: 84vh;
   overflow: auto;
 }
 .close {
   padding: 12rpx 18rpx;
   color: #365940;
-  min-height: 68rpx;
+  min-height: 44px;
 }

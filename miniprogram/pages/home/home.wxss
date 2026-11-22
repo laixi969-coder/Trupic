@@ -7,8 +7,10 @@
 }
 .tools {
   margin: 8rpx 0 14rpx;
+  flex-wrap: wrap;
 }
 .format {
+  min-height: 44px;
   background: #edf2e9;
   border-radius: 14rpx;
   padding: 18rpx 12rpx;
@@ -63,3 +65,18 @@
 .region-wrap { position: relative; line-height: 0; }
 .region-image { display:block; width:100%; }
 .region-outline {position:absolute; pointer-events:none; border:2px solid #ffbe34; box-sizing:border-box;}
+
+.photo-status {
+  padding: 28rpx;
+  border-radius: 16rpx;
+  background: #f4f6f2;
+  color: #526456;
+}
+.topic {
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+}
+.topic .sub {
+  flex-shrink: 0;
+}

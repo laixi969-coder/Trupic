@@ -1,3 +1,4 @@
+const { confirmBriefChange } = require("../../lib/draft");
 const samples = require("../../lib/samples");
 Page({
   data: {
@@ -34,9 +35,13 @@ Page({
     this.setData({ selected: null });
   },
   use() {
-    getApp().globalData.sample = this.data.selected;
-    this.close();
-    this.create();
+    const sample = this.data.selected;
+    const draft = wx.getStorageSync("trupic.draft");
+    confirmBriefChange(draft?.brief, sample.brief, () => {
+      getApp().globalData.sample = sample;
+      this.close();
+      this.create();
+    });
   },
   create() {
     wx.switchTab({ url: "/pages/home/home" });

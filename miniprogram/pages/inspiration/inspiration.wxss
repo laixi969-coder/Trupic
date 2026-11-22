@@ -5,6 +5,7 @@ page {
   font-size: 62rpx;
 }
 .new {
+  min-height: 44px;
   color: #224e33;
   background: #e5f2db;
   border-radius: 30rpx;

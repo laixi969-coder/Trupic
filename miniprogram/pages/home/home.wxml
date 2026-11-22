@@ -1,14 +1,15 @@
 <view class="page">
   <view class="title">今天要推广什么？</view>
   <view class="panel">
-    <view class="row"><button wx:for="{{kinds}}" wx:key="id" data-kind="{{item.id}}" bindtap="changeKind" class="chip {{item.id===kind?'active':''}}">{{item.name}}</button></view>
-    <textarea class="prompt" value="{{brief}}" bindinput="input" maxlength="1200" placeholder="比如，给新品抹茶拿铁做张海报，邀请附近的上班族午休来店。" adjust-position="{{true}}"/>
+    <view class="row"><button wx:for="{{kinds}}" wx:key="id" data-kind="{{item.id}}" bindtap="changeKind" aria-pressed="{{item.id===kind}}" class="chip {{item.id===kind?'active':''}}">{{item.name}}</button></view>
+    <textarea class="prompt" aria-label="创作需求" focus="{{focusBrief}}" bindblur="blurBrief" value="{{brief}}" bindinput="input" maxlength="1200" placeholder="比如，给新品抹茶拿铁做张海报，邀请附近的上班族午休来店。" adjust-position="{{true}}"/>
+    <view wx:if="{{briefError}}" class="error" aria-live="polite">{{briefError}}</view>
     <view class="between tools">
       <button wx:if="{{asset}}" class="link" bindtap="showPhoto">{{assetConfirmed?'已选素材':'核对素材'}}</button>
-      <button wx:else class="link" bindtap="addPhoto" disabled="{{busy}}">＋ 商品素材</button>
+      <button wx:else class="link" bindtap="addPhoto" disabled="{{busy}}" loading="{{uploading}}">{{uploading?'上传中':'＋ 商品素材'}}</button>
       <button wx:if="{{kind!=='copy'}}" class="format" bindtap="settings">{{format.ratio}} · {{format.resolution}} px · {{kind==='video'?'9 秒':format.dpi+' DPI'}}</button>
     </view>
-    <button class="primary" bindtap="preview" loading="{{busy}}" disabled="{{busy}}">预览创作方案</button>
+    <button class="primary" bindtap="preview" loading="{{busy && !uploading}}" disabled="{{busy}}">预览创作方案</button>
   </view>
   <view wx:if="{{topics.length || topicsError}}" class="section">
     <view class="heading">本周营销主题</view>
@@ -31,6 +32,8 @@
     </block>
     <block wx:else>
       <image wx:if="{{assetImage}}" class="photo" src="{{assetImage}}" mode="aspectFit"/>
+      <view wx:elif="{{photoError}}" class="photo-status"><text>{{photoError}}</text><button class="link" bindtap="showPhoto">重新加载商品图</button></view>
+      <view wx:else class="photo-status">正在加载商品图…</view>
       <view class="line between">使用上传原图<switch checked="{{assetMode==='original'}}" bindchange="togglePhoto" color="#184b32"/></view>
       <button wx:if="{{!asset.risk}}" class="link" bindtap="startMark">{{identityRegion?'重新标注原图区域':'标注需保真的标识或包装文字'}}</button>
       <button wx:if="{{kind==='video' && !asset.risk}}" class="link" bindtap="startMark" data-target="detail">{{visualDetail?'重新框选中镜细节':'指定短片中镜的细节（选填）'}}</button>

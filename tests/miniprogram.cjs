@@ -47,7 +47,9 @@ test(
     const storage = new Map(),
       app = { globalData: {} },
       downloads = [],
-      errors = [];
+      errors = [],
+      confirmations = [];
+    let confirmChange = true;
     let route = "",
       pageDefinition,
       album,
@@ -107,7 +109,12 @@ test(
       navigateTo: (o) => (route = o.url),
       redirectTo: (o) => (route = o.url),
       showToast: () => {},
-      showModal: (o) => errors.push(o.content),
+      showModal(o) {
+        if (!o.success) return errors.push(o.content);
+        confirmations.push(o.title);
+        o.success({ confirm: confirmChange, cancel: !confirmChange });
+      },
+      pageScrollTo: () => {},
       setClipboardData: (o) => (clipboard = o.data),
       saveVideoToPhotosAlbum: (o) => {
         album = o.filePath;
@@ -163,10 +170,22 @@ test(
     const api = load(join(root, "miniprogram/lib/api.js"));
     const home = page("home");
     home.onLoad();
+    await home.preview();
+    assert.ok(home.data.focusBrief);
+    assert.match(home.data.briefError, /至少/);
+    home.input(input("保留我的原创需求"));
+    assert.equal(home.data.briefError, "");
     const gallery = page("inspiration");
     gallery.filter(click({ cat: "茶饮" }));
     assert.equal(gallery.data.samples.length, 1);
     gallery.open(click({ id: "tea" }));
+    confirmChange = false;
+    gallery.use();
+    assert.equal(gallery.data.selected.id, "tea");
+    assert.equal(storage.get("trupic.draft").brief, "保留我的原创需求");
+    assert.equal(route, "");
+    assert.equal(app.globalData.sample, undefined);
+    confirmChange = true;
     gallery.use();
     await home.onShow();
     assert.equal(home.data.topics.length, 2);
@@ -174,6 +193,15 @@ test(
     assert.match(home.data.brief, /抹茶/);
     home.addPhoto();
     for (let i = 0; i < 100 && !home.data.assetImage; i++) await delay(50);
+    assert.ok(home.data.assetImage);
+    const originalDownload = api.download;
+    api.download = async () => { throw new Error("图片连接中断"); };
+    await home.showPhoto();
+    assert.equal(home.data.assetImage, "");
+    assert.equal(home.data.photoError, "图片连接中断");
+    api.download = originalDownload;
+    await home.showPhoto();
+    assert.equal(home.data.photoError, "");
     assert.ok(home.data.assetImage);
     await home.startMark();
     home.createSelectorQuery = () => ({
@@ -298,12 +326,27 @@ test(
         assert.equal(result.data.work.versions.length, 2);
       }
       if (kind === "video") {
+        confirmChange = false;
+        const existing = home.data.brief;
+        home.useTopic(click({ id: home.data.topics[0].topicId }));
+        assert.equal(home.data.brief, existing);
+        confirmChange = true;
         home.useTopic(click({ id: home.data.topics[0].topicId }));
         assert.equal(home.data.brief, home.data.topics[0].brief);
       }
     }
     const mine = page("mine");
     await mine.load();
+    mine.edit();
+    mine.setData({ form: { ...mine.data.form, name: "修改中的店名" } });
+    confirmChange = false;
+    mine.close();
+    assert.equal(mine.data.edit, true);
+    assert.equal(mine.data.form.name, "修改中的店名");
+    confirmChange = true;
+    mine.close();
+    assert.equal(mine.data.edit, false);
+    assert.match(confirmations.at(-1), /未保存/);
     assert.equal(mine.data.works.length, 3);
     assert.equal(mine.data.credits, 104);
     const state = await api.request("state");

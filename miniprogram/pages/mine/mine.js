@@ -53,7 +53,17 @@ Page({
     this.setData({ edit: true, form: { ...this.data.profile } });
   },
   close() {
-    this.setData({ edit: false });
+    if (this.data.saving) return;
+    const changed = Object.keys(this.data.form).some(
+      key => (this.data.form[key] || "") !== (this.data.profile[key] || ""),
+    );
+    if (!changed) return this.setData({ edit: false });
+    wx.showModal({
+      title: "放弃未保存的修改？",
+      cancelText: "继续编辑",
+      confirmText: "放弃修改",
+      success: ({ confirm }) => { if (confirm) this.setData({ edit: false }); },
+    });
   },
   field(e) {
     this.setData({ ["form." + e.currentTarget.dataset.key]: e.detail.value });
