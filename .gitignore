@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.venv/
+.trupic/
+__pycache__/
+.DS_Store
+.env
+
+.ruff_cache/
+
+project.private.config.json

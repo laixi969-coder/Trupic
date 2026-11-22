@@ -1,0 +1,35 @@
+<view class="page">
+  <view class="title">今天要推广什么？</view>
+  <view class="panel">
+    <view class="row"><button wx:for="{{kinds}}" wx:key="id" data-kind="{{item.id}}" bindtap="changeKind" class="chip {{item.id===kind?'active':''}}">{{item.name}}</button></view>
+    <textarea class="prompt" value="{{brief}}" bindinput="input" maxlength="1200" placeholder="比如，给新品抹茶拿铁做张海报，邀请附近的上班族午休来店。" adjust-position="{{true}}"/>
+    <view class="between tools">
+      <button wx:if="{{asset}}" class="link" bindtap="showPhoto">{{assetConfirmed?'已选素材':'核对素材'}}</button>
+      <button wx:else class="link" bindtap="addPhoto" disabled="{{busy}}">＋ 商品素材</button>
+      <button wx:if="{{kind!=='copy'}}" class="format" bindtap="settings">{{format.ratio}} · {{format.resolution}} px · {{kind==='video'?'9 秒':format.dpi+' DPI'}}</button>
+    </view>
+    <button class="primary" bindtap="preview" loading="{{busy}}" disabled="{{busy}}">预览创作方案</button>
+  </view>
+  <view class="between"><view class="heading">找个灵感开始</view><button class="link" bindtap="gallery">查看全部</button></view>
+  <button class="hero" bindtap="sample" data-id="tea"><image src="/images/tea-hero.jpg" mode="aspectFill"/><view class="heroTitle">抹茶拿铁<view>上新海报</view></view><view class="heroLink">查看茶饮样张</view></button>
+  <button class="mini row" bindtap="sample" data-id="auto"><image src="/images/auto.jpg" mode="aspectFill"/><view><view>周末试驾</view><view class="sub">汽车海报</view></view></button>
+</view>
+<block wx:if="{{sheet}}">
+  <view class="sheetmask" bindtap="close"></view>
+  <view class="sheet">
+    <view class="between"><view class="heading">{{sheet==='asset'?'核对商品图':'输出规格'}}</view><button class="close" bindtap="close">关闭</button></view>
+    <block wx:if="{{sheet==='format'}}">
+      <picker range="{{ratios}}" value="{{ratioIndex}}" data-key="ratio" bindchange="selectFormat"><view class="line between"><text>画幅</text><text>{{format.ratio}}　›</text></view></picker>
+      <picker range="{{resolutions}}" value="{{resolutionIndex}}" data-key="resolution" bindchange="selectFormat"><view class="line between"><text>短边分辨率</text><text>{{format.resolution}} px　›</text></view></picker>
+      <picker wx:if="{{kind==='poster'}}" range="{{dpis}}" value="{{dpiIndex}}" data-key="dpi" bindchange="selectFormat"><view class="line between"><text>印刷精度</text><text>{{format.dpi}} DPI　›</text></view></picker>
+      <button class="primary spaced" bindtap="close">完成</button>
+    </block>
+    <block wx:else>
+      <image wx:if="{{assetImage}}" class="photo" src="{{assetImage}}" mode="aspectFit"/>
+      <view class="line between">使用上传原图<switch checked="{{assetMode==='original'}}" bindchange="togglePhoto" color="#184b32"/></view>
+      <view wx:if="{{asset.risk}}" class="error">图片质量不足，建议移除后更换清晰原图。</view>
+      <button class="primary spaced" disabled="{{!assetImage}}" bindtap="acceptPhoto">确认素材</button>
+      <button class="secondary spaced" bindtap="removePhoto">移除素材</button>
+    </block>
+  </view>
+</block>

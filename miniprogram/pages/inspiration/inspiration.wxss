@@ -1,0 +1,53 @@
+page {
+  background: white;
+}
+.title {
+  font-size: 62rpx;
+}
+.new {
+  color: #224e33;
+  background: #e5f2db;
+  border-radius: 30rpx;
+  padding: 16rpx 22rpx;
+}
+.filter {
+  white-space: nowrap;
+  margin: 26rpx 0;
+}
+.filter button {
+  display: inline-block;
+  border-radius: 9rpx;
+}
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-bottom: 48rpx;
+}
+.card {
+  width: 48%;
+  text-align: left;
+  margin-bottom: 24rpx;
+}
+.card:nth-child(even) {
+  transform: translateY(32rpx);
+}
+.card image {
+  display: block;
+  width: 100%;
+  height: 420rpx;
+  border-radius: 12rpx;
+  max-height: 520rpx;
+  height: calc(64vw - 46rpx);
+}
+.name {
+  font-weight: 650;
+  font-size: 31rpx;
+  margin-top: 8rpx;
+}
+.example {
+  width: 100%;
+  height: 39vh;
+  margin-top: 10rpx;
+}

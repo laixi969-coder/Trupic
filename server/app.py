@@ -1,0 +1,1327 @@
+import datetime as dt
+import hashlib
+import hmac
+import json
+import logging
+import os
+import shutil
+import subprocess
+import threading
+from fractions import Fraction
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from urllib.parse import urlparse
+
+from flask import (
+    Flask,
+    abort,
+    jsonify,
+    request,
+    send_file,
+    send_from_directory,
+    session,
+)
+from itsdangerous import BadSignature, URLSafeTimedSerializer
+from PIL import Image, ImageDraw
+from io import BytesIO
+from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from . import model
+from .background import make_scene
+from .creative import (
+    CASES,
+    METHODS,
+    NUMCLAIM,
+    RISK,
+    generate_copy,
+    next_suggestion,
+    prepare,
+)
+from .governance import active_rule, discover, run_tests
+from .media import ROOT, SIZES, inspect_upload, render
+from .store import DATA, audit, db, dump, ident, init, now, secret, tenant_new
+from .topics import weekly
+from .formats import output_spec
+from .design import STYLES, choose_style, next_style, industry_examples
+from .typography import Typesetter, inspect_face
+from .lettering import OPTIONS as LETTERING_OPTIONS
+from .campaign import storyboard
+from .prompt_agent import optimize
+
+app = Flask(__name__, static_folder=None)
+app.config.update(
+    SECRET_KEY=secret("session.key"),
+    MAX_CONTENT_LENGTH=12 * 1024 * 1024,
+    SESSION_COOKIE_NAME="trupic_workspace",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=dt.timedelta(days=180),
+)
+quotes = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="trupic-creative-quote")
+COST = {"copy": 0, "poster": 4, "video": 12}
+LABEL = {"copy": "推广文案", "poster": "营销海报", "video": "宣传短片"}
+ADMIN = os.getenv("TRUPIC_ADMIN_KEY") or secret("admin.key")
+init()
+pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trupic")
+
+
+def body():
+    return request.get_json(silent=True) or {}
+
+
+def string(val, limit=500):
+    return val.strip()[:limit] if isinstance(val, str) else ""
+
+
+def reqtenant():
+    if not session.get("tenant"):
+        t = ident()
+        with db(True) as c:
+            tenant_new(c, t)
+        session["tenant"] = t
+        session.permanent = True
+    return session["tenant"]
+
+
+def require_admin():
+    if not session.get("admin"):
+        abort(403, description="需要管理员权限。")
+
+
+def owner(c, table, id, t):
+    row = c.execute(
+        f"SELECT * FROM {table} WHERE id=? AND tenant=?", (id, t)
+    ).fetchone()
+    if not row:
+        abort(404, description="找不到这项内容。")
+    return row
+
+
+@app.before_request
+def protect():
+    if request.path == "/api/fonts":
+        request.max_content_length = 34 * 1024 * 1024
+    origin = request.headers.get("Origin")
+    if (
+        request.method not in ("GET", "HEAD", "OPTIONS")
+        and origin
+        and urlparse(origin).hostname != request.host.split(":")[0]
+    ):
+        abort(403, description="请从当前工作室提交操作。")
+
+
+@app.after_request
+def headers(resp):
+    if request.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "private, no-store"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@app.errorhandler(ValueError)
+def invalid(e):
+    return jsonify(error=str(e)), 400
+
+
+@app.errorhandler(HTTPException)
+def error(e):
+    return jsonify(
+        error=(
+            "单款字体最大为 32 MB。"
+            if request.path == "/api/fonts"
+            else "请上传小于 12 MB 的图片。"
+        )
+        if e.code == 413
+        else e.description
+    ), e.code
+
+
+def asset_json(row):
+    a = dict(row)
+    inf = json.loads(a["info"])
+    return dict(
+        id=a["id"],
+        name=a["name"],
+        created=a["created"],
+        url="/api/assets/" + a["id"] + "/image",
+        original="/api/assets/" + a["id"] + "/original",
+        **inf,
+    )
+
+
+def history(c, t):
+    res = []
+    for row in c.execute(
+        "SELECT v.* FROM version v JOIN work w ON w.id=v.work AND w.current=v.n WHERE w.tenant=? ORDER BY w.created DESC,w.rowid DESC LIMIT 35",
+        (t,),
+    ):
+        p = json.loads(row["spec"])["plan"]
+        cp = json.loads(row["copy"])
+        res.append(dict(title=cp["title"], method=p["method"], original=p["original"]))
+    return res
+
+
+def pack(c, w, all_versions=False):
+    versions = []
+    query = (
+        "SELECT * FROM version WHERE work=?"
+        + ("" if all_versions else " AND n=?")
+        + " ORDER BY n DESC"
+    )
+    for r in c.execute(query, (w["id"],) if all_versions else (w["id"], w["current"])):
+        spec = json.loads(r["spec"])
+        copy = json.loads(r["copy"])
+        n = r["n"]
+        base = f"/api/works/{w['id']}/v/{n}"
+        suggestion = next_suggestion(spec, copy)[1] if all_versions else {}
+        versions.append(
+            dict(
+                n=n,
+                created=r["created"],
+                suggestion=suggestion,
+                **copy,
+                brief=spec["plan"]["original"],
+                plan=spec["plan"],
+                quality=json.loads(r["quality"]),
+                asset=spec["asset"],
+                ratio=spec["ratio"],
+                poster=base + "/poster",
+                download=base + "/download",
+                video=base + "/video" if w["kind"] == "video" else None,
+            )
+        )
+    current = next(v for v in versions if v["n"] == w["current"])
+    return dict(
+        id=w["id"],
+        kind=w["kind"],
+        created=w["created"],
+        current=w["current"],
+        title=current["title"],
+        cover=current["poster"],
+        **({"versions": versions} if all_versions else {}),
+    )
+
+
+@app.get("/api/state")
+def state():
+    t = reqtenant()
+    with db() as c:
+        m = c.execute("SELECT * FROM merchant WHERE id=?", (t,)).fetchone()
+        prof = json.loads(m["profile"])
+        works = [
+            pack(c, w)
+            for w in c.execute(
+                "SELECT * FROM work WHERE tenant=? ORDER BY created DESC,rowid DESC",
+                (t,),
+            )
+        ]
+        assets = [
+            asset_json(r)
+            for r in c.execute(
+                "SELECT * FROM asset WHERE tenant=? ORDER BY created DESC,rowid DESC",
+                (t,),
+            )
+        ]
+        ledger = [
+            dict(x)
+            for x in c.execute(
+                "SELECT delta,note,created FROM ledger WHERE tenant=? ORDER BY id DESC LIMIT 80",
+                (t,),
+            )
+        ]
+        jobs = [
+            dict(x)
+            for x in c.execute(
+                "SELECT id,state,work,error,created FROM job WHERE tenant=? AND state IN ('queued','running','failed') ORDER BY created DESC,rowid DESC LIMIT 15",
+                (t,),
+            )
+        ]
+        recs = weekly(c, t, prof, history(c, t))
+        return jsonify(
+            profile=prof,
+            posterStyles=[{"id": key, **value} for key, value in STYLES.items()],
+            posterExamples=industry_examples(),
+            fonts=[
+                {"id": r["id"], **json.loads(r["info"])}
+                for r in c.execute(
+                    "SELECT id,info FROM brand_font WHERE tenant=? ORDER BY created DESC,rowid DESC",
+                    (t,),
+                )
+            ],
+            login=m["login"],
+            admin=bool(session.get("admin")),
+            credits=m["credits"],
+            works=works,
+            assets=assets,
+            cases=CASES,
+            recs=recs,
+            ledger=ledger,
+            jobs=jobs,
+            prices=COST,
+        )
+
+
+@app.post("/api/profile")
+def profile():
+    t = reqtenant()
+    v = body()
+    p = {
+        k: string(v.get(k), 400 if k == "facts" else 80)
+        for k in ("name", "industry", "product", "audience", "facts", "tone", "city")
+    }
+    if not p["name"]:
+        raise ValueError("请填写商家名称。")
+    with db(True) as c:
+        previous = json.loads(
+            c.execute("SELECT profile FROM merchant WHERE id=?", (t,)).fetchone()[0]
+        )
+        font_id = string(v.get("brandFont", previous.get("brandFont", "")), 64)
+        if font_id:
+            owner(c, "brand_font", font_id, t)
+        p["brandFont"] = font_id
+        c.execute("UPDATE merchant SET profile=? WHERE id=?", (dump(p), t))
+    return jsonify(ok=True)
+
+
+@app.post("/api/fonts")
+def upload_font():
+    tenant = reqtenant()
+    upload = request.files.get("font")
+    if not upload:
+        raise ValueError("请选择 TTF 或 OTF 文件。")
+    data = upload.stream.read(32 * 1024 * 1024 + 1)
+    if len(data) > 32 * 1024 * 1024:
+        raise ValueError("单款字体最大为 32 MB。")
+    info = inspect_face(data)
+    digest = hashlib.sha256(data).hexdigest()
+    with db(True) as c:
+        old = c.execute(
+            "SELECT id,info FROM brand_font WHERE tenant=? AND digest=?",
+            (tenant, digest),
+        ).fetchone()
+        if old:
+            return jsonify(id=old["id"], **json.loads(old["info"]))
+        font_id = ident()
+        folder = DATA / tenant / "fonts"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / font_id).write_bytes(data)
+        c.execute(
+            "INSERT INTO brand_font VALUES(?,?,?,?,?)",
+            (font_id, tenant, digest, dump(info), now()),
+        )
+    return jsonify(id=font_id, **info)
+
+
+@app.get("/api/fonts/<font_id>/sample.png")
+def font_sample(font_id):
+    tenant = reqtenant()
+    with db() as c:
+        owner(c, "brand_font", font_id, tenant)
+    sample = Image.new("RGB", (760, 104), "#f5f4ec")
+    ts = Typesetter(DATA / tenant / "fonts" / font_id)
+    ts.draw(
+        ImageDraw.Draw(sample),
+        "春山入盏   Tea 28.50元",
+        (18, 8, 742, 96),
+        55,
+        "display",
+        "#213d30",
+    )
+    buffer = BytesIO()
+    sample.save(buffer, "PNG")
+    buffer.seek(0)
+    return send_file(buffer, mimetype="image/png")
+
+
+@app.post("/api/account/<action>")
+def account(action):
+    t = reqtenant()
+    v = body()
+    login = string(v.get("login"), 64).lower()
+    pw = string(v.get("password"), 160)
+    if action == "logout":
+        session.clear()
+        return jsonify(ok=True)
+    if action == "admin":
+        if not hmac.compare_digest(pw, ADMIN):
+            abort(403, description="管理密钥不正确。")
+        session["admin"] = True
+        with db(True) as c:
+            audit(c, t, "管理登录", "")
+        return jsonify(ok=True)
+    if not login or len(pw) < 8:
+        raise ValueError("请填写账号，并使用至少 8 位的密码。")
+    with db(True) as c:
+        if action == "register":
+            if c.execute("SELECT id FROM merchant WHERE login=?", (login,)).fetchone():
+                raise ValueError("账号已被使用，请登录或换一个名称。")
+            if c.execute("SELECT login FROM merchant WHERE id=?", (t,)).fetchone()[0]:
+                raise ValueError("当前工作空间已绑定账号。")
+            c.execute(
+                "UPDATE merchant SET login=?,password=? WHERE id=?",
+                (login, generate_password_hash(pw), t),
+            )
+        elif action == "login":
+            r = c.execute("SELECT * FROM merchant WHERE login=?", (login,)).fetchone()
+            if not r or not check_password_hash(r["password"], pw):
+                abort(401, description="账号或密码不正确。")
+            session.clear()
+            session["tenant"] = r["id"]
+            session.permanent = True
+        else:
+            abort(404)
+    return jsonify(ok=True)
+
+
+@app.post("/api/assets")
+def upload():
+    t = reqtenant()
+    f = request.files.get("image")
+    if not f:
+        raise ValueError("请选择素材图片。")
+    id = ident()
+    folder = DATA / t / "assets" / id
+    try:
+        info = inspect_upload(f.stream, folder)
+        with db(True) as c:
+            c.execute(
+                "INSERT INTO asset VALUES(?,?,?,?,?)",
+                (
+                    id,
+                    t,
+                    string(Path(f.filename or "素材").name, 100),
+                    dump(info),
+                    now(),
+                ),
+            )
+            return jsonify(
+                asset_json(
+                    c.execute("SELECT * FROM asset WHERE id=?", (id,)).fetchone()
+                )
+            )
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+
+
+@app.get("/api/assets/<id>/<mode>")
+def asset_file(id, mode):
+    with db() as c:
+        r = owner(c, "asset", id, reqtenant())
+    name = "original.png" if mode == "original" else json.loads(r["info"])["file"]
+    return send_file(DATA / r["tenant"] / "assets" / id / name)
+
+
+@app.delete("/api/assets/<id>")
+def delete_asset(id):
+    t = reqtenant()
+    with db(True) as c:
+        owner(c, "asset", id, t)
+        if c.execute(
+            "SELECT 1 FROM job WHERE tenant=? AND json_extract(spec,'$.asset')=? LIMIT 1",
+            (t, id),
+        ).fetchone():
+            raise ValueError("已有任务引用此素材，需保留以供版本回看。")
+        c.execute("DELETE FROM asset WHERE id=?", (id,))
+    shutil.rmtree(DATA / t / "assets" / id, ignore_errors=True)
+    return jsonify(ok=True)
+
+
+def plan_spec(c, t, v):
+    brief = string(v.get("brief"), 1200)
+    kind = string(v.get("kind"))
+    ratio = string(v.get("ratio") or ("story" if kind == "video" else "portrait"))
+    if len(brief) < 2 or kind not in COST or ratio not in SIZES:
+        raise ValueError("请填写创作需求，并选择有效的作品类型和画幅。")
+    output = output_spec(kind, ratio, v.get("resolution"), v.get("dpi"))
+    asset = string(v.get("asset"), 60)
+    policy = string(v.get("assetMode"), 16)
+    if asset:
+        a = owner(c, "asset", asset, t)
+        if json.loads(a["info"])["risk"] and kind != "copy":
+            raise ValueError("这张图片无法可靠还原商品，请更换清晰原图。")
+        if (
+            kind != "copy"
+            and json.loads(a["info"])["action"] == "主体抠图"
+            and not v.get("assetConfirmed")
+        ):
+            raise ValueError("请先核对并确认商品主体及标识清晰完整。")
+    if (
+        not asset
+        and kind != "copy"
+        and any(
+            word in brief.lower()
+            for word in (
+                "还原包装",
+                "还原我的商品",
+                "还原商品外观",
+                "保留logo",
+                "原样还原",
+                "保留包装文字",
+            )
+        )
+    ):
+        raise ValueError("这项需求需要还原实际商品，请先添加能看清包装与标识的原图。")
+    prof = json.loads(
+        c.execute("SELECT profile FROM merchant WHERE id=?", (t,)).fetchone()[0]
+    )
+    if not any(
+        [prof.get("product"), prof.get("industry"), len(brief) > 6]
+    ) and brief in (
+        "做个海报",
+        "做宣传",
+        "帮我宣传",
+        "写文案",
+        "做海报",
+        "做视频",
+        "做张海报",
+    ):
+        raise ValueError("想宣传什么商品或门店？请补充一句，或先填写商家档案。")
+    plan = prepare(
+        brief,
+        prof,
+        history(c, t),
+        active_rule(c, t),
+        string(v.get("reference")),
+        string(v.get("facts"), 250),
+    )
+    ref = c.execute(
+        "SELECT c.title,c.lesson FROM cases c JOIN rules r ON c.id=r.case_id WHERE r.id=? AND c.status='approved' AND c.category!='反面案例'",
+        (plan["ruleId"],),
+    ).fetchone()
+    plan["output"] = output
+    plan["kind"] = kind
+    if kind in ("poster", "video"):
+        plan["lettering"] = string(v.get("lettering") or "auto")
+        if plan["lettering"] not in LETTERING_OPTIONS:
+            raise ValueError("请选择支持的图形文字组合。")
+        plan["design"] = choose_style(plan, string(v.get("posterStyle") or "auto"))
+        font_id = string(v.get("fontId") or "profile", 64)
+        if font_id == "profile":
+            font_id = prof.get("brandFont", "")
+        if font_id and font_id != "builtin":
+            row = owner(c, "brand_font", font_id, t)
+            plan["brandType"] = {"id": font_id, "name": json.loads(row["info"])["name"]}
+    if ref:
+        plan["learnedMethod"] = {"case": ref["title"], "lesson": ref["lesson"]}
+    return dict(
+        plan=plan,
+        kind=kind,
+        ratio=ratio,
+        asset=asset,
+        assetMode=policy,
+        variant=0,
+        source=string(v.get("source") or "一句话创作", 100),
+    )
+
+
+@app.post("/api/preview")
+def preview():
+    t = reqtenant()
+    with db() as c:
+        s = plan_spec(c, t, body())
+    optimize(s)
+    return jsonify(
+        plan=s["plan"],
+        cost=COST[s["kind"]],
+        kind=s["kind"],
+        ratio=s["ratio"],
+        engine=model.engine_name(),
+        quote=quotes.dumps({"tenant": t, "spec": s, "cost": COST[s["kind"]]}),
+    )
+
+
+def enough(c, t, cost):
+    balance = c.execute("SELECT credits FROM merchant WHERE id=?", (t,)).fetchone()[0]
+    pending = c.execute(
+        "SELECT COALESCE(SUM(cost),0) FROM job WHERE tenant=? AND state IN ('queued','running')",
+        (t,),
+    ).fetchone()[0]
+    if balance - pending < cost:
+        raise ValueError("可用体验积分不足，可选择免费文案创作。")
+
+
+def enqueue(t, v, work=None):
+    key = string(v.get("requestKey"), 90)
+    if not key:
+        raise ValueError("缺少请求标识，请刷新后再试。")
+    with db(True) as c:
+        old = c.execute(
+            "SELECT id,work,state FROM job WHERE tenant=? AND request_key=?", (t, key)
+        ).fetchone()
+        if old:
+            return dict(old)
+        if work:
+            w = owner(c, "work", work, t)
+            if c.execute(
+                "SELECT 1 FROM job WHERE work=? AND state IN ('queued','running')",
+                (work,),
+            ).fetchone():
+                raise ValueError("此作品仍在生成新版本，请稍后再试。")
+            r = c.execute(
+                "SELECT * FROM version WHERE work=? AND n=?",
+                (work, int(v.get("base") or w["current"])),
+            ).fetchone()
+            if not r:
+                abort(404)
+            s = json.loads(r["spec"])
+            nxt = c.execute(
+                "SELECT MAX(n)+1 FROM version WHERE work=?", (work,)
+            ).fetchone()[0]
+            s["variant"] = nxt - 1
+            cost = 0
+            s["plan"], suggestion = next_suggestion(s, json.loads(r["copy"]))
+            if v.get("action") == "redesign":
+                s.pop("replacement", None)
+                design = s["plan"].get("design")
+                if design and design["selection"] == "auto":
+                    s["plan"]["design"] = next_style(design)
+            else:
+                s["replacement"] = suggestion
+            optimize(s, infer=False, previous=s["plan"].get("promptBrief"))
+        else:
+            if v.get("quote"):
+                try:
+                    q = quotes.loads(v["quote"], max_age=1800)
+                except BadSignature:
+                    raise ValueError("这份方案已过期，请返回重新分析。")
+                if q["tenant"] != t:
+                    abort(403)
+                s = q["spec"]
+                if s["asset"]:
+                    owner(c, "asset", s["asset"], t)
+            else:
+                s = plan_spec(c, t, v)
+            cost = COST[s["kind"]]
+            work = ident()
+            nxt = 1
+            if cost and (v.get("confirmedCost") != cost or not v.get("confirmed")):
+                raise ValueError("请确认本次积分用量后再制作。")
+        enough(c, t, cost)
+        id = ident()
+        c.execute(
+            "INSERT INTO job(id,tenant,request_key,spec,state,cost,work,version,error,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (id, t, key, dump(s), "queued", cost, work, nxt, None, now()),
+        )
+    pool.submit(produce, id)
+    return dict(id=id, state="queued", work=work)
+
+
+@app.post("/api/jobs")
+def create_job():
+    return jsonify(enqueue(reqtenant(), body()))
+
+
+@app.post("/api/works/<id>/revise")
+def revise(id):
+    return jsonify(enqueue(reqtenant(), body(), id))
+
+
+def produce(id):
+    with db(True) as c:
+        j = c.execute(
+            "SELECT * FROM job WHERE id=? AND state='queued'", (id,)
+        ).fetchone()
+        if not j:
+            return
+        c.execute(
+            "UPDATE job SET state='running',worker_pid=? WHERE id=?", (os.getpid(), id)
+        )
+    t, work, n = j["tenant"], j["work"], j["version"]
+    s = json.loads(j["spec"])
+    p = s["plan"]
+    p.setdefault("kind", s["kind"])
+    dest = DATA / t / "works" / work / str(n)
+    try:
+        if not p.get("promptBrief"):
+            optimize(s)
+            with db(True) as c:
+                c.execute("UPDATE job SET spec=? WHERE id=?", (dump(s), id))
+        cp = s.get("replacement") or generate_copy(p, 0)
+        if s["kind"] == "video":
+            cp["storyboard"] = storyboard(p, cp)
+        ap = None
+        if s["asset"]:
+            with db() as c:
+                a = owner(c, "asset", s["asset"], t)
+            ap = (
+                DATA
+                / t
+                / "assets"
+                / s["asset"]
+                / (
+                    "original.png"
+                    if s.get("assetMode") == "original"
+                    else json.loads(a["info"])["file"]
+                )
+            )
+        background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1)
+        cp["visualEngine"] = visual_engine
+        custom_font = None
+        if p.get("brandType"):
+            with db() as c:
+                record = owner(c, "brand_font", p["brandType"]["id"], t)
+            custom_font = DATA / t / "fonts" / record["id"]
+        layout = render(
+            dest,
+            p,
+            cp,
+            s["kind"],
+            ap,
+            s["ratio"],
+            s["variant"],
+            background,
+            custom_font,
+        )
+        files = ["poster.png", "copy.txt"] + (
+            ["video.mp4"] if s["kind"] == "video" else []
+        )
+        if any(
+            not (dest / f).is_file() or not (dest / f).stat().st_size for f in files
+        ):
+            raise ValueError("文件生成失败，请重试。")
+        output = p.get("output") or output_spec(s["kind"], s["ratio"])
+        dims = (output["width"], output["height"])
+        with Image.open(dest / "poster.png") as img:
+            if img.size != dims:
+                raise ValueError("输出规格异常，请重新制作。")
+            if s["kind"] == "poster" and any(
+                abs(v - output["dpi"]) > 1 for v in img.info.get("dpi", (0, 0))
+            ):
+                raise ValueError("PNG 印刷精度与已确认设置不一致。")
+            img.verify()
+        known = (
+            p["original"]
+            + " "
+            + p["facts"]
+            + " "
+            + json.dumps(p["profile"], ensure_ascii=False)
+        )
+        words = cp["title"] + " " + cp["body"] + " " + cp["cta"]
+        if RISK.search(words) or any(
+            claim not in known for claim in NUMCLAIM.findall(words)
+        ):
+            raise ValueError("检测到未经确认的经营声明，请补充事实后重新创作。")
+        checks = [
+            {
+                "label": "事实检查",
+                "detail": cp.get("review", "已核对数字声明与绝对化承诺。"),
+            },
+            {
+                "label": "文案与画面",
+                "detail": "共同围绕「"
+                + p["angle"]
+                + "」。"
+                + (
+                    "使用商家已核对的照片。"
+                    if ap
+                    else (
+                        "内置场景图已标注为创意示意。"
+                        if background or p.get("scenePhoto")
+                        else "采用文字构图。"
+                    )
+                ),
+            },
+            {
+                "label": "导出检查",
+                "detail": "已校验 PNG 文件及 "
+                + " × ".join(map(str, dims))
+                + " 像素画幅及文案文件。",
+            },
+        ]
+        if writing := cp.get("writingSkill"):
+            checks.append(
+                {
+                    "label": "文案 Skill",
+                    "detail": f"{writing['name']} v{writing['version']} · {writing['mode']} · "
+                    + "、".join(writing["sections"]),
+                }
+            )
+        if s["kind"] in ("poster", "video"):
+            style = p.get("design") or choose_style(p)
+            font_info = "、".join(layout["fonts"])
+            checks.append(
+                {
+                    "label": "版式与用字",
+                    "detail": style["name"]
+                    + " · 实际用字："
+                    + font_info
+                    + (
+                        "。品牌字体未覆盖的字符已逐字搭配。"
+                        if layout["fallback"]
+                        else "。"
+                    ),
+                }
+            )
+        if s["kind"] == "video":
+            probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-of",
+                    "json",
+                    "-show_streams",
+                    "-show_format",
+                    str(dest / "video.mp4"),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=12,
+            )
+            meta = json.loads(probe.stdout)
+            if {a["codec_type"] for a in meta["streams"]} != {
+                "video",
+                "audio",
+            } or not 8.9 <= float(meta["format"]["duration"]) <= 9.1:
+                raise ValueError("短片未通过轨道或时长检查，请重试。")
+            video = next(a for a in meta["streams"] if a["codec_type"] == "video")
+            if (video["width"], video["height"]) != dims or Fraction(
+                video["avg_frame_rate"]
+            ) != 24:
+                raise ValueError("短片画幅或帧率与确认规格不符。")
+            checks.append(
+                {
+                    "label": "短片检查",
+                    "detail": f"已核实 {dims[0]} × {dims[1]}、9 秒、24 fps 画面和声音轨道。",
+                }
+            )
+        with db(True) as c:
+            if n == 1:
+                c.execute(
+                    "INSERT INTO work VALUES(?,?,?,?,?)", (work, t, s["kind"], 1, now())
+                )
+            c.execute(
+                "INSERT INTO version VALUES(?,?,?,?,?,?)",
+                (work, n, dump(s), dump(cp), dump(checks), now()),
+            )
+            c.execute("UPDATE work SET current=? WHERE id=?", (n, work))
+            if j["cost"]:
+                c.execute(
+                    "UPDATE merchant SET credits=credits-? WHERE id=?", (j["cost"], t)
+                )
+                c.execute(
+                    "INSERT INTO ledger(tenant,job,delta,note,created)VALUES(?,?,?,?,?)",
+                    (t, id, -j["cost"], LABEL[s["kind"]] + " · " + cp["title"], now()),
+                )
+            c.execute("UPDATE job SET state='complete',error=NULL WHERE id=?", (id,))
+    except Exception as e:
+        app.logger.exception("Generation failed for %s", id)
+        msg = str(e) if isinstance(e, ValueError) else "制作中断，已保留需求。请重试。"
+        with db(True) as c:
+            c.execute("UPDATE job SET state='failed',error=? WHERE id=?", (msg, id))
+
+
+@app.get("/api/jobs/<id>")
+def job_status(id):
+    with db() as c:
+        r = owner(c, "job", id, reqtenant())
+    return jsonify({k: r[k] for k in ("id", "state", "work", "error", "version")})
+
+
+@app.post("/api/jobs/<id>/retry")
+def retry(id):
+    t = reqtenant()
+    with db(True) as c:
+        j = owner(c, "job", id, t)
+        if j["state"] == "failed":
+            if c.execute(
+                "SELECT 1 FROM version WHERE work=? AND n=?", (j["work"], j["version"])
+            ).fetchone():
+                raise ValueError("此版本已完成。")
+            if c.execute(
+                "SELECT 1 FROM job WHERE work=? AND id!=? AND state IN ('queued','running')",
+                (j["work"], id),
+            ).fetchone():
+                raise ValueError("另一版本正在生成，请稍后再试。")
+            enough(c, t, j["cost"])
+            c.execute("UPDATE job SET state='queued',error=NULL WHERE id=?", (id,))
+    pool.submit(produce, id)
+    return jsonify(id=id)
+
+
+@app.get("/api/works/<id>")
+def get_work(id):
+    t = reqtenant()
+    with db() as c:
+        return jsonify(pack(c, owner(c, "work", id, t), True))
+
+
+@app.post("/api/works/<id>/restore/<int:n>")
+def restore(id, n):
+    t = reqtenant()
+    with db(True) as c:
+        owner(c, "work", id, t)
+        if not c.execute(
+            "SELECT 1 FROM version WHERE work=? AND n=?", (id, n)
+        ).fetchone():
+            abort(404)
+        c.execute("UPDATE work SET current=? WHERE id=?", (n, id))
+    return jsonify(ok=True)
+
+
+@app.get("/api/works/<id>/v/<int:n>/<mode>")
+def output(id, n, mode):
+    t = reqtenant()
+    with db() as c:
+        w = owner(c, "work", id, t)
+        r = c.execute(
+            "SELECT copy FROM version WHERE work=? AND n=?", (id, n)
+        ).fetchone()
+        if not r:
+            abort(404)
+    file = {
+        "poster": "poster.png",
+        "video": "video.mp4",
+        "download": {"copy": "copy.txt", "poster": "poster.png", "video": "video.mp4"}[
+            w["kind"]
+        ],
+    }.get(mode)
+    path = DATA / t / "works" / id / str(n) / str(file)
+    if not file or not path.exists():
+        abort(404)
+    if mode == "download":
+        with db(True) as c:
+            c.execute(
+                "INSERT INTO downloads VALUES(?,?,1) ON CONFLICT(work,n) DO UPDATE SET count=count+1",
+                (id, n),
+            )
+    return send_file(
+        path,
+        as_attachment=mode == "download",
+        download_name="响指出片-" + json.loads(r["copy"])["title"] + path.suffix,
+        conditional=True,
+    )
+
+
+@app.get("/api/admin")
+def admin_state():
+    require_admin()
+    cfg = model.settings()
+    with db() as c:
+        works = []
+        for row in c.execute(
+            """SELECT w.id,w.kind,v.n,v.copy,v.quality,r.rating,r.tags,r.metrics,e.views,e.clicks,e.inquiries,e.visits,v.created FROM work w JOIN version v ON v.work=w.id AND v.n=w.current LEFT JOIN review r ON r.work=w.id AND r.n=v.n LEFT JOIN effect e ON e.work=w.id AND e.n=v.n ORDER BY (r.rating IS NULL) DESC,v.n DESC,v.created DESC LIMIT 150"""
+        ):
+            val = dict(row)
+            val["copy"] = json.loads(val["copy"])
+            val["quality"] = json.loads(val["quality"])
+            works.append(val)
+        return jsonify(
+            effects=[
+                dict(row)
+                for row in c.execute(
+                    """SELECT json_extract(v.spec,'$.plan.rule') strategy,COUNT(*) reports,SUM(e.views) views,SUM(e.clicks) clicks,SUM(e.inquiries) inquiries,SUM(e.visits) visits FROM effect e JOIN version v ON v.work=e.work AND v.n=e.n GROUP BY strategy"""
+                )
+            ],
+            events=[
+                dict(x)
+                for x in c.execute("SELECT * FROM event ORDER BY starts DESC LIMIT 50")
+            ],
+            settings={
+                **{
+                    k: cfg[k]
+                    for k in (
+                        "url",
+                        "model",
+                        "feed",
+                        "license",
+                        "board",
+                        "pinRights",
+                        "imageUrl",
+                        "imageModel",
+                    )
+                },
+                "hasPinToken": bool(cfg["pinToken"]),
+                "hasImageKey": bool(cfg["imageKey"]),
+                "hasKey": bool(cfg["key"]),
+                "engine": model.engine_name(),
+            },
+            works=works,
+            cases=[
+                dict(i)
+                for i in c.execute(
+                    "SELECT * FROM cases ORDER BY created DESC,rowid DESC"
+                )
+            ],
+            rules=[
+                {**dict(i), "tests": json.loads(i["tests"])}
+                for i in c.execute(
+                    "SELECT * FROM rules ORDER BY created DESC,rowid DESC"
+                )
+            ],
+            audit=[
+                dict(i)
+                for i in c.execute(
+                    "SELECT action,target,created FROM audit ORDER BY id DESC LIMIT 80"
+                )
+            ],
+            jobs=[
+                dict(i)
+                for i in c.execute(
+                    "SELECT state,COUNT(*) AS total FROM job GROUP BY state"
+                )
+            ],
+            feedConfigured=bool(
+                (cfg["feed"] and cfg["license"])
+                or (cfg["board"] and cfg["pinToken"] and cfg["pinRights"])
+            ),
+        )
+
+
+@app.get("/api/admin/preview/<id>/<int:n>/<kind>")
+def admin_preview(id, n, kind):
+    require_admin()
+    with db() as c:
+        w = c.execute("SELECT * FROM work WHERE id=?", (id,)).fetchone()
+        if (
+            not w
+            or not c.execute(
+                "SELECT 1 FROM version WHERE work=? AND n=?", (id, n)
+            ).fetchone()
+        ):
+            abort(404)
+    file = {"poster": "poster.png", "video": "video.mp4"}.get(kind)
+    path = DATA / w["tenant"] / "works" / id / str(n) / str(file)
+    if not file or not path.is_file():
+        abort(404)
+    return send_file(path)
+
+
+@app.post("/api/admin/<action>")
+def admin_action(action):
+    require_admin()
+    v = body()
+    t = reqtenant()
+    target = string(v.get("id"), 90)
+    if action == "discover":
+        return jsonify(count=discover())
+    if action == "settings":
+        cfg = model.settings()
+        for field in (
+            "url",
+            "model",
+            "feed",
+            "license",
+            "board",
+            "pinRights",
+            "imageUrl",
+            "imageModel",
+        ):
+            cfg[field] = string(v.get(field), 1200)
+        if v.get("key"):
+            cfg["key"] = string(v.get("key"), 1200)
+        if v.get("imageKey"):
+            cfg["imageKey"] = string(v.get("imageKey"), 1200)
+        if bool(cfg["imageUrl"]) != bool(cfg["imageModel"]):
+            raise ValueError("图像服务地址和模型名称需同时填写。")
+        if cfg["imageUrl"]:
+            ep = urlparse(cfg["imageUrl"])
+            if ep.scheme != "https" and not (
+                ep.scheme == "http" and ep.hostname in ("localhost", "127.0.0.1", "::1")
+            ):
+                raise ValueError("远程图像服务须使用 HTTPS。")
+        if v.get("clearKey"):
+            cfg["key"] = ""
+        if v.get("pinToken"):
+            cfg["pinToken"] = string(v.get("pinToken"), 1200)
+        if cfg["board"] and not (
+            cfg["board"].isdigit() and cfg["pinRights"] and cfg["pinToken"]
+        ):
+            raise ValueError("请填写画板数字 ID、访问令牌及使用条件。")
+        if bool(cfg["model"]) != bool(cfg["url"]):
+            raise ValueError("模型名称和服务地址需要同时填写。")
+        if cfg["url"]:
+            ep = urlparse(cfg["url"])
+            if ep.scheme != "https" and not (
+                ep.scheme == "http" and ep.hostname in ("localhost", "127.0.0.1", "::1")
+            ):
+                raise ValueError("远程模型服务须使用 HTTPS。")
+        if cfg["feed"] and not (cfg["feed"].startswith("https://") and cfg["license"]):
+            raise ValueError("请填写 HTTPS 来源和授权条件。")
+        model.save_settings(cfg)
+        with db(True) as c:
+            audit(c, t, "更新模型与来源配置", "服务连接")
+        return jsonify(ok=True)
+    if action == "test-model":
+        try:
+            reply, name = model.ask(
+                "Return only a JSON object with ok set to true.",
+                {"task": "connection test"},
+                100,
+            )
+        except Exception:
+            raise ValueError("模型未返回响应，请核对地址、模型名称及密钥。")
+        if reply.get("ok") is not True:
+            raise ValueError("服务已响应，模型未返回约定的 JSON 结构。")
+        return jsonify(ok=True, model=name)
+    with db(True) as c:
+        if action == "event":
+            title = string(v.get("title"), 100)
+            city = string(v.get("city"), 80)
+            source = string(v.get("source"), 1000)
+            first, ends = (
+                dt.date.fromisoformat(string(v.get("starts"), 10)),
+                dt.date.fromisoformat(string(v.get("ends"), 10)),
+            )
+            if (
+                not title
+                or not city
+                or urlparse(source).scheme != "https"
+                or first > ends
+                or not v.get("verified")
+            ):
+                raise ValueError("请核实并填写活动日期、地区及官方来源。")
+            target = ident()
+            c.execute(
+                "INSERT INTO event VALUES(?,?,?,?,?,?,?)",
+                (
+                    target,
+                    title,
+                    city,
+                    first.isoformat(),
+                    ends.isoformat(),
+                    source,
+                    now(),
+                ),
+            )
+        elif action == "review":
+            rating = string(v.get("rating"))
+            if rating not in ("优秀", "合格", "不合格"):
+                raise ValueError("请选择审核结论。")
+            n = int(v.get("n") or 1)
+            if not c.execute(
+                "SELECT 1 FROM version WHERE work=? AND n=?", (target, n)
+            ).fetchone():
+                abort(404)
+            measures = [
+                v.get(field) for field in ("views", "clicks", "inquiries", "visits")
+            ]
+            if any(x not in ("", None) for x in measures):
+                if not string(v.get("metrics"), 250):
+                    raise ValueError("请注明实际数据的来源和统计区间。")
+                counts = [None if x in ("", None) else int(x) for x in measures]
+                if any(x is not None and (x < 0 or x > 1_000_000_000) for x in counts):
+                    raise ValueError("请填写有效的非负统计数值。")
+                c.execute(
+                    "INSERT OR REPLACE INTO effect VALUES(?,?,?,?,?,?,?)",
+                    (target, n, *counts, string(v.get("metrics"), 250)),
+                )
+            c.execute(
+                "INSERT OR REPLACE INTO review VALUES(?,?,?,?,?,?)",
+                (
+                    target,
+                    n,
+                    rating,
+                    string(v.get("tags"), 160),
+                    string(v.get("metrics"), 250),
+                    now(),
+                ),
+            )
+        elif action == "case":
+            title = string(v.get("title"), 150)
+            source = string(v.get("source"), 1000)
+            license = string(v.get("license"), 220)
+            lesson = string(v.get("lesson"), 300)
+            issue = string(v.get("issue"), 160)
+            cat = string(v.get("category"))
+            kind = string(v.get("kind"))
+            if (
+                not all((title, source, license, lesson))
+                or urlparse(source).scheme not in ("http", "https")
+                or cat not in ("优秀案例", "反面案例", "创意方法")
+                or kind not in ("图片", "视频", "文案")
+            ):
+                raise ValueError("请补全案例名称、来源网址、授权条件和拆解方法。")
+            if cat == "反面案例" and not issue:
+                raise ValueError("请标注反面案例的具体问题。")
+            if c.execute("SELECT 1 FROM cases WHERE source=?", (source,)).fetchone():
+                raise ValueError("这个来源已经收录。")
+            target = ident()
+            c.execute(
+                "INSERT INTO cases VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    target,
+                    title,
+                    source,
+                    license,
+                    kind,
+                    cat,
+                    lesson,
+                    issue,
+                    "pending",
+                    now(),
+                ),
+            )
+        elif action == "approve":
+            lesson = string(v.get("lesson"), 300)
+            if lesson:
+                c.execute("UPDATE cases SET lesson=? WHERE id=?", (lesson, target))
+            r = c.execute("SELECT * FROM cases WHERE id=?", (target,)).fetchone()
+            if not r or not r["lesson"]:
+                raise ValueError("请先填写可迁移的创意方法。")
+            c.execute("UPDATE cases SET status='approved' WHERE id=?", (target,))
+        elif action == "rule":
+            name = string(v.get("name"), 80)
+            method = string(v.get("method"))
+            reason = string(v.get("reason"), 220)
+            if method not in METHODS or not name or not reason:
+                raise ValueError("请填写版本名称、更新原因和创意方法。")
+            target = ident()
+            case_id = string(v.get("case_id"), 80)
+            if (
+                case_id
+                and not c.execute(
+                    "SELECT 1 FROM cases WHERE id=? AND status='approved' AND category!='反面案例'",
+                    (case_id,),
+                ).fetchone()
+            ):
+                raise ValueError("请选择已审核入库的正面方法。")
+            lesson = (
+                c.execute("SELECT lesson FROM cases WHERE id=?", (case_id,)).fetchone()
+                if case_id
+                else None
+            )
+            tests = run_tests(
+                {
+                    "id": target,
+                    "name": name,
+                    "method": method,
+                    "lesson": lesson[0] if lesson else "",
+                }
+            )
+            c.execute(
+                "INSERT INTO rules(id,name,method,reason,tests,status,percent,created,case_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    target,
+                    name,
+                    method,
+                    reason,
+                    dump(tests),
+                    "tested" if all(x["ok"] for x in tests) else "failed",
+                    0,
+                    now(),
+                    case_id,
+                ),
+            )
+        elif action in ("pilot", "release", "rollback"):
+            r = c.execute("SELECT * FROM rules WHERE id=?", (target,)).fetchone()
+            if (
+                not r
+                or r["status"] == "failed"
+                or (
+                    target != "baseline"
+                    and not all(x["ok"] for x in json.loads(r["tests"]))
+                )
+            ):
+                raise ValueError("固定测试未通过，无法启用。")
+            if action == "pilot":
+                if r["status"] == "live":
+                    raise ValueError("此版本已经全量启用。")
+                c.execute(
+                    "UPDATE rules SET status='archived',percent=0 WHERE status='pilot'"
+                )
+                c.execute(
+                    "UPDATE rules SET status='pilot',percent=10 WHERE id=?", (target,)
+                )
+            else:
+                c.execute(
+                    "UPDATE rules SET status='archived',percent=0 WHERE status IN ('live','pilot')"
+                )
+                c.execute(
+                    "UPDATE rules SET status='live',percent=100 WHERE id=?", (target,)
+                )
+        else:
+            abort(404)
+        audit(
+            c,
+            t,
+            {
+                "event": "核实本地活动",
+                "review": "作品抽查",
+                "case": "添加案例",
+                "approve": "审核入库",
+                "rule": "测试新策略",
+                "pilot": "灰度启用",
+                "release": "全量启用",
+                "rollback": "版本回退",
+            }[action],
+            target,
+        )
+    return jsonify(ok=True)
+
+
+@app.get("/")
+@app.get("/<path:path>")
+def site(path=""):
+    dist = ROOT / "dist"
+    if not (dist / "index.html").exists():
+        return "请先运行 npm run build，或使用 npm run dev。", 503
+    if path.startswith("api/"):
+        abort(404)
+    if path and (dist / path).is_file():
+        return send_from_directory(dist, path)
+    return send_from_directory(dist, "index.html")
+
+
+def start():
+    with db(True) as c:
+        for j in c.execute(
+            "SELECT id,worker_pid FROM job WHERE state='running'"
+        ).fetchall():
+            try:
+                if not j["worker_pid"]:
+                    raise ProcessLookupError()
+                os.kill(j["worker_pid"], 0)
+            except ProcessLookupError:
+                c.execute("UPDATE job SET state='queued' WHERE id=?", (j["id"],))
+        pending = [
+            row[0] for row in c.execute("SELECT id FROM job WHERE state='queued'")
+        ]
+    for id in pending:
+        pool.submit(produce, id)
+
+    def sync():
+        import time
+
+        last_sync = 0
+        last_week = None
+        while True:
+            cfg = model.settings()
+            week = dt.date.today().isocalendar()[:2]
+            if last_week != week:
+                with db(True) as c:
+                    for merchant in c.execute(
+                        "SELECT id,profile FROM merchant"
+                    ).fetchall():
+                        weekly(
+                            c,
+                            merchant["id"],
+                            json.loads(merchant["profile"]),
+                            history(c, merchant["id"]),
+                        )
+                last_week = week
+            configured = (cfg["feed"] and cfg["license"]) or (
+                cfg["board"] and cfg["pinToken"] and cfg["pinRights"]
+            )
+            if configured and time.time() - last_sync > 86400:
+                try:
+                    discover()
+                    last_sync = time.time()
+                except Exception:
+                    logging.exception("Reference feed unavailable")
+                    last_sync = time.time() - 82800
+            time.sleep(60)
+
+    threading.Thread(target=sync, daemon=True).start()
+    from waitress import serve
+
+    port = int(os.getenv("PORT", 7341))
+    print(f"响指出片 Trupic  http://127.0.0.1:{port}", flush=True)
+    serve(app, host=os.getenv("TRUPIC_HOST", "127.0.0.1"), port=port, threads=8)
+
+
+if __name__ == "__main__":
+    start()

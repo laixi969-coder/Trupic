@@ -1,0 +1,149 @@
+page {
+  background: #f5f7f2;
+  color: #19291e;
+  font-family: -apple-system, "PingFang SC", sans-serif;
+  font-size: 30rpx;
+  line-height: 1.5;
+}
+.page {
+  padding: 30rpx 36rpx 64rpx;
+}
+.title {
+  font-weight: 750;
+  font-size: 54rpx;
+  line-height: 1.21;
+  letter-spacing: -2rpx;
+}
+.heading {
+  font-size: 36rpx;
+  font-weight: 700;
+}
+.sub {
+  color: #526456;
+  font-size: 26rpx;
+}
+.row,
+.between {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+.between {
+  justify-content: space-between;
+}
+.section {
+  margin-top: 32rpx;
+}
+.panel {
+  background: white;
+  border: 1px solid #d6dfd3;
+  padding: 24rpx;
+  border-radius: 26rpx;
+  margin: 24rpx 0;
+}
+button {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 28rpx;
+  line-height: 1.45;
+  border-radius: 0;
+}
+button::after {
+  border: 0;
+}
+.primary,
+.secondary {
+  width: 100%;
+  min-height: 88rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 650;
+  border-radius: 18rpx;
+  padding: 16rpx;
+  box-sizing: border-box;
+}
+.primary {
+  background: #184b32;
+  color: white;
+}
+.primary[disabled] {
+  background: #9caca1;
+  color: white;
+}
+.secondary {
+  background: #e9efe6;
+  color: #245037;
+}
+.link {
+  color: #285b3c;
+  min-height: 80rpx;
+  display: flex;
+  align-items: center;
+}
+.chip {
+  border-radius: 40rpx;
+  padding: 14rpx 24rpx;
+  white-space: nowrap;
+  font-size: 28rpx;
+}
+.active {
+  background: #184b32;
+  color: white;
+}
+.field {
+  background: #f4f6f2;
+  padding: 20rpx;
+  border-radius: 14rpx;
+  box-sizing: border-box;
+  width: 100%;
+}
+.label {
+  font-weight: 600;
+  margin: 18rpx 0 8rpx;
+}
+.note {
+  font-size: 26rpx;
+  color: #536758;
+  margin: 18rpx 0;
+}
+.error {
+  color: #963523;
+  margin: 16rpx 0;
+}
+.line {
+  border-bottom: 1px solid #dee4da;
+  padding: 18rpx 0;
+}
+.spaced {
+  margin-top: 24rpx;
+}
+.block {
+  display: block;
+}
+.sheetmask {
+  position: fixed;
+  inset: 0;
+  background: rgba(12, 25, 16, 0.45);
+  z-index: 5;
+}
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: white;
+  border-radius: 32rpx 32rpx 0 0;
+  padding: 28rpx 36rpx calc(32rpx + env(safe-area-inset-bottom));
+  z-index: 6;
+  max-height: 78vh;
+  overflow: auto;
+}
+.close {
+  padding: 12rpx 18rpx;
+  color: #365940;
+  min-height: 68rpx;
+}

@@ -1,0 +1,43 @@
+{
+  "pages": [
+    "pages/home/home",
+    "pages/inspiration/inspiration",
+    "pages/mine/mine",
+    "pages/confirm/confirm",
+    "pages/result/result"
+  ],
+  "window": {
+    "navigationBarTitleText": "响指出片 Trupic",
+    "navigationBarBackgroundColor": "#f5f7f2",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f5f7f2"
+  },
+  "tabBar": {
+    "color": "#536458",
+    "selectedColor": "#184b32",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/home/home",
+        "text": "创作",
+        "iconPath": "images/home.png",
+        "selectedIconPath": "images/home-active.png"
+      },
+      {
+        "pagePath": "pages/inspiration/inspiration",
+        "text": "灵感",
+        "iconPath": "images/gallery.png",
+        "selectedIconPath": "images/gallery-active.png"
+      },
+      {
+        "pagePath": "pages/mine/mine",
+        "text": "我的",
+        "iconPath": "images/mine.png",
+        "selectedIconPath": "images/mine-active.png"
+      }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

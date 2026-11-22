@@ -1,0 +1,9 @@
+<view class="page"><block wx:if="{{state==='complete'}}">
+<view class="heading">{{version.title}}</view>
+<image wx:if="{{work.kind==='poster' && media}}" class="poster" src="{{media}}" mode="widthFix"/>
+<video wx:if="{{work.kind==='video' && media}}" class="movie" src="{{media}}" controls/>
+<view class="panel"><text selectable>{{version.body}}</text><view class="spaced">{{version.cta}}</view></view>
+<button wx:if="{{work.kind!=='copy'}}" class="primary" disabled="{{busy || !media}}" loading="{{busy}}" bindtap="save">保存到相册</button>
+<button class="secondary spaced" bindtap="copy">复制文案</button>
+</block><block wx:else><view class="title">{{state==='failed'?'制作未完成':state==='error'?'暂时无法显示':'正在制作'}}</view><view class="note">{{error || '完成后可以在「我的」重新打开作品。'}}</view><button wx:if="{{state==='failed' || state==='error'}}" class="primary" bindtap="retry" disabled="{{busy}}">重试</button></block>
+<button class="link spaced" bindtap="mine">我的作品</button></view>

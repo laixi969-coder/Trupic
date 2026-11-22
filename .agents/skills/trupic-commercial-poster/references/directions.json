@@ -1,0 +1,236 @@
+{
+  "auto": {
+    "name": "汽车",
+    "match": "汽车|车型|轿车|车展|试驾|座驾|车漆|跑车|车行|SUV",
+    "plateMatch": "轿车|跑车|汽车展|车展|汽车品牌",
+    "plate": "auto",
+    "ink": "#101c2a",
+    "paper": "#ecf1ec",
+    "accent": "#b5d7fe",
+    "style": "product",
+    "type": "display",
+    "shot": "低机位拍车身侧面，沿车顶高光建立横轴，车型大字置于天空或车顶线上方。",
+    "focus": "留出轮胎和完整车身轮廓。车型、续航及配置只取商家已确认资料。",
+    "example": {
+      "title": "照片里，握不到方向盘",
+      "brand": "原野汽车  FIELD MOTOR",
+      "product": "轿车",
+      "brief": "为轿车做试驾邀约海报，让车身的水平线与标题呼应。",
+      "cta": "预约试驾。",
+      "offer": "",
+      "style": "product",
+      "terms": ""
+    },
+    "headline": "下一程，出发",
+    "copy": "选个方便的时间，从近处看看车身线条，再聊聊日常出行。",
+    "cta": "了解车型详情。",
+    "protected": [
+      0.035,
+      0.59,
+      0.97,
+      0.8
+    ]
+  },
+  "clean": {
+    "name": "家化洗护",
+    "match": "家化|洗涤|清洁剂|洗洁精|洗衣液|洗衣凝珠|洗衣粉|洗发水|洗护|沐浴露",
+    "plateMatch": "洗衣液|衣物洗涤液",
+    "plate": "clean",
+    "ink": "#2d184b",
+    "paper": "#fff9ef",
+    "accent": "#e7fba3",
+    "style": "product",
+    "type": "display",
+    "shot": "正面保留瓶肩、把手和标签，斜后方透光，背景借用瓶身主色，气泡仅在边缘。",
+    "focus": "标签正面留空，辅助元素只表达使用场景，功效和香型须有依据。",
+    "example": {
+      "title": "这一篮，该倒多少？",
+      "brand": "白沐  BAIN",
+      "product": "洗衣液",
+      "brief": "为洗衣液做家化新品海报，突出包装轮廓，标题放在瓶肩上方。",
+      "cta": "了解系列产品。",
+      "offer": "",
+      "style": "product",
+      "terms": ""
+    },
+    "headline": "日常，自有节奏",
+    "copy": "挑选日用品时，先看看包装上的使用说明，再比较适合自己的选择。",
+    "cta": "查看产品信息。",
+    "protected": [
+      0.44,
+      0.35,
+      0.94,
+      0.89
+    ]
+  },
+  "tea": {
+    "name": "茶饮",
+    "match": "茶饮|抹茶|奶茶|拿铁|柑橘|鲜橙|果茶|咖啡|饮品",
+    "plateMatch": "抹茶",
+    "plate": "matcha-campaign",
+    "ink": "#132619",
+    "paper": "#f8f4d9",
+    "accent": "#dcf39e",
+    "style": "product",
+    "type": "serif",
+    "shot": "近距离拍摄饮品的分层、冰块与透光边缘，用亮部勾出杯口；留出一侧的暗台面落字。",
+    "focus": "保留杯口、奶纹或果肉中的一个记忆点，已确认价格与供应限制相邻。",
+    "example": {
+      "title": "第一口，先别搅",
+      "brand": "青屿茶室  AOMA TEA",
+      "product": "抹茶拿铁",
+      "brief": "用抹茶拿铁做新品海报，让杯口的光和奶纹成为主角。",
+      "cta": "来喝一杯新茶。",
+      "offer": "",
+      "style": "product",
+      "terms": ""
+    },
+    "headline": "此刻，来一杯",
+    "copy": "沿着杯口的光，看看今天想喝什么。",
+    "cta": "来选一杯。",
+    "protected": [
+      0.53,
+      0.34,
+      0.9,
+      0.86
+    ]
+  },
+  "home": {
+    "name": "生活用品",
+    "match": "家居|生活用品|餐具|陶瓷|瓷杯|茶具|茶杯|器皿|碗碟|毛巾|台灯|水杯",
+    "plateMatch": "陶瓷|茶具|瓷杯|陶杯|茶杯|器皿",
+    "plate": "home",
+    "ink": "#312e23",
+    "paper": "#faf3e4",
+    "accent": "#e3ca95",
+    "style": "editorial",
+    "type": "serif",
+    "shot": "侧光扫过器物或织物表面，用接触阴影交代重量；器物集中于中下方，上方与侧边留出呼吸。",
+    "focus": "釉面、纹理和轮廓至少显出其一；品名与材质的层级低于主标题。",
+    "example": {
+      "title": "杯子也有侧脸",
+      "brand": "泥间  CLAY STUDIO",
+      "product": "陶瓷茶杯",
+      "brief": "为陶瓷茶杯设计生活用品海报，突出釉面侧光与器物留白。",
+      "cta": "来看看这件器物。",
+      "offer": "",
+      "style": "editorial",
+      "terms": ""
+    },
+    "headline": "器与日常",
+    "copy": "把目光放在材质和轮廓上，看看哪一件适合你的日常。",
+    "cta": "看看商品细节。",
+    "protected": [
+      0.35,
+      0.54,
+      0.97,
+      0.86
+    ]
+  },
+  "beauty": {
+    "name": "美妆香氛",
+    "match": "香水|香氛|美妆|精华|口红|面霜|彩妆",
+    "plateMatch": "香水|瓶装香氛",
+    "plate": "beauty",
+    "ink": "#422136",
+    "paper": "#fdf0e8",
+    "accent": "#f9bec5",
+    "style": "editorial",
+    "type": "serif",
+    "shot": "瓶体侧逆光刻出玻璃边线，用一种与实物有关的材质延伸情绪；在反射之外放细衬线字。",
+    "focus": "保证瓶名可读，色号、香调、成分和功效仅取已知资料。",
+    "example": {
+      "title": "照片闻不到这一瓶",
+      "brand": "花序  FLORE",
+      "product": "香水",
+      "brief": "为香水做编辑风海报，用玻璃折射和低明度背景衬托品名。",
+      "cta": "到店试香。",
+      "offer": "",
+      "style": "editorial",
+      "terms": ""
+    },
+    "headline": "遇见另一面",
+    "copy": "从自己喜欢的色调和质地开始，来挑一款适合日常使用的产品。",
+    "cta": "了解这个系列。",
+    "protected": [
+      0.55,
+      0.41,
+      0.93,
+      0.85
+    ]
+  },
+  "retail": {
+    "name": "百货零售",
+    "match": "百货|商场|购物中心|购物节|周年庆|季末大促|市集",
+    "plateMatch": "百货|商场|购物中心|购物节|季末大促",
+    "plate": "retail",
+    "ink": "#472032",
+    "paper": "#fff4d6",
+    "accent": "#fff298",
+    "style": "swiss",
+    "type": "display",
+    "shot": "让提袋、丝带或陈列道具成为前景，在高纯度主色和一处反色上建立季节活动的远读识别。",
+    "focus": "有活动价时先读优惠，再读日期与条件；只有活动名时把字级让给活动名。",
+    "example": {
+      "title": "清单之外，还想逛哪家？",
+      "brand": "街集百货  MARKET HALL",
+      "product": "季末购物节",
+      "brief": "为百货购物节设计活动海报，优先展示已确认的活动信息。",
+      "cta": "周末来街集。",
+      "offer": "8折",
+      "style": "swiss",
+      "terms": "指定商品，限活动期间。"
+    },
+    "headline": "好逛时节",
+    "copy": "给下一次逛街留一点时间，约上朋友一起出发。",
+    "cta": "来逛逛。",
+    "protected": [
+      0.18,
+      0.36,
+      0.995,
+      0.93
+    ]
+  },
+  "commerce": {
+    "name": "电商数码",
+    "match": "电商|网店|线上商城|耳机|耳麦|音响|数码|音箱|键盘",
+    "plateMatch": "头戴(?:式)?(?:无线|蓝牙|降噪)?耳机|耳麦",
+    "plate": "commerce",
+    "ink": "#232026",
+    "paper": "#fff0d2",
+    "accent": "#ffe388",
+    "style": "product",
+    "type": "display",
+    "shot": "商品弧线占据主画面，质感由耳罩、接缝或材质近景说明；给型号和价格留下窄而清楚的字区。",
+    "focus": "耳挂、按钮和接口属于识别细节；用原图保留真实规格。",
+    "example": {
+      "title": "戴上，再按播放",
+      "brand": "听序  SONO",
+      "product": "头戴式耳机",
+      "brief": "为头戴式耳机设计电商主图，突出耳罩与头梁的材质。",
+      "cta": "看看商品细节。",
+      "offer": "",
+      "style": "product",
+      "terms": ""
+    },
+    "headline": "细节，上场",
+    "copy": "从外观细节看起，再按自己的使用习惯挑选。",
+    "cta": "查看商品详情。",
+    "protected": [
+      0.34,
+      0.39,
+      0.94,
+      0.91
+    ]
+  },
+  "general": {
+    "name": "品牌与门店",
+    "ink": "#192f29",
+    "paper": "#fff3d9",
+    "accent": "#ebdc9b",
+    "style": "product",
+    "type": "display",
+    "shot": "从活动里挑一个物件或动作作为主体，其余信息沿主光方向退到画面边缘。",
+    "focus": "让商品和一句主张先被读到，保留经营事实。"
+  }
+}
