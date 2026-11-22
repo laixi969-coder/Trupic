@@ -275,7 +275,7 @@ def render(
     frames = []
     original_box = product_geometry(dims, asset_path) if asset_path else None
 
-    directed = repair or bool(
+    directed = repair or (kind == "video" and asset_path is not None) or bool(
         plan.get("posterArt") and not (dense and not asset_path)
         and (
             kind == "video"
@@ -336,6 +336,7 @@ def render(
                 layers[index] = plate, foreground, overlay
                 layer_info = {
                     "cameraShot": index,
+                    "evidence": shot.get("evidence"),
                     "pace": pace,
                     "plate": plate.resize((160, 160)),
                     "overlay": overlay.resize((160, 160)),
@@ -389,7 +390,7 @@ def render(
         with tempfile.TemporaryDirectory(dir=folder) as tmp:
             tmp = Path(tmp)
             size = dims
-            shots = copy.get("storyboard") or storyboard(plan, copy)
+            shots = copy.get("storyboard") or storyboard(plan, copy, asset_path)
             drift = {"quiet": 0.0006, "steady": 0.0009, "brisk": 0.0012}[pace]
             for i, shot in enumerate(shots):
                 movement = drift * (1.6, 1.2, 0.65)[i] if directed else drift

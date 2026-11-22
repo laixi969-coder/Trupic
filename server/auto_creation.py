@@ -14,6 +14,7 @@ from .design import visual_requests
 from .formats import output_spec
 from .product_bundle import qualified_cutout
 from .prompt_agent import optimize
+from .shot_detail import merchant_detail
 from .skill_library import attach, effective_versions
 from .store import DATA, db, dump, ident, now
 
@@ -177,6 +178,8 @@ def coordinate(services, c, tenant, v):
         spec["ratio"]=ratio
         p=spec["plan"]
         p.update(kind=kind,autoCreation=True,coordination=common,brandKit=kit)
+        if role == "motion" and v.get("visualDetail") is not None:
+            p["markedDetail"] = merchant_detail(v, DATA / tenant / "assets" / asset_id / "original.png" if asset_id else None)
         p["output"]=output_spec(kind,ratio,720 if kind=="video" else 1080)
         attach(p,kind,workflow=route["workflow"], overrides=overrides)
         # Recompile the visual brief for each output, retaining the shared facts
@@ -251,7 +254,8 @@ def register(app, services):
             if type(v.get("confirmedCost")) is not int or v["confirmedCost"] != q["cost"]:
                 raise ValueError("创作费用已更新，请查看按钮旁的积分后重试。")
             services["enough"](c, t, q["cost"])
-            visual_spec = next((e["spec"] for e in q["items"] if e["spec"]["kind"] != "copy"), None)
+            visuals = [e["spec"] for e in q["items"] if e["spec"]["kind"] != "copy"]
+            visual_spec = next((s for s in visuals if s["kind"] == "video"), next(iter(visuals), None))
             if visual_spec and visual_spec["asset"]:
                 owner(c, "asset", visual_spec["asset"], t)
         if visual_spec and visual_spec["asset"]:

@@ -47,6 +47,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
   const request = JSON.stringify({
     brief: draft.brief, asset: draft.asset, facts, assetConfirmed: draft.assetConfirmed,
     assetMode: draft.assetMode, identityRegion: draft.identityRegion, topicId: draft.topicId,
+    visualDetail: draft.visualDetail,
     reference: draft.reference, source: draft.source, posterStyle: draft.posterStyle,
     fontId: draft.fontId, lettering: draft.lettering,
   });

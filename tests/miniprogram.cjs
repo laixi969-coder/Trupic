@@ -201,6 +201,13 @@ test(
         home.selectFormat({ ...click({ key: "dpi" }), ...input(1) });
       }
       if (kind === "video") {
+        await home.showPhoto();
+        await home.startMark(click({ target: "detail" }));
+        home.markPoint({ changedTouches: [{ clientX: 240, clientY: 300 }] });
+        home.markPoint({ changedTouches: [{ clientX: 312, clientY: 390 }] });
+        home.detailLabel(input("杯壁上的茶奶纹路"));
+        home.acceptPhoto();
+        assert.deepEqual(Array.from(home.data.identityRegion), [0.25, 0.2, 0.75, 0.8]);
         home.selectFormat({ ...click({ key: "ratio" }), ...input(4) });
         home.selectFormat({ ...click({ key: "resolution" }), ...input(0) });
       }
@@ -210,6 +217,7 @@ test(
       confirm.onLoad();
       const p = confirm.data.preview;
       assert.equal(p.kind, kind);
+      if (kind === "video") assert.equal(p.plan.markedDetail.label, "杯壁上的茶奶纹路");
       assert.equal(
         p.plan.design?.id,
         kind === "copy" ? undefined : gallery.data.samples[0].style,

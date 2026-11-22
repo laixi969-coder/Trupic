@@ -241,7 +241,7 @@ def optimize(spec, *, infer=True, previous=None):
     copy += {
         "poster": "主标题只承担一个重点，价格与条件留给次级文字。",
         "copy": "用一个具体场景开篇，解释一个选择理由，结尾给一个行动。",
-        "video": "开头写能在前三秒读完的一句，中段增加一条信息，末镜只给一个行动。",
+        "video": "开头写能在前三秒读完的一句，中段只说一处能从原图看出的卖点，末镜只给一个行动。",
     }[kind]
     if action:
         copy += (
@@ -296,8 +296,12 @@ def optimize(spec, *, infer=True, previous=None):
         plan["identityRegion"] = spec.get("identityRegion")
         prompts["image"] = visual
     if kind == "video":
+        located = plan.get("markedDetail") or plan.get("sourceReview", {}).get("visualDetail")
+        focus = "原图中的「" + located["label"] + "」" if located else "原图里能支撑卖点的一处可见细节"
+        if not spec.get("asset"):
+            focus = "与已确认信息相关的示意场景"
         prompts["video"] = (
-            f"以「{product}」为主体。0–3 秒建立{art_direction['mechanism']}的画面关系，3–6 秒切近{art_direction['feature']}，6–9 秒回到全景并给出行动。镜头节奏采用{PACE[reading['pace']]}。"
+            f"以「{product}」为主体。0–3 秒建立{art_direction['mechanism']}的画面关系，3–6 秒切近{focus}，停一拍后缓慢推进，字幕只说这一点。6–9 秒回到全景并给出行动。镜头节奏采用{PACE[reading['pace']]}。"
         )
     if "video" in prompts and action:
         prompts["video"] += "末镜清楚显示本次" + action["goal"] + "行动。"

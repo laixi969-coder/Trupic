@@ -54,6 +54,7 @@ from .design import (
 from .typography import Typesetter, inspect_face
 from .lettering import OPTIONS as LETTERING_OPTIONS
 from .campaign import storyboard
+from .shot_detail import merchant_detail
 from .prompt_agent import full_poster_prompt, optimize
 from .product_bundle import register as register_bundles
 from .auto_creation import register as register_creations
@@ -576,6 +577,8 @@ def plan_spec(c, t, v):
     ).fetchone()
     plan["output"] = output
     plan["kind"] = kind
+    if kind == "video" and v.get("visualDetail") is not None:
+        plan["markedDetail"] = merchant_detail(v, DATA / t / "assets" / asset / "original.png" if asset else None)
     if kind in ("poster", "video"):
         plan["visualSource"] = (
             "concept" if not asset else
@@ -772,8 +775,14 @@ def produce(id):
             if cached_copy
             else shared_copy(s) if p.get("autoCreation") and n == 1 else s.get("replacement") or generate_copy(p, 0)
         )
+        ap = None
+        if s["asset"]:
+            with db() as c:
+                a = owner(c, "asset", s["asset"], t)
+            filename = "original.png" if s.get("assetMode") == "original" else json.loads(a["info"])["file"]
+            ap = DATA / t / "assets" / s["asset"] / filename
         if s["kind"] == "video":
-            cp["storyboard"] = storyboard(p, cp)
+            cp["storyboard"] = storyboard(p, cp, ap)
         if s["kind"] == "poster" and p.get("posterArt") and p.get("output"):
             cp["fullPosterPrompt"] = full_poster_prompt(p, cp)
         known = (
@@ -784,6 +793,9 @@ def produce(id):
             + json.dumps(p["profile"], ensure_ascii=False)
         )
         words = cp["title"] + " " + cp["body"] + " " + cp["cta"]
+        if s["kind"] == "video" and cp["storyboard"][1].get("evidence"):
+            words += " " + cp["storyboard"][1]["line"]
+            known += " " + p.get("markedDetail", {}).get("label", "")
         if RISK.search(words) or any(
             claim not in known for claim in NUMCLAIM.findall(words)
         ):
@@ -791,21 +803,6 @@ def produce(id):
         if not cached_copy:
             with db(True) as c:
                 c.execute("UPDATE job SET copy_checkpoint=? WHERE id=?", (dump(cp), id))
-        ap = None
-        if s["asset"]:
-            with db() as c:
-                a = owner(c, "asset", s["asset"], t)
-            ap = (
-                DATA
-                / t
-                / "assets"
-                / s["asset"]
-                / (
-                    "original.png"
-                    if s.get("assetMode") == "original"
-                    else json.loads(a["info"])["file"]
-                )
-            )
         if p.get("autoCreation") and s["kind"] != "copy" and p.get("bundleRole") not in ("white","overlay","box","bag","card"):
             background, visual_engine = None, "本地商品素材排版"
             if s["kind"] == "video" and model.route("video")["model"]:

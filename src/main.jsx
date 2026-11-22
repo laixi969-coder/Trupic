@@ -292,7 +292,11 @@ function App() {
     }
   }
   function patch(d) {
-    setDraft((p) => ({ ...p, ...d }));
+    setDraft((p) => ({
+      ...p,
+      ...("asset" in d && d.asset !== p.asset ? { visualDetail: null } : {}),
+      ...d,
+    }));
     setError("");
   }
   function chooseBrief(
@@ -313,6 +317,7 @@ function App() {
     fileRef.current?.click();
   }
   const selected = data?.assets.find((a) => a.id === draft.asset);
+  const editingVideo = draft.kind === "video" || /短片|视频|动态海报/.test(draft.brief);
   function useAsset(a) {
     const check = a.risk || a.action === "主体抠图";
     setAssetItem(a);
@@ -1047,6 +1052,7 @@ function App() {
                                     </small>
                                     <strong>{s.line}</strong>
                                     {s.caption && <span>{s.caption}</span>}
+                                    {s.evidence && <span>{s.purpose}</span>}
                                   </li>
                                 ))}
                               </ol>
@@ -1318,6 +1324,26 @@ function App() {
               }
             />
           )}
+          {modal === "checkAsset" && !assetItem.risk && editingVideo && (
+            <ProductRegion
+              key={assetItem.id + "-detail"}
+              detail
+              asset={assetItem}
+              region={draft.visualDetail?.region}
+              change={(region) => patch({
+                visualDetail: region ? { region, label: draft.visualDetail?.label || "" } : null,
+                assetConfirmed: false,
+              })}
+            >
+              <label>框内看得见的卖点
+                <input maxLength={20} placeholder="例如：杯壁上清晰的刻度"
+                  value={draft.visualDetail?.label || ""}
+                  onChange={(e) => patch({
+                    visualDetail: { ...draft.visualDetail, label: e.target.value }, assetConfirmed: false,
+                  })} />
+              </label>
+            </ProductRegion>
+          )}
           {modal === "checkAsset" && assetItem.file !== "original.png" && (
             <label className="checkline">
               <input
@@ -1366,6 +1392,7 @@ function App() {
             ) : (
               <button
                 className="primary"
+                disabled={Boolean(editingVideo && draft.visualDetail && !draft.visualDetail.label.trim())}
                 onClick={() => {
                   patch({ assetConfirmed: true });
                   close();

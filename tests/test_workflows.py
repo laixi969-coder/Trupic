@@ -1059,6 +1059,28 @@ class WorkflowTests(unittest.TestCase):
             )
         self.assertEqual(self.state()["credits"], 120)
 
+    def test_video_preflight_pairs_observed_detail_with_a_supported_short_claim(self):
+        q, _ = self.bundle_plan()
+        asset = studio.quotes.loads(q["quote"])["specs"][0]["asset"]
+        req = dict(kind="video", brief="给抹茶饮品制作商品短片。", facts="杯壁能看到茶奶分层",
+                   asset=asset, assetConfirmed=True, assetMode="original")
+        detail = dict(region=[0.52, 0.35, 0.78, 0.58], label="茶奶分层", claim=req["facts"])
+        for observation, accepted, line in (
+            (detail, True, req["facts"]),
+            ({**detail, "claim": "口感更香浓"}, True, detail["label"]),
+            ({**detail, "region": [0.2, 0.1, 0.20001, 0.7]}, False, "商品实拍"),
+            ({**detail, "region": [0, 0, 800, 600]}, False, "商品实拍"),
+        ):
+            with patch.dict(os.environ, TRUPIC_VISION_MODEL="视觉测试"), patch(
+                "server.model.chat_request", return_value=dict(ok=True, reason="饮品可见", visualDetail=observation)
+            ):
+                plan = post(self.c, "preview", **req).json["plan"]
+            self.assertEqual(bool(plan["sourceReview"].get("visualDetail")), accepted)
+            shot = studio.storyboard(plan, dict(title="先别搅", body=req["facts"], cta=""))[1]
+            self.assertEqual(shot["line"], line)
+        for invalid in ({"label": "拨盘", "region": [0, 0, -1, 1]}, {"label": "续航24小时", "region": detail["region"]}):
+            self.assertEqual(post(self.c, "preview", **req, visualDetail=invalid).status_code, 400)
+
     def test_poster_repairs_overwritten_product_and_blocks_failed_recheck(self):
         from pathlib import Path
         from PIL import ImageDraw

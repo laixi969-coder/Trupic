@@ -29,6 +29,7 @@ Page({
     format: defaults.poster,
     asset: null,
     identityRegion: null,
+    visualDetail: null,
     assetMode: "original",
     assetConfirmed: false,
     assetImage: "",
@@ -105,6 +106,7 @@ Page({
       assetMode,
       assetConfirmed,
       identityRegion: this.data.identityRegion,
+      visualDetail: this.data.visualDetail,
     });
   },
   input(e) {
@@ -161,6 +163,7 @@ Page({
           this.setData({
             asset,
             identityRegion: null,
+            visualDetail: null,
             regionStyle: "",
             marking: false,
             assetMode: "processed",
@@ -221,13 +224,15 @@ Page({
           "%"
       : "";
   },
-  async startMark() {
+  async startMark(e) {
     const asset = this.data.asset;
+    const detail = e?.currentTarget?.dataset?.target === "detail";
     try {
       const image = await api.download(asset.original);
       if (asset.id !== this.data.asset?.id || this.data.sheet !== "asset")
         return;
-      this.setData({ marking: true, regionImage: image, firstCorner: null });
+      this.setData({ marking: true, markingDetail: detail, regionImage: image, firstCorner: null,
+        regionStyle: this.regionStyle(detail ? this.data.visualDetail?.region : this.data.identityRegion) });
     } catch (e) {
       api.message(e);
     }
@@ -251,7 +256,9 @@ Page({
         ];
         if (area[0] === area[2] || area[1] === area[3]) return;
         this.setData({
-          identityRegion: area,
+          ...(this.data.markingDetail
+            ? { visualDetail: { region: area, label: this.data.visualDetail?.label || "" } }
+            : { identityRegion: area }),
           regionStyle: this.regionStyle(area),
           firstCorner: null,
           assetConfirmed: false,
@@ -260,9 +267,14 @@ Page({
       })
       .exec();
   },
-  clearRegion() {
+  detailLabel(e) {
+    this.setData({ visualDetail: { ...this.data.visualDetail, label: e.detail.value }, assetConfirmed: false });
+    this.save();
+  },
+  clearRegion(e) {
+    const detail = e?.currentTarget?.dataset?.target === "detail";
     this.setData({
-      identityRegion: null,
+      ...(detail ? { visualDetail: null } : { identityRegion: null }),
       firstCorner: null,
       regionStyle: "",
       marking: false,
@@ -272,6 +284,9 @@ Page({
   },
   acceptPhoto() {
     if (!this.data.assetImage || this.data.firstCorner) return;
+    if (this.data.kind === "video" && this.data.visualDetail && !this.data.visualDetail.label.trim()) {
+      return wx.showToast({ title: "请填写框内可见的细节", icon: "none" });
+    }
     this.setData({ assetConfirmed: true, sheet: "" });
     this.save();
   },
@@ -279,6 +294,7 @@ Page({
     this.setData({
       asset: null,
       identityRegion: null,
+      visualDetail: null,
       regionStyle: "",
       marking: false,
       assetImage: "",
@@ -320,6 +336,7 @@ Page({
         dpi: format.dpi,
         posterStyle: style,
         identityRegion: this.data.identityRegion,
+        visualDetail: kind === "video" ? this.data.visualDetail : null,
         source,
         topicId: this.data.topicId,
       });

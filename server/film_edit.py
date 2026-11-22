@@ -11,7 +11,7 @@ from .open_design import archive_project, composition, render_composition
 UPSTREAM = "https://github.com/Vincentwei1021/video-shotcraft/tree/59f3e9b9e936ff2bce0e18446226d770a3f2f61f"
 RECIPES = (
     ("camera/depth-layer-moves", "先交代商品和环境，主体与远景以不同速度移动。"),
-    ("camera/tension-camera-moves", "先让眼睛找到细节，再沿主体横移并推近。"),
+    ("camera/tension-camera-moves", "先让眼睛找到细节，再向它缓慢推近。"),
     (
         "outro/logo-shrink-wordmark-lockup",
         "缓缓收回完整商品，末尾停住供阅读型号或行动信息。",
@@ -97,6 +97,7 @@ def encode(plates, folder, audio, dims, shots, move, titles, pace, dynamic=False
                     "inspiration": f"{UPSTREAM}/references/shots/{card}.md",
                     "adaptation": purpose,
                     "purpose": shot.get("purpose", purpose),
+                    **({"evidence": shot["evidence"]} if shot.get("evidence") else {}),
                 }
             )
         with zipfile.ZipFile(

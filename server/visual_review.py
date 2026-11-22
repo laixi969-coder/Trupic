@@ -5,12 +5,12 @@ import hashlib
 import io
 import json
 from fractions import Fraction
-import math
 import re
 import subprocess
 
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from .shot_detail import detail_from_input, normalized_box, resolvable, visible_phrase
 
 
 FIDELITY = re.compile(
@@ -20,15 +20,7 @@ FIDELITY = re.compile(
 
 
 def validate_region(path, region):
-    if (
-        not isinstance(region, list)
-        or len(region) != 4
-        or not all(
-            type(n) in (int, float) and math.isfinite(n) and 0 <= n <= 1 for n in region
-        )
-        or region[2] <= region[0]
-        or region[3] <= region[1]
-    ):
+    if not normalized_box(region):
         raise ValueError("请在原图上标出要保真的标识或包装文字。")
     with Image.open(path) as image:
         patch = image.crop(
@@ -118,7 +110,7 @@ def zoom_crop(size, factor):
     return ((w - cw) / 2, (h - ch) / 2, (w + cw) / 2, (h + ch) / 2)
 
 
-def package_check(image, box, source, alpha, region, full):
+def package_check(image, box, source, alpha, region, full, *, feature=False):
     """Compare corresponding local tiles. A small overwritten mark must not average away."""
     designated = region is not None
     if not designated and alpha is not None:
@@ -157,7 +149,7 @@ def package_check(image, box, source, alpha, region, full):
     if alpha is not None:
         abox = tuple(round(v * alpha.size[i % 2]) for i, v in enumerate(src))
         valid = np.asarray(alpha.crop(abox).resize(norm)) > 235
-        if (designated and valid.mean() < 0.9) or valid.mean() < 0.04:
+        if (designated and not feature and valid.mean() < 0.9) or valid.mean() < 0.04:
             return "抠图遮掉了商品核对区域"
     delta = np.abs(ref - out).mean(axis=2)
     for rows in np.array_split(np.arange(norm[1]), 5):
@@ -434,6 +426,10 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
                 reason = package_check(image, box, source, alpha, None, index in (0, 3))
                 if not reason and region:
                     reason = package_check(image, box, source, alpha, region, True)
+                if not reason and index == 2 and (evidence := copy["storyboard"][1].get("evidence")):
+                    reason = package_check(image, box, source, alpha, evidence["region"], True, feature=True)
+                    if reason:
+                        reason = "中镜细节「" + evidence["label"] + "」：" + reason
                 if reason:
                     issues.append(label + " · " + reason)
     return issues
@@ -514,6 +510,8 @@ def compact_review(dest, spec, cfg, layout):
             else:
                 crop = target
             view = image_message("期望商品：" + product, crop)
+            if index == 2 and (detail := entry.get("evidence")):
+                view.insert(0, {"type": "text", "text": "第2镜需要看清「" + detail["label"] + "」。若画面无法支撑字幕「" + (detail.get("claim") or detail["label"]) + "」，请返回 repair。"})
         result = model.chat_request(
             review_schema(cfg, "status"),
             cfg["model"],
@@ -611,9 +609,12 @@ def content_review(dest, original, spec, copy, layout=None):
         content.extend(image_message("交付海报或短片封面", im))
     if spec["kind"] == "video":
         for i in range(3):
+            label = f"第{i + 1}镜"
+            if i == 1 and (evidence := copy["storyboard"][i].get("evidence")):
+                label += "，核对实物中的「" + evidence["label"] + "」能否支撑本镜字幕"
             content.extend(
                 image_message(
-                    f"第{i + 1}镜", exported_frame(dest / "video.mp4", 72 * i + 36)
+                    label, exported_frame(dest / "video.mp4", 72 * i + 36)
                 )
             )
     response = model.chat_request(
@@ -676,6 +677,8 @@ def source_images(path, region):
 
 def preflight(spec, folder):
     from . import model
+    from .campaign import UNSUPPORTED, evidence_clauses
+    from .creative import NUMCLAIM, RISK
 
     cfg = model.route("vision")
     name = cfg["model"]
@@ -683,28 +686,49 @@ def preflight(spec, folder):
         return
     plan = spec["plan"]
     previous = plan.get("sourceReview", {})
+    locate = spec["kind"] == "video" and not plan.get("markedDetail")
     endpoint = hashlib.sha256(cfg["url"].encode()).hexdigest()[:16]
     if (
         previous.get("model") == name
         and previous.get("provider") == cfg["provider"]
         and previous.get("endpoint") == endpoint
+        and (not locate or previous.get("detailChecked"))
     ):
         return
-    content = [{"type": "text", "text": plan["original"]}] + source_images(
-        folder / spec["asset"] / "original.png", spec.get("identityRegion")
-    )
+    instructions = "查看商品原图和可选的局部。输出 JSON，ok 是图片可用的布尔值，reason 用一句中文点名实际看见的商品与可辨细节。若必需标识或形状确实被遮挡或模糊，描述换图原因。一般宣传照即使无商标也可接受。"
+    cfg_for_review = review_schema(cfg, "ok") if compact_local_vision(cfg) else cfg
+    request = plan["original"]
+    if locate:
+        positive, excluded = evidence_clauses(plan)
+        request += "\n商家资料：" + "。".join(positive)
+        instructions += (
+            "为第3至6秒只挑一处在实物上看得清、能回应商家卖点的细节。visualDetail 返回对象："
+            "label 是20字以内的可见外观短语，region 是相对最后一张完整商家原图的归一化框 [左,上,右,下]（0到1）。"
+            "claim 可逐字摘录商家资料中完全能由该区域证明的一条短句，否则留空。不可凭外观推测性能、功效或内部结构。无法定位就省略对象。"
+        )
+        if "responseSchema" in cfg_for_review:
+            cfg_for_review["responseSchema"]["properties"]["visualDetail"] = {
+                "type": "object", "properties": {
+                    "label": {"type": "string", "maxLength": 20},
+                    "region": {"type": "array", "minItems": 4, "maxItems": 4,
+                               "items": {"type": "number", "minimum": 0, "maximum": 1}},
+                    "claim": {"type": "string", "maxLength": 20},
+                }, "required": ["label", "region"], "additionalProperties": False,
+            }
+    original = folder / spec["asset"] / "original.png"
+    content = [{"type": "text", "text": request}] + source_images(original, spec.get("identityRegion"))
     try:
         result = model.chat_request(
-            review_schema(cfg, "ok") if compact_local_vision(cfg) else cfg,
+            cfg_for_review,
             name,
             [
                 {
                     "role": "system",
-                    "content": "查看商品原图和可选的局部。输出 JSON，ok 是图片可用的布尔值，reason 用一句中文点名实际看见的商品与可辨细节。若必需标识或形状确实被遮挡或模糊，描述换图原因。一般宣传照即使无商标也可接受。",
+                    "content": instructions,
                 },
                 {"role": "user", "content": content},
             ],
-            180,
+            300 if locate else 180,
             "vision",
         )
         if (
@@ -723,3 +747,19 @@ def preflight(spec, folder):
         "endpoint": endpoint,
         "reason": result["reason"][:200],
     }
+    if locate:
+        plan["sourceReview"]["detailChecked"] = True
+        raw = result.get("visualDetail")
+        detail = detail_from_input(raw, "原图识别")
+        if detail:
+            label = detail["label"]
+            if (UNSUPPORTED.search(label) or RISK.search(label) or any(label in s for s in excluded)
+                    or any(not any(n in s for s in positive) for n in NUMCLAIM.findall(label))):
+                return
+            with Image.open(original) as photo:
+                if not resolvable(detail["region"], photo.size):
+                    return
+            claim = visible_phrase(raw.get("claim"))
+            if claim and any(claim in s for s in positive) and not any(claim in s for s in excluded):
+                detail["claim"] = claim
+            plan["sourceReview"]["visualDetail"] = detail

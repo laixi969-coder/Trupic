@@ -33,11 +33,16 @@
       <image wx:if="{{assetImage}}" class="photo" src="{{assetImage}}" mode="aspectFit"/>
       <view class="line between">使用上传原图<switch checked="{{assetMode==='original'}}" bindchange="togglePhoto" color="#184b32"/></view>
       <button wx:if="{{!asset.risk}}" class="link" bindtap="startMark">{{identityRegion?'重新标注原图区域':'标注需保真的标识或包装文字'}}</button>
+      <button wx:if="{{kind==='video' && !asset.risk}}" class="link" bindtap="startMark" data-target="detail">{{visualDetail?'重新框选中镜细节':'指定短片中镜的细节（选填）'}}</button>
       <block wx:if="{{marking}}">
-        <view class="note">{{firstCorner?'再点选区对角':identityRegion?'请确认框内标识清晰、无遮挡。':'在原图上点选标识的一角，再点对角。'}}</view>
-        <view class="region-wrap"><image class="region-image" src="{{regionImage}}" mode="widthFix" bindtap="markPoint"/><view wx:if="{{identityRegion}}" class="region-outline" style="{{regionStyle}}"/></view>
+        <view class="note">{{firstCorner?'再点选区对角':markingDetail?'在原图上框住第 3–6 秒要展示的细节。':'在原图上点选标识的一角，再点对角。'}}</view>
+        <view class="region-wrap"><image class="region-image" src="{{regionImage}}" mode="widthFix" bindtap="markPoint"/><view wx:if="{{regionStyle}}" class="region-outline" style="{{regionStyle}}"/></view>
       </block>
-      <button wx:if="{{identityRegion}}" class="link" bindtap="clearRegion">清除选区</button>
+      <button wx:if="{{identityRegion}}" class="link" bindtap="clearRegion">清除标识选区</button>
+      <block wx:if="{{kind==='video' && visualDetail}}">
+        <input class="line" maxlength="20" placeholder="框内可见的卖点，如杯壁刻度" value="{{visualDetail.label}}" bindinput="detailLabel"/>
+        <button class="link" bindtap="clearRegion" data-target="detail">清除中镜细节</button>
+      </block>
       <view wx:if="{{asset.risk}}" class="error">图片质量不足，建议移除后更换清晰原图。</view>
       <button class="primary spaced" disabled="{{!assetImage || firstCorner || asset.risk}}" bindtap="acceptPhoto">确认素材</button>
       <button class="secondary spaced" bindtap="removePhoto">移除素材</button>

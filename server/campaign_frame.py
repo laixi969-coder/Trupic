@@ -7,6 +7,7 @@ import numpy as np
 from .posters import SCENES, backdrop, extend_edges, luminance
 from .design import DIRECTIONS
 from .poster_composition import LAYOUTS, boxes as reference_boxes, picture_layout
+from .shot_detail import textured_patch
 
 
 def video_stage(image):
@@ -17,22 +18,10 @@ def video_stage(image):
 
 def material_plate(photo, bounds, size):
     """Find a textured, opaque patch inside the subject rather than magnifying its backdrop."""
-    subject = photo.crop(bounds)
-    proxy = np.asarray(subject.resize((64, 64)).convert("RGBA"))
-    choices = []
-    for y in range(4, 44, 4):
-        for x in range(4, 44, 4):
-            patch = proxy[y:y + 20, x:x + 20]
-            if patch[:, :, 3].min() < 245:
-                continue
-            choices.append((patch[:, :, :3].std(axis=(0, 1)).mean(), x, y))
-    if not choices:
+    rect = textured_patch(photo, bounds)
+    if not rect:
         return None
-    _, x, y = max(choices)
-    rect = tuple(round(v * subject.size[i % 2] / 64) for i, v in enumerate((x, y, x + 20, y + 20)))
-    if rect[0] >= rect[2] or rect[1] >= rect[3]:
-        return None
-    detail = subject.crop(rect).convert("RGB")
+    detail = photo.crop(rect).convert("RGB")
     stage = ImageOps.fit(detail, size, Image.Resampling.BICUBIC)
     # Lift the colours at the text edge while keeping the far end of the macro legible.
     paper = Image.blend(detail.resize((1, 1)), Image.new("RGB", (1, 1), "#fffae8"), 0.82)
@@ -85,9 +74,11 @@ def print_plate(photo, size, palette, layers=None):
     return paper
 
 
-def photograph(plan, asset, background, size, index, image_layers, repair, ts):
+def photograph(plan, asset, background, size, index, image_layers, repair, ts, detail=None):
     w, h = size
     wide = w > h
+    if index == 2 and not detail and plan.get("identityRegion"):
+        detail = {"region": plan["identityRegion"]}
     art = plan.get("posterArt", {})
     if plan.get("videoBackground"):
         art = {k:v for k,v in art.items() if k not in ("print","composition","story")}
@@ -139,6 +130,20 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts):
         # Leave additional clearance around the mark and copy when rebuilding the composition.
         factor = min(factor, 1.48) * 0.94
     scale = min(max_w / (r - l), max_h / (b - t)) * factor
+    if detail:
+        region = detail["region"]
+        mark = plan.get("identityRegion") or region
+        left, top = min(region[0], mark[0]), min(region[1], mark[1])
+        right, bottom = max(region[2], mark[2]), max(region[3], mark[3])
+        # Leave room for both the selected feature and the identity mark throughout the push.
+        safe_x = (0.54 * w, 0.91 * w) if wide else (0.11 * w, 0.89 * w)
+        safe_y = (0.15 * h, 0.84 * h) if wide else (0.33 * h, 0.79 * h)
+        feature_fit = min((safe_x[1] - safe_x[0]) / ((region[2] - region[0]) * aw),
+                          (safe_y[1] - safe_y[0]) / ((region[3] - region[1]) * ah))
+        # Let the feature occupy the picture area, while bounding upsampling of small details.
+        scale = max(scale, min(feature_fit * 0.86, scale * 2.4))
+        scale = min(scale, (safe_x[1] - safe_x[0]) / ((right - left) * aw),
+                    (safe_y[1] - safe_y[0]) / ((bottom - top) * ah))
     pw, ph = max(1, round(aw * scale)), max(1, round(ah * scale))
     cx, cy = (0.70, 0.51) if wide else (0.51, 0.57)
     if art.get("print") and not wide:
@@ -152,25 +157,29 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts):
     if material and not wide:
         cx, cy = (0.73 if index == 2 else 0.64), 0.55
     fx, fy = (l + r) / (2 * aw), (t + b) / (2 * ah)
-    # During the detail shot, keep the confirmed identity mark on screen.
-    region = plan.get("identityRegion")
-    if index == 2 and region:
-        fx = (region[0] + region[2]) / 2
-        if wide:
-            cx = 0.70
+    if detail:
+        fx, fy = (region[0] + region[2]) / 2, (region[1] + region[3]) / 2
+        cx, cy = (0.73 if wide else 0.5), 0.55
     x, y = round(cx * w - fx * pw), round(cy * h - fy * ph)
-    if index == 2 and region:
-        safe_x = (0.45 * w, 0.95 * w) if wide else (0.035 * w, 0.965 * w)
-        safe_y = (0.04 * h, 0.93 * h) if wide else (0.26 * h, 0.89 * h)
-        x = round(max(safe_x[0] - region[0] * pw, min(x, safe_x[1] - region[2] * pw)))
-        y = round(max(safe_y[0] - region[1] * ph, min(y, safe_y[1] - region[3] * ph)))
+    if detail:
+        x = round(max(safe_x[0] - left * pw, min(x, safe_x[1] - right * pw)))
+        y = round(max(safe_y[0] - top * ph, min(y, safe_y[1] - bottom * ph)))
     box = (x, y, x + pw, y + ph)
+    visible = (max(x, 0), max(y, 0), min(w, x + pw), min(h, y + ph))
+    if detail:
+        # Sample only on-screen pixels. A macro of a small object in a large PNG
+        # must not allocate its enlarged, mostly off-screen transparent margins.
+        sample = tuple((v - (x, y)[i % 2]) * (aw, ah)[i % 2] / (pw, ph)[i % 2]
+                       for i, v in enumerate(visible))
+        placed = photo.resize((visible[2] - visible[0], visible[3] - visible[1]),
+                              Image.Resampling.LANCZOS, box=sample)
+        position = visible[:2]
+    else:
+        placed = photo.resize((pw, ph), Image.Resampling.LANCZOS)
+        position = (x, y)
     if not cut and not art.get("print") and not background:
         # Preserve a continuous photographic setting beyond the edges of the source.
-        visible = (max(x, 0), max(y, 0), min(w, x + pw), min(h, y + ph))
-        cropped = photo.resize((pw, ph), Image.Resampling.LANCZOS).crop(
-            tuple(v - (x if i % 2 == 0 else y) for i, v in enumerate(visible))
-        )
+        cropped = placed if detail else placed.crop(tuple(v - position[i % 2] for i, v in enumerate(visible)))
         return extend_edges(cropped.convert("RGB"), size, visible), box
     path = background or (SCENES / "optics-light.webp" if art.get("optics") else None)
     if projection and not background:
@@ -238,7 +247,6 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts):
                 ]
             )
         scene.paste(mark, mask=mark.getchannel("A"))
-    placed = photo.resize((pw, ph), Image.Resampling.LANCZOS)
     shadow = Image.new("L", (max(2, w // 4), max(2, h // 4)))
     ground = y + b * ph / ah
     sx = x + (l + r) * pw / (2 * aw)
@@ -253,9 +261,9 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts):
             image_layers.append(("background", scene.copy(), (0, 0)))
         contact = Image.new("RGBA", size, (6, 5, 6))
         contact.putalpha(shadow)
-        image_layers.extend([("shadow", contact, (0, 0)), ("subject", placed, (x, y))])
+        image_layers.extend([("shadow", contact, (0, 0)), ("subject", placed, position)])
     scene.paste((6, 5, 6), (0, 0, w, h), shadow)
-    scene.paste(placed, (x, y), placed.getchannel("A") if cut else None)
+    scene.paste(placed, position, placed.getchannel("A") if cut else None)
     return scene, box
 
 
@@ -280,7 +288,8 @@ def campaign_frame(
     treatment = art.get("composition") if not shot else None
     reference_layout = LAYOUTS.get(treatment)
     scene, box = photograph(
-        plan, asset, background, size, index, image_layers, repair, ts
+        plan, asset, background, size, index, image_layers, repair, ts,
+        (shot or {}).get("evidence") if index == 2 else None,
     )
     layer = Image.new("RGBA", size)
     draw = ImageDraw.Draw(layer)
@@ -373,6 +382,8 @@ def campaign_frame(
     if shot and art.get("composition") == "material" and not wide:
         # The camera moves on the product plane; keep the stationary title outside its sweep.
         headline = (0.05, 0.09, 0.35, 0.32) if index == 2 else (0.05, 0.095, 0.74, 0.17)
+    if index == 2 and shot and shot.get("evidence") and not wide:
+        headline = (0.055, 0.10, 0.945, 0.235)
     if reference_layout:
         _, brand, headline, support, foot = reference_boxes(treatment, size)
 
@@ -440,7 +451,7 @@ def camera_window(size, shot, tick, pace="steady"):
     if shot == 1:
         zoom, ax, ay = 1.20 - 0.17 * ease, 0.28 + 0.20 * ease, 0.56
     elif shot == 2:
-        zoom, ax, ay = 1.04 + 0.12 * ease, 0.12 + 0.70 * ease, 0.31 + 0.12 * ease
+        zoom, ax, ay = 1.04 + 0.12 * ease, 0.73 if w > h else 0.50, 0.55
     else:
         zoom, ax, ay = 1.055 - 0.055 * ease, 0.55, 0.58
     travel = {"quiet": 0.55, "brisk": 1.22}.get(pace, 1.0)

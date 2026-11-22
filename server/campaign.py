@@ -4,6 +4,7 @@ import json
 import re
 
 from .design import RULES
+from .shot_detail import product_detail
 
 ROUTES = json.loads(RULES.with_name("copy-directions.json").read_text())
 BENEFITS = json.loads(RULES.with_name("benefit-scenes.json").read_text())
@@ -245,34 +246,22 @@ def complete_body(plan, body, offer, terms):
     )
 
 
-def storyboard(plan, copy):
+def storyboard(plan, copy, asset=None):
     if plan.get("bundleRole"):
-        # Skill packs already contain approved copy. Industry example copy must
-        # never replace the supplied product facts in the middle shot.
-        return [
-            dict(start=0, end=3, camera="近景切入", line=copy["title"], caption=""),
-            dict(start=3, end=6, camera="推进细节", line=copy["body"], caption=""),
-            dict(start=6, end=9, camera="全景收束",
-                 line=copy.get("cta") or plan["profile"].get("name") or copy["title"],
-                 caption=" · ".join(filter(None,(copy.get("offer"),copy.get("terms"))))),
-        ]
-    row = copy_route(plan) or {}
-    line = copy.get("detailLine") or row.get("reveal") or copy["body"].split("。")[0]
-    if detail := plan.get("posterArt", {}).get("detail"):
-        line = detail
-    if line.rstrip("。！？") == copy["title"].rstrip("。！？"):
-        line = next(
-            (
-                part
-                for part in re.split("[。！？]", copy["body"])
-                if part and part != line.rstrip("。！？")
-            ),
-            plan["subject"],
-        )
-    closing = copy["cta"] or plan["profile"].get("name") or copy["title"]
-    if not copy["cta"] and closing == copy["title"] and plan.get("posterArt", {}).get("composition") == "material":
+        line = re.split(r"[。；;\n]", copy["body"], maxsplit=1)[0]
+    else:
+        row = copy_route(plan) or {}
+        line = copy.get("detailLine") or row.get("reveal") or copy["body"].split("。")[0]
+        if line.rstrip("。！？") == copy["title"].rstrip("。！？"):
+            line = next(
+                (part for part in re.split("[。！？]", copy["body"])
+                 if part and part != line.rstrip("。！？")),
+                plan["subject"],
+            )
+    closing = copy.get("cta") or plan["profile"].get("name") or copy["title"]
+    if not copy.get("cta") and closing == copy["title"] and plan.get("posterArt", {}).get("composition") == "material":
         closing = plan.get("promptBrief", {}).get("reading", {}).get("product") or closing
-    if not copy["cta"] and plan.get("posterArt", {}).get("optics"):
+    if not copy.get("cta") and plan.get("posterArt", {}).get("optics"):
         product = plan["profile"].get("product", "").strip()
         closing = re.sub(r"\s*(?:相机机身|单反机身|机身)$", "", product).strip() or closing
     shots = [
@@ -287,8 +276,17 @@ def storyboard(plan, copy):
         ),
     ]
     art = plan.get("posterArt") or {}
-    if art:
+    if art.get("concept"):
         shots[0]["purpose"] = art["concept"]
-        shots[1]["purpose"] = "切近" + art["feature"] + "，让观众在实物上看到前镜提出的细节。"
         shots[2]["purpose"] = "退回完整外形并停住，让观众读完「" + closing + "」。"
+    if evidence := product_detail(plan, asset):
+        label = evidence["label"]
+        shots[1].update(
+            line=evidence.get("claim") or label,
+            camera="原图慢推",
+            evidence=evidence,
+            purpose="从完整实拍画面缓慢推近。" if evidence["source"] == "完整原图" else f"先在「{label}」上停一拍，再向这处细节缓慢推近。",
+        )
+    elif plan.get("visualSource") == "concept":
+        shots[1]["purpose"] = "以场景承接开场，字幕沿用文案里的信息。"
     return shots
