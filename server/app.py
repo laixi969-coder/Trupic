@@ -56,6 +56,8 @@ from .campaign import storyboard
 from .prompt_agent import full_poster_prompt, optimize
 from .product_bundle import register as register_bundles
 from .auto_creation import register as register_creations
+from .auto_pipeline import shared_copy
+from .model_tools import register as register_model_tools
 from .skill_library import attach as attach_skills, catalog as skill_library_catalog
 from .visual_review import (
     FIDELITY,
@@ -81,6 +83,8 @@ COST = {"copy": 0, "poster": 4, "video": 12}
 LABEL = {"copy": "推广文案", "poster": "营销海报", "video": "宣传短片"}
 ADMIN = os.getenv("TRUPIC_ADMIN_KEY") or secret("admin.key")
 init()
+with db(True) as c:
+    c.execute("CREATE TABLE IF NOT EXISTS admin_auth (id INTEGER PRIMARY KEY CHECK(id=1), password_hash TEXT NOT NULL)")
 pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trupic")
 
 
@@ -102,9 +106,31 @@ def reqtenant():
     return session["tenant"]
 
 
+def admin_credential(c):
+    # Deployment configuration deliberately takes precedence over UI settings.
+    if os.getenv("TRUPIC_ADMIN_KEY"):
+        return os.environ["TRUPIC_ADMIN_KEY"], False
+    row = c.execute("SELECT password_hash FROM admin_auth WHERE id=1").fetchone()
+    return (row[0], True) if row else (ADMIN, False)
+
+
+def admin_token(credential):
+    return hmac.new(app.config["SECRET_KEY"].encode(), credential.encode(), hashlib.sha256).hexdigest()
+
+
+def admin_matches(password, credential, hashed):
+    return check_password_hash(credential, password) if hashed else hmac.compare_digest(password.encode(), credential.encode())
+
+
+def is_admin(c):
+    token = session.get("admin")
+    return isinstance(token, str) and hmac.compare_digest(token, admin_token(admin_credential(c)[0]))
+
+
 def require_admin():
-    if not session.get("admin"):
-        abort(403, description="需要管理员权限。")
+    with db() as c:
+        if not is_admin(c):
+            abort(403, description="请使用当前管理密码重新登录。")
 
 
 def owner(c, table, id, t):
@@ -294,7 +320,7 @@ def state():
                 )
             ],
             login=m["login"],
-            admin=bool(session.get("admin")),
+            admin=is_admin(c),
             credits=m["credits"],
             works=works,
             assets=assets,
@@ -398,10 +424,11 @@ def account(action):
         session.clear()
         return jsonify(ok=True)
     if action == "admin":
-        if not hmac.compare_digest(pw, ADMIN):
-            abort(403, description="管理密钥不正确。")
-        session["admin"] = True
         with db(True) as c:
+            credential, hashed = admin_credential(c)
+            if not admin_matches(pw, credential, hashed):
+                abort(403, description="管理密码不正确；首次登录请使用本机初始管理密钥，它与商家账号密码不同。")
+            session["admin"] = admin_token(credential)
             audit(c, t, "管理登录", "")
         return jsonify(ok=True)
     if not login or len(pw) < 8:
@@ -729,7 +756,7 @@ def produce(id):
     p.setdefault("kind", s["kind"])
     dest = DATA / t / "works" / work / str(n)
     try:
-        if not p.get("bundleRole") and not p.get("autoCreation"):
+        if (p.get("autoCreation") and model.route("vision")["model"]) or (not p.get("bundleRole") and not p.get("autoCreation")):
             preflight(s, DATA / t / "assets")
         if not p.get("promptBrief"):
             optimize(s)
@@ -739,7 +766,7 @@ def produce(id):
         cp = (
             json.loads(cached_copy)
             if cached_copy
-            else s.get("replacement") or generate_copy(p, 0)
+            else shared_copy(s) if p.get("autoCreation") else s.get("replacement") or generate_copy(p, 0)
         )
         if s["kind"] == "video":
             cp["storyboard"] = storyboard(p, cp)
@@ -775,7 +802,15 @@ def produce(id):
                     else json.loads(a["info"])["file"]
                 )
             )
-        if p.get("bundleRole") or p.get("autoCreation"):
+        if p.get("autoCreation") and s["kind"] != "copy" and p.get("bundleRole") not in ("white","overlay","box","bag","card"):
+            background, visual_engine = None, "本地商品素材排版"
+            if s["kind"] == "video" and model.route("video")["model"]:
+                from .video_api import prepare_background
+                p["videoBackground"] = str(prepare_background(dest, p, cp))
+                visual_engine = model.route("video")["model"]
+            else:
+                background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1, strict=True)
+        elif p.get("bundleRole") or p.get("autoCreation"):
             background, visual_engine = None, "本地商品素材排版"
         else:
             background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1)
@@ -841,7 +876,7 @@ def produce(id):
                         issues = ["导出文件读取失败：" + str(exc)[:100]]
                     try:
                         review = (
-                            None if p.get("bundleRole") or p.get("autoCreation")
+                            None if p.get("bundleRole") and not p.get("autoCreation")
                             else content_review(dest, original, s, cp, layout)
                         )
                     except (
@@ -1117,6 +1152,12 @@ def retry(id):
             ).fetchone():
                 raise ValueError("另一版本正在生成，请稍后再试。")
             enough(c, t, j["cost"])
+            spec = json.loads(j["spec"])
+            if rid := spec["plan"].get("creationRun"):
+                group = owner(c,"creative_run",rid,t)
+                summary = json.loads(group["plan"])
+                summary.pop("copyError",None)
+                c.execute("UPDATE creative_run SET plan=? WHERE id=?",(dump(summary),rid))
             c.execute("UPDATE job SET state='queued',error=NULL WHERE id=?", (id,))
     pool.submit(produce, id)
     return jsonify(id=id)
@@ -1212,7 +1253,8 @@ def admin_state():
             ]
             works.append(val)
         return jsonify(
-            modelPlatforms=providers.overview(c),
+            adminAuth={"environmentManaged": bool(os.getenv("TRUPIC_ADMIN_KEY")), "customPassword": admin_credential(c)[1]},
+            modelPlatforms={**providers.overview(c), "defaults": {kind:{k:v for k,v in model.default_connection(kind).items() if k in ("url","model")} for kind in providers.KINDS}, "effective": {kind:{k:v for k,v in model.route(kind).items() if k in ("provider","url","model","protocol")} for kind in providers.KINDS}},
             modelUsage=[
                 dict(r)
                 for r in c.execute(
@@ -1325,6 +1367,25 @@ def admin_action(action):
     v = body()
     t = reqtenant()
     target = string(v.get("id"), 90)
+    if action == "password":
+        if os.getenv("TRUPIC_ADMIN_KEY"):
+            raise ValueError("管理密码由启动环境 TRUPIC_ADMIN_KEY 指定，请在启动配置中修改并重启服务。")
+        password = v.get("newPassword")
+        if not isinstance(password, str) or not 8 <= len(password) <= 160 or password != password.strip():
+            raise ValueError("新密码需要 8–160 位，首尾不能包含空格。")
+        if password != v.get("confirmPassword"):
+            raise ValueError("两次输入的新密码不一致。")
+        with db(True) as c:
+            if not is_admin(c):
+                abort(403, description="请重新登录管理员。")
+            credential, hashed = admin_credential(c)
+            if not admin_matches(string(v.get("currentPassword"), 160), credential, hashed):
+                abort(403, description="当前管理密码不正确。")
+            encoded = generate_password_hash(password)
+            c.execute("INSERT INTO admin_auth VALUES(1,?) ON CONFLICT(id) DO UPDATE SET password_hash=excluded.password_hash", (encoded,))
+            audit(c, t, "修改管理密码", "")
+            session["admin"] = admin_token(encoded)
+        return jsonify(ok=True)
     if action == "discover":
         return jsonify(count=discover())
     if action in ("model-platform", "model-routes"):
@@ -1353,6 +1414,22 @@ def admin_action(action):
         if result.get("color") != color:
             raise ValueError("模型已响应，但未正确识别测试图片。")
         return jsonify(ok=True, model=cfg["model"])
+    if action == "reference-settings":
+        # This screen cannot update model endpoints, credentials or routes.
+        cfg = model.settings()
+        for field in ("feed", "license", "board", "pinRights"):
+            if field in v:
+                cfg[field] = string(v.get(field), 1200)
+        if v.get("pinToken"):
+            cfg["pinToken"] = string(v.get("pinToken"), 1200)
+        if cfg["feed"] and not (cfg["feed"].startswith("https://") and cfg["license"]):
+            raise ValueError("请填写 HTTPS 来源和授权条件。")
+        if cfg["board"] and not (cfg["board"].isdigit() and cfg["pinRights"] and cfg["pinToken"]):
+            raise ValueError("请填写画板数字 ID、访问令牌及使用条件。")
+        model.save_settings(cfg)
+        with db(True) as c:
+            audit(c,t,"更新参考素材来源","案例订阅与授权画板")
+        return jsonify(ok=True)
     if action == "settings":
         cfg = model.settings()
         old_urls = cfg["url"], cfg["imageUrl"]
@@ -1669,6 +1746,7 @@ def site(path=""):
 
 register_bundles(app, globals())
 register_creations(app, globals())
+register_model_tools(app, globals())
 
 
 def start():

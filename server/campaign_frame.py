@@ -9,6 +9,12 @@ from .design import DIRECTIONS
 from .poster_composition import LAYOUTS, boxes as reference_boxes, picture_layout
 
 
+def video_stage(image):
+    # Keep moving footage readable beneath stationary light captions, without
+    # altering the separately composited original product pixels.
+    return Image.blend(image.convert('RGB'), Image.new('RGB',image.size,'#0d0c0d'),0.78)
+
+
 def material_plate(photo, bounds, size):
     """Find a textured, opaque patch inside the subject rather than magnifying its backdrop."""
     subject = photo.crop(bounds)
@@ -83,6 +89,8 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts):
     w, h = size
     wide = w > h
     art = plan.get("posterArt", {})
+    if plan.get("videoBackground"):
+        art = {k:v for k,v in art.items() if k not in ("print","composition","story")}
     treatment = art.get("composition")
     if not index and treatment in LAYOUTS:
         source = asset or background
@@ -157,7 +165,7 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts):
         x = round(max(safe_x[0] - region[0] * pw, min(x, safe_x[1] - region[2] * pw)))
         y = round(max(safe_y[0] - region[1] * ph, min(y, safe_y[1] - region[3] * ph)))
     box = (x, y, x + pw, y + ph)
-    if not cut and not art.get("print"):
+    if not cut and not art.get("print") and not background:
         # Preserve a continuous photographic setting beyond the edges of the source.
         visible = (max(x, 0), max(y, 0), min(w, x + pw), min(h, y + ph))
         cropped = photo.resize((pw, ph), Image.Resampling.LANCZOS).crop(
@@ -189,6 +197,8 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts):
     elif path:
         with Image.open(path) as plate:
             scene = ImageOps.fit(plate.convert("RGB"), size, Image.Resampling.LANCZOS)
+            if plan.get("videoBackground"):
+                scene = video_stage(scene)
     else:
         # A tonal studio sweep derived from the subject, with light at upper left.
         sampled = photo.resize((80, 80))
@@ -265,6 +275,8 @@ def campaign_frame(
     wide = w > h
     min_edge = min(size)
     art = plan.get("posterArt", {})
+    if plan.get("videoBackground"):
+        art = {k:v for k,v in art.items() if k not in ("print","composition","story")}
     treatment = art.get("composition") if not shot else None
     reference_layout = LAYOUTS.get(treatment)
     scene, box = photograph(
@@ -283,7 +295,7 @@ def campaign_frame(
     if wide:
         mask = mask.transpose(Image.Transpose.ROTATE_90)
     shade = mask.resize(size, Image.Resampling.BILINEAR)
-    if reference_layout or art.get("print") or art.get("story") or (asset and asset.name == "subject.png"):
+    if plan.get("videoBackground") or reference_layout or art.get("print") or art.get("story") or (asset and asset.name == "subject.png"):
         shade = Image.new("L", size, 0)
     elif box:
         ImageDraw.Draw(shade).rectangle(box, fill=0)
@@ -370,6 +382,8 @@ def campaign_frame(
         area = tuple(round(v * size[i % 2]) for i, v in enumerate(rect))
 
         def ink(bounds):
+            if plan.get("videoBackground"):
+                return "#fff8ee"
             region = scene.crop(bounds).resize((1, 1), Image.Resampling.BOX)
             if palette := art.get("print"):
                 return palette["ink"]

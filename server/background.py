@@ -4,25 +4,28 @@ import base64
 import io
 import json
 import re
+import time
 import urllib.request
 
 from PIL import Image, ImageOps
 
-from .model import reserve_provider_call, settings
+from .model import reserve_provider_call, route
+from .store import db, now
 from .design import DIRECTIONS
 from . import qwen_image
 
 
-def make_scene(folder, plan, asset, kind, fresh):
+def make_scene(folder, plan, asset, kind, fresh, strict=False):
     art_direction = plan.get("posterArt", {})
     if kind != "copy" and art_direction.get("print"):
         return None, "实拍照片孔版分色"
     if asset and asset.name == "subject.png" and art_direction.get("composition") == "material":
         return None, "商品原片纹理取景"
-    cfg = settings()
+    selected = route("image")
+    cfg = dict(imageUrl=selected["url"], imageModel=selected["model"], imageKey=selected["key"])
     if kind == "copy" or not (cfg["imageUrl"] and cfg["imageModel"]):
         return None, "本地排版"
-    if asset and asset.name != "subject.png":
+    if asset and asset.name != "subject.png" and not plan.get("autoCreation"):
         return None, "原图排版"
     # A revision reuses the same approved scene. No extra provider billing.
     path = folder.parent / "concept.webp"
@@ -77,10 +80,12 @@ def make_scene(folder, plan, asset, kind, fresh):
         if height > width
         else "1024x1024",
         "n": 1,
+        "response_format": "b64_json",
     }
     headers = {"Content-Type": "application/json"}
     if cfg["imageKey"]:
         headers["Authorization"] = "Bearer " + cfg["imageKey"]
+    started, ok = time.monotonic(), False
     try:
         if cfg["imageModel"] in qwen_image.MODELS:
             data = qwen_image.generate(cfg, prompt, payload["size"])
@@ -102,6 +107,12 @@ def make_scene(folder, plan, asset, kind, fresh):
             temp = path.with_suffix(".tmp")
             cleaned.save(temp, format="WEBP", quality=91)
             temp.replace(path)
+        ok = True
         return path, cfg["imageModel"]
-    except (OSError, ValueError, KeyError, IndexError, TypeError):
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+        if strict:
+            raise ValueError("图片生成接口未返回可用画面，请检查图片连接后重试此项。") from exc
         return None, "本地排版（图像服务未返回可用画面）"
+    finally:
+        with db(True) as c:
+            c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms) VALUES(?,?,?,?,?,?)',(now()[:10],'image',selected.get('provider','default'),cfg['imageModel'],ok,round((time.monotonic()-started)*1000)))

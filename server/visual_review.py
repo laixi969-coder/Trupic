@@ -239,6 +239,8 @@ def camera_at(entry, tick):
 
 
 def preview_at(entry, tick):
+    if "sequence" in entry:
+        return entry["sequence"][tick]
     ref = entry.get("plate", entry["preview"])
     rect = tuple(
         v * ref.size[i % 2] / entry["size"][i % 2]

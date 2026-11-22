@@ -90,7 +90,14 @@ def route(kind):
     named = providers.connection(kind)
     if named:
         return named
+    return default_connection(kind)
+
+
+def default_connection(kind):
     cfg = settings()
+    if kind in ("image", "video"):
+        prefix = kind
+        return {"url": cfg.get(prefix + "Url", ""), "key": cfg.get(prefix + "Key", ""), "model": cfg.get(prefix + "Model", ""), "provider": "default", "protocol": "images" if kind == "image" else "ark-video"}
     if kind == "vision":
         return {
             "url": cfg["visionUrl"] or cfg["url"],
@@ -105,7 +112,7 @@ def engine_name():
     cfg = route("text")
     if cfg["url"] and cfg["model"]:
         return cfg["model"]
-    return "Apple 设备端模型" if apple_available() else "本地创意规则"
+    return "Apple 设备端模型" if cfg.get("provider") != "local-rules" and apple_available() else "本地创意规则"
 
 
 def reserve_provider_call(kind):
@@ -140,7 +147,7 @@ def ask(instructions, payload, max_tokens=650):
             max_tokens,
             "text",
         ), cfg["model"]
-    elif apple_available():
+    elif cfg.get("provider") != "local-rules" and apple_available():
         r = subprocess.run(
             [
                 "fm",

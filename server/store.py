@@ -76,6 +76,7 @@ def init():
         CREATE TABLE IF NOT EXISTS provider_usage(day TEXT,kind TEXT,calls INTEGER NOT NULL,PRIMARY KEY(day,kind));
         CREATE TABLE IF NOT EXISTS model_provider(id TEXT PRIMARY KEY,url TEXT NOT NULL,key TEXT NOT NULL,text TEXT NOT NULL,vision TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS model_route(kind TEXT PRIMARY KEY,platform TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS model_catalog(platform TEXT,kind TEXT,signature TEXT NOT NULL,data TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(platform,kind));
         CREATE TABLE IF NOT EXISTS model_call(id INTEGER PRIMARY KEY,day TEXT NOT NULL,kind TEXT NOT NULL,platform TEXT NOT NULL,model TEXT NOT NULL,ok INTEGER NOT NULL,ms INTEGER NOT NULL,input_tokens INTEGER,output_tokens INTEGER);
         CREATE INDEX IF NOT EXISTS model_call_day ON model_call(day);
         CREATE TABLE IF NOT EXISTS event(id TEXT PRIMARY KEY,title TEXT,city TEXT,starts TEXT,ends TEXT,source TEXT,created TEXT);
@@ -88,6 +89,7 @@ def init():
         """)
         for table, column, datatype in (
             ("model_provider", "label", "TEXT NOT NULL DEFAULT ''"),
+            ("model_provider", "connections", "TEXT NOT NULL DEFAULT '{}'"),
             ("cases", "tags", "TEXT DEFAULT ''"),
             ("cases", "scenario", "TEXT DEFAULT ''"),
             ("rules", "case_id", "TEXT DEFAULT ''"),

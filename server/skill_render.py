@@ -2,10 +2,10 @@
 
 import re
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 
-def render_product(plan, cp, asset, dims, ts):
+def render_product(plan, cp, asset, dims, ts, background=None):
     role = plan["bundleRole"]
     w, h = dims
     unit = min(dims)
@@ -15,6 +15,11 @@ def render_product(plan, cp, asset, dims, ts):
     image = Image.new("RGB", dims, paper)
     with Image.open(asset) as source:
         photo = source.convert("RGBA")
+    if background:
+        with Image.open(background) as scene:
+            image = ImageOps.fit(scene.convert("RGB"),dims)
+        if role not in ("scene", "livebackground"):
+            image = Image.blend(image, Image.new("RGB",dims,paper), .72)
     draw = ImageDraw.Draw(image)
 
     def rect(box, fill, radius=0):
@@ -107,7 +112,9 @@ def render_product(plan, cp, asset, dims, ts):
         return image, place(photo, (0.12, 0.10, 0.88, 0.90))
 
     if role in ("scene", "livebackground"):
-        # A local studio stage. No generated scenery or invented product pixels.
+        if background:
+            return image, place(photo, (0.16, 0.12, 0.84, 0.88), shadow=True)
+        # A local studio stage when no image provider is selected.
         for y in range(h):
             shade = y / h
             draw.line(

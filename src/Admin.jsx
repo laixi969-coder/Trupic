@@ -15,6 +15,7 @@ import {
 import { api, Blank, Busy, Field, Modal, PageHead, dateText } from "./ui.jsx";
 import ModelPlatforms from "./ModelPlatforms.jsx";
 import SkillLibrary from "./SkillLibrary.jsx";
+import AdminPassword from "./AdminPassword.jsx";
 const tabs = [
   ["works", "作品抽查", ShieldCheck],
   ["visual", "成品视觉审核", ScanLine],
@@ -23,8 +24,9 @@ const tabs = [
   ["rules", "策略版本", GitBranch],
   ["audit", "审计日志", History],
   ["platforms", "模型平台", Settings2],
-  ["settings", "服务连接", Settings2],
+  ["settings", "参考素材来源", Settings2],
   ["events", "营销日历", CalendarDays],
+  ["password", "管理密码", ShieldCheck],
 ];
 const states = {
   live: "全量启用",
@@ -90,7 +92,7 @@ export default function Admin({ tip }) {
             className={k === tab ? "sel" : ""}
             onClick={() => {
               setTab(k);
-              if (k === "settings") form({ ...d.settings, key: "" });
+              if (k === "settings" && d) form(Object.fromEntries(["feed", "license", "board", "pinRights"].map(key => [key, d.settings[key] || ""])));
               error("");
             }}
           >
@@ -103,6 +105,7 @@ export default function Admin({ tip }) {
         <p>{err || "正在载入…"}</p>
       ) : (
         <>
+          {tab === "password" && <AdminPassword config={d.adminAuth} refresh={refresh} tip={tip} />}
           {tab === "skills" && <SkillLibrary skills={d.skills || []} />}
           {tab === "platforms" && (
             <ModelPlatforms
@@ -378,85 +381,12 @@ export default function Admin({ tip }) {
               className="formpanel integration"
               onSubmit={(e) => {
                 e.preventDefault();
-                act("settings", f);
+                act("reference-settings", f);
               }}
             >
-              <div className="sectionhead">
-                <h2>创作模型</h2>
-                <span className="pill">{d.settings.engine}</span>
-              </div>
-              <p className="fineprint">
-                今日外部调用（UTC） · 文案及策划{" "}
-                {d.settings.callsToday.text || 0} 次 · 图像{" "}
-                {d.settings.callsToday.image || 0} 次 · 视觉复核{" "}
-                {d.settings.callsToday.vision || 0} 次
-              </p>
-              <p className="fineprint">
-                可连接本机或已获授权的 Chat Completions
-                服务。连接后，创作需求与商家已确认资料会发往该服务，用于文案生成及事实复核。
-              </p>
-              {field("url", "完整接口地址", {
-                limit: 1200,
-                placeholder: "https://…/v1/chat/completions",
-              })}
-              {field("model", "模型名称", {
-                placeholder: "服务提供方的模型标识",
-              })}
-              <label className="field">
-                API 密钥
-                <input
-                  autoComplete="off"
-                  type="password"
-                  placeholder={
-                    d.settings.hasKey
-                      ? "已配置，留空保留现有密钥"
-                      : "本地服务可留空"
-                  }
-                  value={f.key || ""}
-                  onChange={(e) => form({ ...f, key: e.target.value })}
-                />
-              </label>
-              {d.settings.hasKey && (
-                <label className="checkline">
-                  <input
-                    type="checkbox"
-                    checked={!!f.clearKey}
-                    onChange={(e) => form({ ...f, clearKey: e.target.checked })}
-                  />
-                  移除已保存的密钥
-                </label>
-              )}
-              {field("visionModel", "成品视觉复核模型（选填）")}
-              <p className="fineprint">
-                填写后，系统会把商家原图、PNG
-                和视频抽帧发给上方文案接口进行语义复核。模型需支持图片输入。复核中断可重试。
-              </p>
-              <div className="sectionhead">
-                <h2>图像生成</h2>
-              </div>
-              <p className="fineprint">
-                百炼 Qwen-Image 可供海报 agent
-                携带商品参考图生成整稿。工作台的分层导出用该连接生成场景，商品主体取自原图。调用按服务商规则计费。
-              </p>
-              {field("imageUrl", "图像生成接口地址", {
-                limit: 1200,
-                placeholder: "https://…/v1/images/generations",
-              })}
-              {field("imageModel", "图像模型名称", {
-                placeholder: "qwen-image-3.0-pro",
-              })}
-              <label className="field">
-                图像服务密钥
-                <input
-                  type="password"
-                  autoComplete="off"
-                  value={f.imageKey || ""}
-                  placeholder={
-                    d.settings.hasImageKey ? "已配置，留空保留" : "服务商密钥"
-                  }
-                  onChange={(e) => form({ ...f, imageKey: e.target.value })}
-                />
-              </label>
+              <h2>参考素材来源</h2>
+              <p className="fineprint">这里只配置案例与灵感来源。文案、图片、视频和视觉审核统一在「模型平台」配置。</p>
+              <button type="button" className="secondary" onClick={() => setTab("platforms")}>前往模型平台</button>
               <div className="sectionhead">
                 <h2>授权案例订阅源</h2>
               </div>
@@ -492,16 +422,8 @@ export default function Admin({ tip }) {
                 />
               </label>
               <div className="modalfoot">
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => act("test-model", {})}
-                >
-                  验证已保存的文案连接
-                </button>
                 <button className="primary" disabled={busy}>
-                  保存配置
+                  保存素材来源
                 </button>
               </div>
             </form>

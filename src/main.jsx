@@ -1192,7 +1192,7 @@ function App() {
               <Blank
                 icon={ShieldCheck}
                 title="运营管理"
-                desc="使用管理员密钥查看审核和策略版本。"
+                desc="使用管理密码查看审核和策略版本。"
                 action="管理员登录"
                 onClick={navAdmin}
               />
@@ -1690,7 +1690,12 @@ function App() {
       )}
       {modal === "adminLogin" && (
         <Modal title="进入运营管理" onClose={close}>
-          <p>请输入服务端管理员密钥以查看作品抽查、案例库和创意策略。</p>
+          <p>请输入管理密码。它与商家账号密码不同。</p>
+          <details className="original">
+            <summary>首次登录，不知道管理密码？</summary>
+            <p>首次启动会自动生成本机初始密钥，保存在项目数据目录的 <code>admin.key</code> 文件中，默认位置是 <code>.trupic/admin.key</code>。复制文件中的内容到下方即可登录。</p>
+            <p>登录后进入「管理密码」，就能设置自己的密码。如果启动时指定了 <code>TRUPIC_ADMIN_KEY</code>，请使用该启动配置中的值。</p>
+          </details>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -1698,6 +1703,7 @@ function App() {
                 await api("/account/admin", "POST", {
                   password: auth.password,
                 });
+                setAuth({ password: "" });
                 await refresh();
                 go("admin");
                 close();
@@ -1705,7 +1711,7 @@ function App() {
             }}
           >
             <label className="field">
-              管理密钥
+              管理密码或初始密钥
               <input
                 required
                 type="password"

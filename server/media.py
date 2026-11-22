@@ -263,7 +263,7 @@ def render(
     from .typography import Typesetter
 
     from .visual_review import product_geometry, map_box
-    from .campaign_frame import campaign_frame, film_planes, moving_frame
+    from .campaign_frame import campaign_frame, film_planes, moving_frame, video_stage
     from .film_edit import encode
     from .poster_composition import LAYOUTS
 
@@ -287,6 +287,9 @@ def render(
     shot_titles = {}
     video_renderer = None
     pace = plan.get("promptBrief", {}).get("reading", {}).get("pace", "steady")
+    cloud_frames = Path(plan["videoBackground"]) if plan.get("videoBackground") else None
+    if cloud_frames:
+        background = cloud_frames / "001.jpg"
     silhouette = None
     if asset_path and asset_path.name == "subject.png":
         with Image.open(asset_path) as subject:
@@ -300,10 +303,10 @@ def render(
         layer_info = {}
         if plan.get("bundleRole") and kind == "poster":
             from .product_bundle import render_product
-            image, box = render_product(plan, copy, asset_path, dims, typesetter)
+            image, box = render_product(plan, copy, asset_path, dims, typesetter, background)
         elif directed:
             save_design = kind == "poster" and index == 0
-            separate_shot = shot and asset_path and asset_path.name == "subject.png" and not plan.get("posterArt", {}).get("print")
+            separate_shot = shot and asset_path and (asset_path.name == "subject.png" or cloud_frames) and (cloud_frames or not plan.get("posterArt", {}).get("print"))
             source_layers = [] if save_design or separate_shot else None
             typesetter.editable_text = [] if save_design or shot else None
             plate, overlay, box = campaign_frame(
@@ -397,10 +400,22 @@ def render(
                 tmp / "track.wav", optical=bool(plan.get("posterArt", {}).get("optics"))
             )
             if directed:
-                from functools import partial
+                def motion(bg, fg, index, tick):
+                    if cloud_frames:
+                        with Image.open(cloud_frames / f"{(index-1)*72+tick+1:03d}.jpg") as cloud:
+                            bg = video_stage(cloud)
+                    return moving_frame(bg, fg, index, tick, pace=pace)
+                if cloud_frames:
+                    for index, (bg, fg, overlay) in layers.items():
+                        sequence = []
+                        for tick in range(72):
+                            expected = motion(bg, fg, index, tick)
+                            expected.paste(overlay, mask=overlay.getchannel("A"))
+                            sequence.append(expected.resize((80,80)))
+                        frames[index]["sequence"] = sequence
                 video_renderer = encode(
                     layers, folder, tmp / "track.wav", dims, shots,
-                    partial(moving_frame, pace=pace), shot_titles, pace,
+                    motion, shot_titles, pace, dynamic=bool(cloud_frames),
                 )
             else:
                 video_renderer = "FFmpeg"

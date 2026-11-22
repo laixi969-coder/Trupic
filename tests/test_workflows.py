@@ -74,6 +74,247 @@ class WorkflowTests(unittest.TestCase):
         q = response.json
         return q, dict(quote=q["quote"], confirmed=True, confirmedCost=q["cost"], requestKey=uuid.uuid4().hex)
 
+    def test_reference_sources_cannot_overwrite_model_configuration(self):
+        from pathlib import Path
+        from server import model
+        self.assertEqual(post(self.c,'admin/reference-settings',feed='').status_code,403)
+        self.admin()
+        with tempfile.TemporaryDirectory() as directory, patch.object(model,'SETTINGS',Path(directory)/'integrations.json'):
+            original=model.settings() | dict(url='https://text.example/v1/chat/completions',model='legacy-text',key='keep-text-secret',imageUrl='https://image.example/v1/images/generations',imageModel='legacy-image',imageKey='keep-image-secret',visionModel='legacy-vision',visionUrl='https://vision.example/v1/chat/completions',visionKey='keep-vision-secret')
+            model.save_settings(original)
+            with studio.db() as c:
+                routes_before=[tuple(r) for r in c.execute('SELECT * FROM model_route')]
+            response=post(self.c,'admin/reference-settings',feed='https://references.example/feed.xml',license='已获授权',url='',model='',key='replacement',imageUrl='',imageModel='',visionModel='')
+            self.assertEqual(response.status_code,200,response.json)
+            saved=model.settings()
+            for key in ('url','model','key','imageUrl','imageModel','imageKey','visionUrl','visionModel','visionKey'):
+                self.assertEqual(saved[key],original[key])
+            self.assertEqual(saved['feed'],'https://references.example/feed.xml')
+            self.assertEqual(post(self.c,'admin/reference-settings',feed='http://insecure.example/feed').status_code,400)
+            self.assertEqual(model.settings()['feed'],saved['feed'])
+            with studio.db() as c:
+                self.assertEqual([tuple(r) for r in c.execute('SELECT * FROM model_route')],routes_before)
+            admin=self.c.get('/api/admin')
+            self.assertEqual(admin.json['modelPlatforms']['defaults']['image']['model'],'legacy-image')
+            for key in ('keep-text-secret','keep-image-secret','keep-vision-secret'):
+                self.assertNotIn(key,admin.text)
+
+    def test_four_independent_capabilities_and_secret_retention(self):
+        from server import model, providers
+        self.admin()
+        platform = 'custom-' + uuid.uuid4().hex
+        try:
+            for kind in providers.KINDS:
+                payload = dict(id=platform,label='独立连接测试',capability=kind,url=f'https://{kind}.example/v1/chat/completions',model='fixture-'+kind,key='private-'+kind,protocol=providers.PROTOCOLS[kind][0])
+                self.assertEqual(post(self.c,'admin/model-platform',**payload).status_code,200)
+                self.assertEqual(post(self.c,'admin/model-platform',**{**payload,'key':''}).status_code,200)
+            self.assertEqual(post(self.c,'admin/model-routes',**dict.fromkeys(providers.KINDS,platform)).status_code,200)
+            for kind in providers.KINDS:
+                self.assertEqual(model.route(kind)['key'],'private-'+kind)
+                self.assertEqual(model.route(kind)['url'],f'https://{kind}.example/v1/chat/completions')
+                self.assertNotIn('private-'+kind,self.c.get('/api/admin').text)
+            self.assertEqual(post(self.c,'admin/model-platform',**{**payload,'url':'https://changed.example/v1/tasks','key':''}).status_code,400)
+            self.assertEqual(post(self.c,'admin/model-platform',id='deepseek',capability='image',url='https://example.com/images/generations',model='deepseek-chat').status_code,400)
+            self.assertEqual(post(self.c,'admin/model-platform',**{**payload,'capability':'image','protocol':'images','model':'deepseek-chat'}).status_code,400)
+            post(self.c,'admin/model-routes',**dict.fromkeys(providers.KINDS,'local-rules'))
+            self.assertTrue(all(model.route(k)['model']=='' for k in providers.KINDS))
+        finally:
+            with studio.db(True) as c:
+                c.execute('DELETE FROM model_route')
+                c.execute('DELETE FROM model_provider WHERE id=?',(platform,))
+
+    def test_live_model_catalog_pagination_capabilities_and_failed_sync(self):
+        from server import model_tools as mt
+        from urllib.error import HTTPError
+        self.admin()
+        payload = dict(id='custom-'+uuid.uuid4().hex,capability='image',url='https://catalog.example/v1/images/generations',key='catalog-private',model='')
+        self.assertEqual(post(studio.app.test_client(),'admin/sync-models',**payload).status_code,403)
+        replies = [dict(data=[dict(id='text-only',domain='LLM'),dict(id='image-model',modalities=dict(input_modalities=['text'],output_modalities=['image']))],has_more=True,last_id='image-model'),dict(data=[dict(id='manual-model')],has_more=False)]
+        with patch.object(mt,'request_json',side_effect=replies) as remote:
+            response = post(self.c,'admin/sync-models',**payload)
+        self.assertEqual(response.status_code,200,response.json)
+        self.assertEqual(remote.call_args_list[1].args[1],'https://catalog.example/v1/models?after=image-model')
+        self.assertEqual(remote.call_args.args[0]['key'],'catalog-private')
+        rows = {r['id']:r for r in response.json['models']}
+        self.assertEqual(rows['text-only']['kinds'],['text'])
+        self.assertEqual(rows['image-model']['kinds'],['image'])
+        self.assertFalse(rows['manual-model']['known'])
+        self.assertNotIn('catalog-private',response.text)
+        with patch.object(mt,'request_json',side_effect=HTTPError(payload['url'],403,'denied',{},None)):
+            self.assertEqual(post(self.c,'admin/sync-models',**payload).status_code,400)
+        with studio.db() as c:
+            self.assertEqual(len(json.loads(c.execute('SELECT data FROM model_catalog WHERE platform=?',(payload['id'],)).fetchone()[0])),3)
+        with patch.object(mt,'request_json') as remote:
+            self.assertEqual(post(self.c,'admin/sync-models',**{**payload,'modelsUrl':'https://elsewhere.example/models'}).status_code,400)
+            remote.assert_not_called()
+        with patch.object(mt,'request_json',side_effect=[dict(output=dict(total=2,models=[dict(model='qwen-text',capabilities=['TG'])])),dict(output=dict(total=2,models=[dict(model='qwen-vision',capabilities=['TG','VU'])]))]) as remote:
+            result = mt.sync_models('text',dict(provider='custom',url='https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/chat/completions',key='',model=''))
+        self.assertEqual(result['models'][1]['kinds'],['text','vision'])
+        self.assertIn('page_no=2',remote.call_args.args[1])
+
+    def test_capability_probes_validate_actual_outputs_and_authentication(self):
+        import base64
+        from server import model_tools as mt
+        self.admin()
+        payload = dict(id='custom-'+uuid.uuid4().hex,capability='text',url='https://probe.example/v1/chat/completions',model='probe-text',key='probe-private')
+        def inline(fn,*args): fn(*args)
+        with patch.object(mt.PROBES,'submit',side_effect=inline), patch.object(mt.model,'chat_request',return_value=dict(ok=True)) as request:
+            created = post(self.c,'admin/probes',**payload).json
+        result = self.c.get('/api/admin/probes/'+created['id'])
+        self.assertEqual(result.json['state'],'complete',result.json)
+        self.assertEqual(request.call_args.args[0]['key'],'probe-private')
+        self.assertNotIn('probe-private',result.text)
+        self.assertNotIn('signature',result.json)
+        self.assertEqual(studio.app.test_client().get('/api/admin/probes/'+created['id']).status_code,403)
+        with patch.object(mt.PROBES,'submit',side_effect=inline), patch.object(mt.model,'chat_request',return_value=dict(color='wrong')):
+            created = post(self.c,'admin/probes',**{**payload,'capability':'vision'}).json
+        failed = self.c.get('/api/admin/probes/'+created['id']).json
+        self.assertEqual(failed['state'],'failed')
+        def recognize(cfg,name,messages,*args):
+            raw=messages[0]['content'][1]['image_url']['url'].split(',')[1]
+            pixel=Image.open(io.BytesIO(base64.b64decode(raw))).getpixel((20,20))
+            colors={'red':(255,0,0),'green':(0,128,0),'blue':(0,0,255),'yellow':(255,255,0)}
+            return dict(color=min(colors,key=lambda color:sum((a-b)**2 for a,b in zip(pixel,colors[color]))))
+        with patch.object(mt.PROBES,'submit',side_effect=inline), patch.object(mt.model,'chat_request',side_effect=recognize):
+            self.assertEqual(post(self.c,'admin/probes/'+created['id']+'/retry',**{**payload,'capability':'vision'}).status_code,200)
+        self.assertEqual(self.c.get('/api/admin/probes/'+created['id']).json['state'],'complete')
+        image = io.BytesIO();Image.new('RGB',(512,512),'green').save(image,format='PNG')
+        with patch.object(mt.PROBES,'submit',side_effect=inline), patch.object(mt,'request_json',return_value=dict(data=[dict(b64_json=base64.b64encode(image.getvalue()).decode())])):
+            created=post(self.c,'admin/probes',**{**payload,'capability':'image','url':'https://probe.example/v1/images/generations'}).json
+        result=self.c.get('/api/admin/probes/'+created['id']).json
+        self.assertEqual(result['state'],'complete',result)
+        with self.c.get(result['preview']) as media:
+            self.assertEqual(media.mimetype,'image/png')
+        self.assertEqual(studio.app.test_client().get(result['preview']).status_code,403)
+
+    def test_cloud_video_task_resume_and_actual_decoding(self):
+        import shutil
+        from pathlib import Path
+        from server import video_api as video
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source=root/'fixture.mp4'
+            subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=size=320x320:rate=24','-t','1','-pix_fmt','yuv420p',str(source)],check=True)
+            cfg=dict(provider='custom',url='https://video.example/tasks',model='fixture-video',key='video-private',protocol='ark-video')
+            plan=dict(output=dict(width=320,height=320),coordination=dict(product='茶饮',concept='测试'))
+            folder=root/'probe'
+            with patch.dict(os.environ,{'TRUPIC_DAILY_VIDEO_CALLS':'0'}):
+                with self.assertRaisesRegex(ValueError,'上限'):
+                    video.prepare_background(folder,plan,dict(storyboard=[]),cfg)
+            self.assertFalse((folder/'video-task.json').exists())
+            with patch.object(video,'request_json',side_effect=[dict(id='task-1')]+[dict(status='running')]*120) as remote, patch.object(video.time,'sleep'):
+                with self.assertRaisesRegex(ValueError,'同一任务'):
+                    video.prepare_background(folder,plan,dict(storyboard=[]),cfg)
+            self.assertEqual(sum(len(c.args)>2 for c in remote.call_args_list),1)
+            with patch.object(video,'request_json',return_value=dict(status='succeeded',content=dict(video_url='https://cdn.example/video.mp4'))) as remote, patch.object(video,'download',side_effect=lambda url,dest:shutil.copy(source,dest)):
+                frames=video.prepare_background(folder,plan,dict(storyboard=[]),cfg)
+            self.assertEqual(len(list(frames.glob('*.jpg'))),216)
+            self.assertEqual(remote.call_count,1)
+            self.assertEqual(remote.call_args.args[1],cfg['url']+'/task-1')
+            self.assertNotIn('video-private',(folder/'video-task.json').read_text())
+
+    def test_auto_creation_uses_shared_text_and_selected_image_service(self):
+        import base64
+        from server import providers, model
+        self.admin()
+        q,_=self.bundle_plan()
+        asset=studio.quotes.loads(q['quote'])['specs'][0]['asset']
+        q=post(self.c,'creations/plan',asset=asset,brief='抹茶新品上新组图，48元/罐').json
+        text_id,image_id=('custom-'+uuid.uuid4().hex for _ in range(2))
+        try:
+            with studio.db(True) as c:
+                for kind,platform in [('text',text_id),('image',image_id)]:
+                    providers.save(c,'test',dict(id=platform,label=kind,capability=kind,url=f'https://{kind}.example/v1/'+('chat/completions' if kind=='text' else 'images/generations'),model='fixture-'+kind,key='private-'+kind))
+                providers.select(c,'test',dict(text=text_id,image=image_id,vision='local-rules',video='local-rules'))
+            stream=io.BytesIO();Image.new('RGB',(720,720),'#aabb99').save(stream,format='PNG')
+            def remote(request,timeout):
+                payload=json.loads(request.data)
+                self.assertEqual(request.get_header('Authorization'),'Bearer private-image')
+                self.assertEqual(payload['model'],'fixture-image')
+                return io.BytesIO(json.dumps(dict(data=[dict(b64_json=base64.b64encode(stream.getvalue()).decode())])).encode())
+            draft=dict(title='一口清新',body='抹茶饮品，48元/罐',cta='试试这杯',engine='fixture-text',review={})
+            with patch('server.auto_pipeline.generate_copy',return_value=draft) as text_call, patch('urllib.request.urlopen',side_effect=remote) as images:
+                response=post(self.c,'creations',quote=q['quote'],confirmedCost=q['cost'],requestKey=uuid.uuid4().hex)
+                self.assertEqual(response.status_code,200,response.json)
+                group=response.json
+                for item in group['items']:
+                    finished=self.finish(item['job'])
+                    self.assertEqual(finished['state'],'complete',finished)
+            self.assertEqual(text_call.call_count,1)
+            self.assertEqual(images.call_count,3)
+            result=self.c.get('/api/creations/'+group['id']).json
+            self.assertEqual(result['title'],'一口清新')
+        finally:
+            with studio.db(True) as c:
+                c.execute('DELETE FROM model_route')
+                c.execute('DELETE FROM model_provider WHERE id IN (?,?)',(text_id,image_id))
+
+    def test_cloud_video_creation_composites_and_reviews_all_frames(self):
+        import shutil
+        from pathlib import Path
+        from server import video_api as video, providers
+        q,_=self.bundle_plan()
+        asset=studio.quotes.loads(q['quote'])['specs'][0]['asset']
+        q=post(self.c,'creations/plan',asset=asset,brief='抹茶饮品上新，只要9秒短视频，48元/罐').json
+        platform='custom-'+uuid.uuid4().hex
+        try:
+            with studio.db(True) as c:
+                providers.save(c,'test',dict(id=platform,label='视频测试',capability='video',url='https://video.example/tasks',model='fixture-video',key='video-private'))
+                providers.select(c,'test',dict(video=platform,text='local-rules',image='local-rules',vision='local-rules'))
+            with tempfile.TemporaryDirectory() as directory:
+                source=Path(directory)/'source.mp4'
+                subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=0xadbfa3:size=360x640:rate=24','-vf',"drawbox=x=20:y=100:w=50:h=50:color=white:t=fill",'-t','1','-pix_fmt','yuv420p',str(source)],check=True)
+                def respond(cfg,url,payload=None):
+                    return dict(id='task-render') if payload else dict(status='succeeded',content=dict(video_url='https://cdn.example/video.mp4'))
+                with patch.object(video,'request_json',side_effect=respond), patch.object(video,'download',side_effect=lambda url,dest:shutil.copy(source,dest)):
+                    group=post(self.c,'creations',quote=q['quote'],confirmedCost=q['cost'],requestKey=uuid.uuid4().hex).json
+                    for item in group['items']:
+                        done=self.finish(item['job'])
+                        self.assertEqual(done['state'],'complete',done)
+                item=next(i for i in group['items'] if i['role']=='motion')
+                result=self.c.get('/api/jobs/'+item['job']).json
+                work=self.c.get('/api/works/'+result['work']).json['versions'][0]
+                self.assertFalse(work.get('openDesignSource'))
+                self.assertEqual(len(work['storyboard']),3)
+                with self.c.get(work['download']) as download:
+                    self.assertGreater(len(download.data),10000)
+        finally:
+            with studio.db(True) as c:
+                c.execute('DELETE FROM model_route')
+                c.execute('DELETE FROM model_provider WHERE id=?',(platform,))
+
+    def test_admin_password_change_and_session_revocation(self):
+        payload = dict(currentPassword=studio.ADMIN, newPassword="测试管理密码2026", confirmPassword="测试管理密码2026")
+        self.assertEqual(post(self.c, "admin/password", **payload).status_code, 403)
+        self.admin()
+        other = studio.app.test_client()
+        other.get("/api/state")
+        self.assertEqual(post(other, "account/admin", password=studio.ADMIN).status_code, 200)
+        try:
+            self.assertEqual(post(self.c, "admin/password", **{**payload, "currentPassword": "wrong"}).status_code, 403)
+            self.assertEqual(post(self.c, "admin/password", **{**payload, "confirmPassword": "different"}).status_code, 400)
+            self.assertEqual(post(self.c, "admin/password", **{**payload, "newPassword": "short", "confirmPassword": "short"}).status_code, 400)
+            self.assertEqual(post(self.c, "admin/password", **payload).status_code, 200)
+            self.assertTrue(self.state()["admin"])
+            self.assertFalse(other.get("/api/state").json["admin"])
+            self.assertEqual(other.get("/api/admin").status_code, 403)
+            self.assertEqual(post(other, "account/admin", password=studio.ADMIN).status_code, 403)
+            self.assertEqual(post(other, "account/admin", password=payload["newPassword"]).status_code, 200)
+            with studio.db() as c:
+                stored = c.execute("SELECT password_hash FROM admin_auth WHERE id=1").fetchone()[0]
+                self.assertNotIn(payload["newPassword"], stored)
+                self.assertTrue(studio.check_password_hash(stored, payload["newPassword"]))
+                logs = str([tuple(row) for row in c.execute("SELECT action,target FROM audit")])
+                self.assertNotIn(payload["newPassword"], logs)
+            with patch.dict(os.environ, {"TRUPIC_ADMIN_KEY": "test-deployment-managed-key"}):
+                self.assertFalse(self.state()["admin"])
+                self.assertEqual(post(self.c, "account/admin", password="test-deployment-managed-key").status_code, 200)
+                self.assertTrue(self.c.get("/api/admin").json["adminAuth"]["environmentManaged"])
+                self.assertEqual(post(self.c, "admin/password", **payload).status_code, 400)
+        finally:
+            with studio.db(True) as c:
+                c.execute("DELETE FROM admin_auth")
+
     def test_auto_creation_routing_and_shared_facts(self):
         from server.auto_creation import route_request, factual_lines
         self.assertEqual(route_request('只要文案，不要视频')['roles'], ['copy'])
@@ -1165,7 +1406,7 @@ class WorkflowTests(unittest.TestCase):
             with (
                 tempfile.TemporaryDirectory() as temp,
                 patch(
-                    "server.background.settings",
+                    "server.model.settings",
                     return_value={
                         "imageUrl": "http://localhost/render",
                         "imageModel": "fixture-image",

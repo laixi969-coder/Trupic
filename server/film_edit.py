@@ -19,7 +19,7 @@ RECIPES = (
 )
 
 
-def encode(plates, folder, audio, dims, shots, move, titles, pace):
+def encode(plates, folder, audio, dims, shots, move, titles, pace, dynamic=False):
     codec = [
         "-c:v",
         "libx264",
@@ -35,7 +35,7 @@ def encode(plates, folder, audio, dims, shots, move, titles, pace):
         tmp = Path(tmp)
         project = tmp / "trupic"
         composition(project, dims, plates, titles, shots, audio, pace)
-        rendered = render_composition(project, tmp / "video.mp4")
+        rendered = False if dynamic else render_composition(project, tmp / "video.mp4")
         master = tmp / "picture.mp4"
         cmd = ffmpeg + [
             "-f",
@@ -120,7 +120,11 @@ def encode(plates, folder, audio, dims, shots, move, titles, pace):
                 "使用说明.txt",
                 "picture.mp4 为无字无声净画面，soundtrack.wav 为九秒音轨。cuts.edl 记录三个剪辑点，各 title PNG 对齐同编号的三秒镜头。使用字幕轨改字时，可用 captions.srt 替换 PNG。timeline.json 保留逐镜说明与参考卡来源。",
             )
-        archive_project(project, folder / "open-design.zip", tmp / "video.mp4", "\n".join(subtitles))
+        if dynamic:
+            # Static-source project exports would misrepresent a generated motion plate.
+            (folder / "open-design.zip").unlink(missing_ok=True)
+        else:
+            archive_project(project, folder / "open-design.zip", tmp / "video.mp4", "\n".join(subtitles))
         (tmp / "video.mp4").replace(folder / "video.mp4")
     return "HyperFrames" if rendered else "FFmpeg"
 

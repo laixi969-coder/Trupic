@@ -172,7 +172,13 @@ def coordinate(services, c, tenant, v):
         if role=="motion":
             spec["replacement"]["storyboard"]=storyboard(p,spec["replacement"])
         specs.append(dict(role=role,label=LABELS[role],spec=spec))
-    return dict(ready=True,title=cp["title"],brief=brief,shared=common,items=specs,cost=sum(services["COST"][row["spec"]["kind"]] for row in specs),notes=["按原图制作；商品结构和标识保留。", "视频使用九秒三镜的本地镜头运动。"] if "motion" in roles else ["按原图制作；商品结构和标识保留。"])
+    from . import model
+    notes = ["商品与文字保留原图及已确认资料。"]
+    if model.route("text")["model"]:
+        notes.append("文案由后台所选模型制作，并统一用于图片和短片。")
+    if "motion" in roles:
+        notes.append("视频使用所选视频接口生成动态环境，再合成商品、字幕与配乐。" if model.route("video")["model"] else "视频使用九秒三镜的本地镜头运动。")
+    return dict(ready=True,title=cp["title"],brief=brief,shared=common,items=specs,cost=sum(services["COST"][row["spec"]["kind"]] for row in specs),notes=notes)
 
 
 def register(app, services):
@@ -218,6 +224,7 @@ def register(app, services):
             rid=ident(); items=[]
             for entry in q["items"]:
                 spec=entry["spec"]
+                spec["plan"]["creationRun"]=rid
                 owner(c,"asset",spec["asset"],t)
                 jid,wid=ident(),ident()
                 c.execute("INSERT INTO job(id,tenant,request_key,spec,state,cost,work,version,error,created)VALUES(?,?,?,?,?,?,?,?,?,?)",(jid,t,f"auto:{rid}:{entry['role']}",dump(spec),"queued",services["COST"][spec["kind"]],wid,1,None,now()))
