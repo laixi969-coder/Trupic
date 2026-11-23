@@ -50,7 +50,7 @@ def shared_copy(spec):
                 # Exact commercial details remain shared, including all caveats.
                 facts = plan['coordination']['facts']
                 missing = [fact for fact in facts if fact.strip() != plan['original'].strip() and fact not in approved['body']]
-                if missing:
+                if missing and writing["kind"] != "poster":
                     approved['body'] += '；' + '；'.join(missing)
                 summary['sharedCopy'] = approved
             except Exception as exc:
@@ -61,6 +61,9 @@ def shared_copy(spec):
             with db(True) as c:
                 c.execute('UPDATE creative_run SET plan=?,title=? WHERE id=?', (dump(summary),approved['title'],run_id))
     result.update({k:approved[k] for k in ('title','body','cta','engine','review','writingSkill','reviewFlag','attemptedModel','detailLine') if k in approved})
+    if spec["kind"] == "copy" and approved.get("writingSkill", {}).get("posterHeadings"):
+        from .campaign import complete_body
+        result["body"] = complete_body(plan, result["body"], result["offer"], result["terms"])
     role = plan.get('bundleRole')
     if role in ('scene','white','livebackground','box','bag','card'):
         result['title'] = ''

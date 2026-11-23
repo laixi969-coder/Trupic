@@ -41,7 +41,7 @@ def with_text_model(test):
     """Supply a deterministic text provider to tests of billing, rendering and revisions."""
     def answer(prompt, inputs, *args):
         if "writingBrief" in inputs:
-            title = "换个角度见面" if "上一稿" in prompt else "等你来碰面"
+            title = "换个角度和你再见面" if "上一稿" in prompt else "留一段好时光等你来"
             return dict(title=title, body="把今天的这一刻留给你。", cta="问问详情。"), "fixture-writer"
         if "draft" in inputs:
             return dict(ok=True, headlineOk=True, closingOk=True), "fixture-writer"
@@ -1072,15 +1072,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.c.delete("/api/assets/"+ids[2]).status_code,400)
         revision=post(self.c,work+"/revision-quote",base=1,action="edit",instruction="48元改成38元；标题改为周末来一杯").json
         self.assertEqual(revision["cost"],1)
-        self.assertIn("38元",revision["changes"]["body"])
+        self.assertIn("38元",revision["changes"]["offer"])
+        self.assertIn("仅限周末", revision["changes"]["terms"])
         with patch.object(studio.pool,"submit"):
             job=post(self.c,work+"/revise",quote=revision["quote"],confirmed=True,confirmedCost=1,requestKey="edit").json
             studio.produce(job["id"])
         latest=self.c.get("/api/"+work).json["versions"]
         self.assertEqual(len(latest),2)
         self.assertEqual(latest[0]["title"],"周末来一杯")
-        self.assertIn("38元",latest[0]["body"])
-        self.assertIn("48元",latest[1]["body"])
+        self.assertIn("38元",latest[0]["offer"])
+        self.assertIn("48元",latest[1]["offer"])
 
     @with_text_model
     def test_home_brief_without_photo_revision_and_adoption(self):
@@ -1102,7 +1103,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(done["state"], "complete", done)
             latest = self.c.get("/api/works/" + poster).json["versions"][0]
             if action == "revision":
-                self.assertEqual(latest["title"], "换个角度见面")
+                self.assertEqual(latest["title"], "换个角度和你再见面")
             if action == "layout":
                 self.assertEqual(latest["body"], initial["body"])
         self.assertTrue(next(r for r in self.state()["recs"] if r["topicId"] == topic["topicId"])["adopted"])
@@ -1825,7 +1826,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(q["requiresCopyChoice"])
         payload = dict(quote=q["quote"], confirmedCost=q["cost"], requestKey=uuid.uuid4().hex)
         options = [
-            dict(title="你切菜，我摆盘", body="璟澜院样板间厨房。", cta="周末找我约时间。", shareTo="一起做饭的人", reply="那洗碗归谁？"),
+            dict(title="今天你切菜，我来摆盘", body="璟澜院样板间厨房。", cta="周末找我约时间。", shareTo="一起做饭的人", reply="那洗碗归谁？"),
             dict(title="晚饭做好前，先陪我聊会儿", body="璟澜院的厨房。", cta="周末约个时间来看。", shareTo="伴侣", reply="我正好想跟你说件事。"),
             dict(title="免费送厨房", body="不实的优惠", cta="", shareTo="朋友", reply="真的？"),
         ]
@@ -2076,7 +2077,7 @@ class WorkflowTests(unittest.TestCase):
         j = submit_revision(self.c, url + "/revise", base=1, requestKey=uuid.uuid4().hex).json
         self.assertEqual(self.finish(j["id"])["state"], "complete")
         versions = self.c.get("/api/" + url).json["versions"]
-        self.assertEqual(versions[0]["title"], "换个角度见面")
+        self.assertEqual(versions[0]["title"], "换个角度和你再见面")
         self.assertNotEqual(versions[0]["title"], versions[1]["title"])
         post(self.c, url + "/restore/1")
         self.assertEqual(self.state()["works"][0]["current"], 1)
@@ -3502,7 +3503,7 @@ class WorkflowTests(unittest.TestCase):
                     side_effect=[
                         (
                             {
-                                "title": "洗衣液2瓶39元",
+                                "title": "这款洗衣液2瓶39元",
                                 "body": "本周日截止，全店可用，无需凑单。",
                                 "cta": "",
                             },
@@ -3519,10 +3520,54 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn(wenan.FORMATS[section].strip(), ask.call_args_list[0].args[0])
             self.assertEqual(ask.call_args_list[1].args[1]["draft"]["title"], output["title"])
 
+    def test_poster_headings_reach_the_page_at_three_distinct_sizes(self):
+        from server import wenan
+        from server.photo_grid import grid_layout
+        from server.typography import Typesetter
+
+        for title_size in (7, 8, 18, 19):
+            for subtitle_size in (0, 20, 21):
+                error = wenan.poster_length_error("映" * title_size, "票" * subtitle_size, False)
+                self.assertEqual(bool(error), title_size not in range(8, 19) or subtitle_size > 20)
+        self.assertFalse(wenan.poster_length_error("指定片名", "", True))
+        self.assertFalse(wenan.poster_length_error("今晚 9.9元看电影", "", False))
+
+        plan = prepare("猫和老鼠电影票9.9元", {}, [], dict(id="base", name="基础", method="moment"))
+        plan.update(kind="poster", autoCreation=True, facts="猫和老鼠电影票9.9元")
+        draft = dict(title="大银幕上再追你一回", body="《猫和老鼠》电影票", cta="9.9元一张")
+        with patch("server.model.engine_name", return_value="writer"), patch(
+            "server.model.ask", side_effect=[(draft, "writer"), ({"ok": True}, "writer")]
+        ):
+            cp = generate_copy(plan)
+        self.assertEqual([cp[k] for k in draft], list(draft.values()))
+        _, rows = grid_layout((1080, 1440), Typesetter(), "", cp, "原图观察", "bleed", "offer")
+        self.assertEqual([r[0] for r in rows], list(draft.values()))
+        self.assertGreater(rows[0][2], rows[1][2])
+        self.assertGreater(rows[1][2], rows[2][2])
+
+    def test_short_candidate_titles_are_rewritten_before_selection(self):
+        q = post(self.c, "creations/plan", brief="给周末电影放映做海报").json
+        def option(title):
+            return dict(title=title, body="", cta="", shareTo="经常看电影的同学", reply="坐哪排？")
+        responses = [
+            ({"options": [option("看电影"), option("一起去看")]}, "writer"),
+            ({"options": [option("这周末一起去看电影"), option("把这一排留给老朋友")]}, "writer"),
+            ({"approved": [0, 1]}, "writer"),
+        ]
+        with patch("server.model.route", return_value=dict(model="writer", url="", provider="test")), patch(
+            "server.model.ask", side_effect=responses
+        ) as ask:
+            response = post(self.c, "copy-options", quote=q["quote"])
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(len(response.json["options"]), 2)
+        self.assertEqual(ask.call_count, 3)
+        self.assertIn("8–18", ask.call_args_list[1].args[1]["改写要求"])
+        self.assertTrue(all(not row["body"] and not row["cta"] for row in response.json["options"]))
+
     def test_copy_review_sees_photo_and_requires_exact_offer(self):
         plan = prepare("猫和老鼠电影票9.9元", {}, [], dict(id="base", name="基础", method="moment"))
         plan.update(kind="poster", autoCreation=True, sourceReview={"reason": "黑猫站在屋顶"})
-        draft = dict(title="今晚，屋顶见", body="一只黑猫，等你入场。电影票9.9元。", cta="问问场次")
+        draft = dict(title="今晚一起去屋顶碰面", body="一只黑猫，等你入场。电影票9.9元。", cta="问问场次")
         with patch("server.model.engine_name", return_value="writer"), patch(
             "server.model.ask", side_effect=[(draft, "writer"), ({"ok":True, "closingOk":True}, "writer")]
         ) as ask:

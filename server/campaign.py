@@ -32,7 +32,7 @@ def evidence_clauses(plan):
 
 
 LOCKED = re.compile(
-    r'(?:主标题|标题)(?:写成|定为|用|是|为)?[：:\s]*[「“"]([^」”"]{1,40})[」”"]'
+    r'(?:主标题|(?<![副级])标题)(?:写成|定为|用|是|为)?[：:\s]*[「“"]([^」”"]{1,40})[」”"]'
 )
 NUMBER = r"\d+(?:\.\d+)?"
 COUNT = r"[一二两三四五六七八九十0-9]+"
@@ -105,6 +105,16 @@ def complete_body(plan, body, offer, terms):
         for line in lines
         if line
     )
+
+
+def poster_footer(copy, *details):
+    """Keep required deal details legible without repeating the approved headings."""
+    lines = [copy.get("title", ""), copy.get("posterDeck", copy.get("body", "")), copy.get("cta", "")]
+    extra = []
+    for text in details:
+        if text and not any(text in line for line in [*lines, *extra]):
+            extra.append(text)
+    return " · ".join(filter(None, [*extra, copy.get("cta")]))
 
 
 def storyboard(plan, copy, asset=None):

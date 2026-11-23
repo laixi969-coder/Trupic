@@ -18,6 +18,21 @@ FORMATS = dict(
 AWARDS = (ROOT / "references/creative-review.md").read_text(encoding="utf-8")
 
 
+POSTER_HEADINGS = (
+    "海报采用最多三级文字。title 为主标题，8–18 字；body 为副标题，最多 20 字，可留空；"
+    "cta 为可选三级标题，补一条已知的时间、地点、价格条件或商家要求的行动提示。"
+    "不重复已单列的价格与条件，无新信息留空。标点、数字、字母各计一字，空白不计。商家指定的标题逐字保留。"
+)
+
+
+def poster_length_error(title, subtitle, locked):
+    if not locked and not 8 <= len("".join(title.split())) <= 18:
+        return "海报主标题需要 8–18 字"
+    if len("".join(subtitle.split())) > 20:
+        return "海报副标题最多 20 字"
+    return ""
+
+
 SHARING = "社交货币与自发传播"
 CLOSING = (
     ROOT.parent / "trupic-commercial-poster/references/closing-copy.md"
@@ -192,6 +207,7 @@ def no_cta(plan):
 
 
 def record(plan, mode):
-    return dict(
-        name="hiccai-wenan", version=VERSION, mode=mode, sections=sections(plan)
-    )
+    record = dict(name="hiccai-wenan", version=VERSION, mode=mode, sections=sections(plan))
+    if plan.get("kind") == "poster":
+        record["posterHeadings"] = True
+    return record

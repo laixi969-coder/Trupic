@@ -7,6 +7,7 @@ from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageOps, ImageStat
 
 from .design import DIRECTIONS, choose_style, direction
 from .media import PALETTES, picture
+from .campaign import poster_footer
 from .typography import Typesetter
 from .lettering import apply_lettering
 
@@ -220,7 +221,8 @@ def poster(
             title = re.sub(r"^(「[^」]{2,5}」)(?=.{4,}$)", r"\1\n", title)
     offer = copy.get("offer", "")
     lead = plan.get("facts") or plan["profile"].get("facts", "")
-    if dense:
+    headings = copy.get("writingSkill", {}).get("posterHeadings")
+    if dense or headings:
         lead = copy["body"]
     elif not lead and not offer:
         sentences = copy["body"].split("。")
@@ -232,11 +234,13 @@ def poster(
             sentences = sentences[1:]
         lead = sentences[0].strip() + "。"
     terms = copy.get("terms", "")
-    if terms and terms not in lead:
+    if not headings and terms and terms not in lead:
         lead = "。".join(filter(None, (lead.rstrip("。"), terms.rstrip("。")))) + "。"
     if lead.strip("。") == offer:
         lead = ""
     cta = copy["cta"] if scene != 2 else brand
+    if headings:
+        cta = poster_footer(copy, terms)
 
     def rect(box):
         return tuple(round(v * (w if i % 2 == 0 else h)) for i, v in enumerate(box))
@@ -367,6 +371,8 @@ def poster(
             ),
             35,
         )
+        if headings:
+            cta = copy["cta"]
         if terms:
             lead = lead.replace(terms.rstrip("。"), "").strip(" ，。")
         text(
@@ -460,14 +466,14 @@ def poster(
             0.50 if wide else 0.76,
             0.856 if wide else 0.902,
         ),
-        29,
+        40 if headings else 29,
         vertical="bottom",
     )
     text(
         cta,
         (0.052, 0.87 if wide else 0.916, 0.60 if wide else 0.76, 0.96),
-        42,
-        "display",
+        30 if headings else 42,
+        "body" if headings else "display",
     )
     if not asset_path and (background or plan.get("scenePhoto")):
         text("创意场景示意", (0.758, 0.93, 0.953, 0.969), 18, "body", align="right")

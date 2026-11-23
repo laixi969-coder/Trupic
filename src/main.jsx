@@ -1032,7 +1032,7 @@ function App() {
                       <div className="interactive-poster"><img src={versionData.poster} alt={versionData.title} />
                         {pickRegion && versionData.editRegions?.map((r,i)=><button key={i} className="copy-region"
                           style={{left:(r.box[0]*100)+"%",top:(r.box[1]*100)+"%",width:((r.box[2]-r.box[0])*100)+"%",height:((r.box[3]-r.box[1])*100)+"%"}}
-                          aria-label={"修改"+({title:"标题",body:"正文",cta:"行动句"})[r.field]} onClick={()=>{
+                          aria-label={"修改"+(work.kind==="poster"?{title:"主标题",body:"副标题",cta:"三级标题"}:{title:"标题",body:"正文",cta:"行动句"})[r.field]} onClick={()=>{
                             setEditField(r.field);setEditText(versionData[r.field]);setPickRegion(false);
                             document.getElementById("revision-text")?.focus();
                           }}/>)}</div>
@@ -1159,7 +1159,7 @@ function App() {
                     <section className="formpanel"><h3>修改作品</h3>
                       {!!versionData.editRegions?.length && <button className="secondary" onClick={()=>{setPickRegion(!pickRegion);document.querySelector(".interactive-poster")?.scrollIntoView({block:"center"});}}>{pickRegion?"退出选区":"点选海报文字修改"}</button>}
                       <label className="field">修改位置<select value={editField} onChange={e=>setEditField(e.target.value)}>
-                        <option value="">按一句话要求修改</option><option value="title">标题</option><option value="body">正文</option><option value="cta">行动句</option>{work.kind==="poster" && <option value="background">背景选区</option>}
+                        <option value="">按一句话要求修改</option><option value="title">{work.kind==="poster"?"主标题":"标题"}</option><option value="body">{work.kind==="poster"?"副标题":"正文"}</option><option value="cta">{work.kind==="poster"?"三级标题":"行动句"}</option>{work.kind==="poster" && <option value="background">背景选区</option>}
                       </select></label>
                       {editField==="background" && <ProductRegion background asset={{original:versionData.poster}} region={editBox} change={setEditBox}/>}
                       <label className="field">{editField==="background"?"选区修改要求":editField?"替换文字":"修改要求"}<textarea id="revision-text" maxLength={400} value={editText} onChange={e=>setEditText(e.target.value)} placeholder={editField==="background"?"提亮、压暗，或描述要重绘的背景":editField?"写下新的文字":"例如：48元改成38元；换一张"}/></label>
@@ -1569,7 +1569,7 @@ function App() {
         </Modal>
       )}
       {modal === "revisionQuote" && revisionQuote && <Modal title="确认修改" onClose={close}>
-        {revisionQuote.changes && <article><b>{revisionQuote.changes.title}</b><p>{revisionQuote.changes.body}</p><p>{revisionQuote.changes.cta}</p></article>}
+        {revisionQuote.changes && <article><b>{revisionQuote.changes.title}</b><p>{revisionQuote.changes.body}</p><p>{revisionQuote.changes.cta}</p>{[revisionQuote.changes.offer, revisionQuote.changes.terms].filter(v => v && ![revisionQuote.changes.title, revisionQuote.changes.body, revisionQuote.changes.cta].some(text => text?.includes(v))).map((line, i) => <p key={i}>{line}</p>)}</article>}
         {revisionQuote.options.length > 0 && <fieldset className="short-options"><legend>没选就用短版，可随时修改</legend>
           {revisionQuote.options.map((text,i)=><label key={i}><input type="radio" name="short-copy" checked={shortChoice===i} onChange={()=>setShortChoice(i)}/>{text}</label>)}</fieldset>}
         <p>本次共 {revisionQuote.cost} 积分，原作品会保留。</p>

@@ -59,7 +59,7 @@ def full_poster_prompt(plan, copy):
     output = plan["output"]
     words = list(dict.fromkeys(filter(None, (
         plan["profile"].get("name"), copy["title"], copy.get("offer"),
-        copy.get("terms"), copy.get("body"), copy.get("cta"),
+        copy.get("terms"), copy.get("posterDeck", copy.get("body")), copy.get("cta"),
     ))))
     brief = [
         f"为「{plan.get('promptBrief', {}).get('reading', {}).get('product') or plan['subject']}」生成一张 {output['width']} × {output['height']} 的满幅商业海报。",
@@ -68,6 +68,11 @@ def full_poster_prompt(plan, copy):
         "设计字形、字距与位置，让标题与主体共用一道轮廓或明暗边界。主标题逐字写作「" + copy["title"] + "」。",
         "画面文案逐字使用 " + " / ".join("「" + w + "」" for w in words) + "。保留实物原有标识。",
     ]
+    if copy.get("writingSkill", {}).get("posterHeadings"):
+        if subtitle := copy.get("posterDeck", copy.get("body")):
+            brief.append("副标题逐字写作「" + subtitle + "」，小于主标题。")
+        if third := copy.get("cta"):
+            brief.append("三级标题逐字写作「" + third + "」，排在末层，用较小的字。")
     if requirements := plan.get("promptBrief", {}).get("visualConstraints"):
         brief.append("遵守商家要求 " + "。".join(requirements))
     return "\n".join(brief)
@@ -266,7 +271,7 @@ def optimize(spec, *, infer=True, previous=None):
         }[action["goal"]]
     copy = f"为{reading['audience']}写关于「{product}」的内容，目标是{plan['goal']}。{plan['angle']}。"
     copy += {
-        "poster": "主标题只承担一个重点，促销主诉求将优惠与条件放在同一读区。",
+        "poster": wenan.POSTER_HEADINGS + "促销主诉求将优惠与条件放在同一读区。",
         "copy": "用一个具体场景开篇，解释一个选择理由，结尾给一个行动。",
         "video": "开头写能在前三秒读完的一句，中段只说一处能从原图看出的卖点，末镜只给一个行动。",
     }[kind]

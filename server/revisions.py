@@ -75,10 +75,11 @@ def edit_request(spec, cp, instruction, field):
             plan["layoutOverride"] = True
         else:
             match = re.fullmatch(
-                r"(?:把|将)?(标题|正文|行动句)(?:改为|改成|换成)[：:]?(.+)", clause
+                r"(?:把|将)?(主标题|副标题|三级标题|标题|正文|行动句)(?:改为|改成|换成)[：:]?(.+)", clause
             )
             if match:
-                target = {"标题": "title", "正文": "body", "行动句": "cta"}[match[1]]
+                target = {"主标题": "title", "副标题": "body", "三级标题": "cta",
+                          "标题": "title", "正文": "body", "行动句": "cta"}[match[1]]
                 value = match[2].strip("“”")
             elif field in ("title", "body", "cta"):
                 target, value = field, clause

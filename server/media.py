@@ -419,7 +419,12 @@ def render(
     )
     with (folder / "copy.txt").open("w", encoding="utf-8") as fp:
         fields = ("body", "cta") if "moment" in plan else ("title", "body", "cta")
-        fp.write("\n\n".join(copy[x] for x in fields if copy[x]))
+        lines = [copy[x] for x in fields if copy[x]]
+        if copy.get("writingSkill", {}).get("posterHeadings") and "moment" not in plan:
+            for detail in (copy.get("offer"), copy.get("terms")):
+                if detail and not any(detail in line for line in lines):
+                    lines.append(detail)
+        fp.write("\n\n".join(lines))
     if kind == "video":
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:

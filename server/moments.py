@@ -71,7 +71,7 @@ def prepare_drafts(spec, tenant):
             caption = title + "\n" + draft["body"]
         if note:
             caption = note if title in note else title + "\n" + note
-        options.append({**draft, "body": caption, "cta": ""})
+        options.append({**draft, "posterDeck": draft["body"], "body": caption})
         if len(options) == 3:
             break
     moment["drafts"] = options

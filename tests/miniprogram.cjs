@@ -27,11 +27,11 @@ test(
       for await (const chunk of req) raw += chunk;
       const { messages } = JSON.parse(raw);
       const input = JSON.parse(messages[1].content);
-      const draft = { title: "这一杯，等你来", body: "看看杯中的颜色。", cta: "来看看。" };
+      const draft = { title: "今天这一杯，留给你", body: "看看杯中的颜色。", cta: "来看看。" };
       let result = {};
       if (input["候选"]) result = { approved: [0, 1, 2] };
       else if ("优惠" in input) result = {
-        options: ["这一杯，等你来", "慢慢喝，也慢慢聊", "杯边有一圈绿"].map(title =>
+        options: ["今天这一杯，留给你", "慢慢喝，也一起慢慢聊", "杯边藏着一圈春天的绿"].map(title =>
           ({ ...draft, title, shareTo: "午休常一起喝茶的同事", reply: "帮我留个座。" })),
       };
       else if ("writingBrief" in input) result = draft;

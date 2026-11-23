@@ -846,7 +846,7 @@ def revision_quote(id):
         cost = pricing.snapshot(spec, pricing.current(c), "revision")
         quote = quotes.dumps(dict(tenant=t, work=id, base=base, action=action, rewrite=rewrite, ratio=v.get("ratio"),
                                   pricingSnapshot=spec["pricingSnapshot"], cost=cost, instruction=instruction,field=v.get("field"),region=v.get("region"),duplicate=v.get("duplicate") is True), salt="revision")
-        return jsonify(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta")} if action in ("edit","revision") else None)
+        return jsonify(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta","offer","terms")} if action in ("edit","revision") else None)
 
 
 @app.post("/api/works/<id>/revise")

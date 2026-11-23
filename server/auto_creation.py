@@ -177,7 +177,8 @@ def coordinate(services, c, tenant, v):
     cp["body"] = "；".join(lines)
     promotion = route["workflow"] == "promotion" or bool(re.search(r"半价|买.{1,4}送", visual_requests(brief)))
     condition = r"仅限|适用|不限|全店|全场|不与|同享|不叠加|无其他限制|月\d+日|\d{4}[-/]\d|今天|明天|本周|周[一二三四五六日末]|长期"
-    cp["terms"] = "；".join(line for line in lines if re.search(condition, line)) if promotion else ""
+    if promotion:
+        cp["terms"] = "；".join(line for line in lines if re.search(condition, line))
     cp["offer"] = ""
     price = re.search(r"[¥￥]?\d+(?:\.\d+)?元(?:[/／][^，。；\s·]+)?", facts)
     if promotion:

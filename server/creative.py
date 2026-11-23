@@ -263,10 +263,14 @@ def generate_copy(plan, variant=0, *, revision_note=""):
         + "\n按上述 Skill 和商家要求写成品。只返回 JSON 对象，含 title、body、cta、detailLine。cta 在无需行动引导时可为空。detailLine 为可选的短片中段字幕。目标篇幅按用户要求和当前交付尺寸。"
     )
     prompt += " 根据素材重新创作，标题不要照抄整句需求，明确指定的标题和规格须逐字保留。"
+    poster = plan.get("kind") == "poster"
+    locked = LOCKED.search(plan["original"])
     action = wenan.conversion(plan)
-    if not action:
+    if poster:
+        prompt += wenan.POSTER_HEADINGS
+    if not action and not poster:
         prompt += " 本次没有指定交易动作，cta 留空。片名和商品名是资料，除非用户明确指定标题，否则可以另写创意标题。"
-    elif not action["channel"]:
+    elif action and not action["channel"]:
         prompt += " 未提供渠道，不得写点击、私信、扫码或拨打电话。"
     if revision_note:
         prompt += " 上一稿需要重写：" + revision_note + "。围绕用户提供的主题重新写标题和正文，保留明确指定的字句和交易条件。不要复述创作需求。"
@@ -283,10 +287,15 @@ def generate_copy(plan, variant=0, *, revision_note=""):
                 "variation": variant,
             },
         )
-        for k, maxlen in (("title", max(30, len(spec))), ("body", 260), ("cta", 40)):
+        if poster and isinstance(val.get("title"), str) and isinstance(val.get("body"), str):
+            if locked:
+                val["title"] = locked.group(1)
+            if error := wenan.poster_length_error(val["title"], val["body"], locked):
+                return {**base, "reviewFlag": error}
+        for k, maxlen in (("title", max(40 if locked else 30, len(spec))), ("body", 260), ("cta", 40)):
             if (
                 not isinstance(val.get(k), str)
-                or not (0 if k == "cta" or (spec and k == "body") else 1)
+                or not (0 if k == "cta" or ((poster or spec) and k == "body") else 1)
                 <= len(val[k].strip())
                 <= maxlen
             ):
@@ -298,12 +307,11 @@ def generate_copy(plan, variant=0, *, revision_note=""):
             val["title"].strip() != spec or val["body"].strip() or val["cta"].strip()
         ):
             return {**base, "reviewFlag": "模型草稿格式异常"}
-        if not action:
+        if not action and (not poster or wenan.no_cta(plan)):
             val["cta"] = ""
         detail = val.get("detailLine", "")
         if not isinstance(detail, str) or len(detail) > 32:
             return {**base, "reviewFlag": "模型草稿格式异常"}
-        locked = LOCKED.search(plan["original"])
         if locked:
             val["title"] = locked.group(1)
         content = " ".join((val["title"], val["body"], val["cta"], detail))
@@ -380,12 +388,14 @@ def generate_copy(plan, variant=0, *, revision_note=""):
         ):
             return {**base, "reviewFlag": "行动引导未通过复核",
                     "revisionNote": "请按照商家要求写一个可执行的行动，只使用已提供的渠道。"}
+        body = val["body"].strip()
+        if not poster and not spec:
+            body = complete_body(plan, body, base["offer"], base["terms"])
         return {
             **base,
-            **{k: val[k].strip() for k in ("title", "body", "cta")},
-            "body": ""
-            if spec
-            else complete_body(plan, val["body"].strip(), base["offer"], base["terms"]),
+            "title": val["title"].strip(),
+            "body": body,
+            "cta": val["cta"].strip(),
             "detailLine": detail or base["detailLine"],
             "writingSkill": wenan.record(plan, "模型创作与复核"),
             "engine": engine,

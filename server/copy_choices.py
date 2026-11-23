@@ -11,7 +11,7 @@ from flask import abort
 from itsdangerous import BadSignature
 
 from . import model, wenan
-from .campaign import LOCKED, quoted_specs
+from .campaign import LOCKED
 from .creative import copy_inputs, unsupported_copy
 from .store import DATA
 from .visual_review import compact_local_vision, preflight, source_images
@@ -179,24 +179,19 @@ def write_options(spec, tenant, previous=()):
     inputs.update(优惠=base["offer"], 条件=base["terms"])
     task = (
         '本次商家要亲自选稿。只返回 JSON {"options":[{"title":"主标题","body":"正文","cta":"行动句","shareTo":"会发给谁","reply":"对方会怎么接"}]}，'
-        "写三组真正不同的完整中文海报文案，各用一个角度。海报短句：正文一句，建议8到22字；收尾仅一个动作，勿和正文重复。"
+        "写三组真正不同的完整中文海报文案，各用一个角度。"
         "从原图可见细节和需求取材，保留项目或商品名、商业条件，正文和末句各说一件事。"
         "没有指定联系渠道就沿用商家的邀约说法。指定标题逐字保留，通过正文区分选项。"
     )
+    task += wenan.POSTER_HEADINGS
     if wenan.social_headline(plan):
         task += (
             "三组主标题都是微信里能直接发给人的一句话。第一句从我和你的分工入手；"
             "第二句写眼前这个物件能怎么用，带一点朋友间的玩笑；第三句说一个观察到的小细节，让对方想一起去看看。"
-            "在每个标题中放一个具体的动作或物件。正文只写商品或项目名加一个真实细节，总共不超过24字。"
+            "在每个标题中放一个具体的动作或物件。正文只写商品或项目名加一个真实细节，最多20字。"
             "把时间和预约留给末句。不要用抽象形容词和广告口号。reply 要回应标题，不得重复标题。"
         )
     try:
-        result, engine = ask(
-            task, inputs, 900, option_schema("title", "body", "cta", "shareTo", "reply")
-        )
-        rows = result.get("options")
-        if not isinstance(rows, list):
-            raise model.InvalidModelOutput("文案模型未返回候选稿，请重试。")
         locked = LOCKED.search(plan["original"])
         drafts = []
         sharing = []
@@ -208,56 +203,68 @@ def write_options(spec, tenant, previous=()):
                 json.dumps(plan["profile"], ensure_ascii=False),
             )
         )
-        for row in rows[:3]:
-            if not isinstance(row, dict) or not all(
-                isinstance(row.get(k), str) for k in ("title", "body", "cta")
-            ):
-                continue
-            title, body, cta = (row[k].strip() for k in ("title", "body", "cta"))
-            if named_subject and named_subject not in title + body + cta:
-                body = named_subject + (" · " + body if body else "")
-            if locked:
-                title = locked.group(1)
-            if wenan.no_cta(plan):
-                cta = ""
-            elif (
-                not re.search("不(?:能|要|限|在)?周末|周末不|除周末", plan["original"])
-                and cta
-                and "周末" not in title + body + cta
-                and re.search(
-                    r"周末[^，。；]{0,30}(?:约个时间|预约|约看)", plan["original"]
-                )
-            ):
-                cta = "周末" + cta
-            key = (title, body) if locked else title
-            if not locked and any(
-                SequenceMatcher(None, title, prior).ratio() >= 0.83 for prior in seen
-            ):
-                continue
-            if (
-                not title
-                or len(title) > 40
-                or len(body) > 260
-                or len(cta) > 60
-                or key in seen
-            ):
-                continue
-            copy_text = f"{title} {body} {cta}"
-            if unsupported_copy(copy_text, known):
-                continue
-            for fact in (*quoted_specs(plan), base["offer"], base["terms"]):
-                if fact and fact not in copy_text:
-                    body = (body.rstrip("。") + "。" + fact).lstrip("。")
-            if wenan.social_headline(plan) and not all(
-                isinstance(row.get(k), str) and row[k].strip()
-                for k in ("shareTo", "reply")
-            ):
-                continue
-            sharing.append({k: row[k] for k in ("shareTo", "reply") if k in row})
-            seen.add(key)
-            drafts.append({"title": title, "body": body, "cta": cta})
+        for attempt in range(2):
+            length_error = ""
+            result, engine = ask(
+                task, inputs, 900, option_schema("title", "body", "cta", "shareTo", "reply")
+            )
+            rows = result.get("options")
+            if not isinstance(rows, list):
+                raise model.InvalidModelOutput("文案模型未返回候选稿，请重试。")
+            for row in rows[:3]:
+                if not isinstance(row, dict) or not all(
+                    isinstance(row.get(k), str) for k in ("title", "body", "cta")
+                ):
+                    continue
+                title, body, cta = (row[k].strip() for k in ("title", "body", "cta"))
+                if named_subject and named_subject not in title + body + cta:
+                    body = named_subject + (" · " + body if body else "")
+                if locked:
+                    title = locked.group(1)
+                if wenan.no_cta(plan):
+                    cta = ""
+                elif (
+                    not re.search("不(?:能|要|限|在)?周末|周末不|除周末", plan["original"])
+                    and cta
+                    and "周末" not in title + body + cta
+                    and re.search(
+                        r"周末[^，。；]{0,30}(?:约个时间|预约|约看)", plan["original"]
+                    )
+                ):
+                    cta = "周末" + cta
+                key = (title, body) if locked else title
+                if not locked and any(
+                    SequenceMatcher(None, title, prior).ratio() >= 0.83 for prior in seen
+                ):
+                    continue
+                if (
+                    not title
+                    or len(title) > 40
+                    or len(cta) > 60
+                    or key in seen
+                ):
+                    continue
+                if error := wenan.poster_length_error(title, body, locked):
+                    length_error = error
+                    continue
+                copy_text = f"{title} {body} {cta}"
+                if unsupported_copy(copy_text, known):
+                    continue
+                if wenan.social_headline(plan) and not all(
+                    isinstance(row.get(k), str) and row[k].strip()
+                    for k in ("shareTo", "reply")
+                ):
+                    continue
+                sharing.append({k: row[k] for k in ("shareTo", "reply") if k in row})
+                seen.add(key)
+                drafts.append({"title": title, "body": body, "cta": cta})
+            if len(drafts) >= 2 or not length_error:
+                break
+            if attempt == 0:
+                inputs["改写要求"] = length_error + "。请重新生成不同角度的合规候选。"
+        drafts = drafts[:3]
         if len(drafts) < 2:
-            raise ValueError("可用的不同文案不足两组，请重新生成。")
+            raise ValueError((length_error + "。 " if length_error else "") + "可用的不同文案不足两组，请重新生成。")
         review_task = (
             "你是独立审稿人。逐组检查事实、商家要求、项目名称、行动和创意切口是否不同。"
             '仅返回 JSON {"approved":[0,1,2]}，数组只列通过的零起始序号。'

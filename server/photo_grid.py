@@ -3,6 +3,7 @@
 import re
 
 from .visual_review import LayoutOverflow
+from .campaign import poster_footer
 
 
 def grid_layout(size, ts, brand, copy, detail, mode, first, *, body="", logo=False, has_picture=True):
@@ -23,6 +24,8 @@ def grid_layout(size, ts, brand, copy, detail, mode, first, *, body="", logo=Fal
                      for part in re.split(r"[；;。]", value or "")}
         support = "；".join(part for part in re.split(r"[；;。]", body)
                            if part.strip() and part.strip() not in displayed)
+    elif copy.get("writingSkill", {}).get("posterHeadings"):
+        support = copy.get("body", "")
     elif offer:
         support = ""
     if support == terms:
@@ -44,14 +47,18 @@ def grid_layout(size, ts, brand, copy, detail, mode, first, *, body="", logo=Fal
     groups = [(brand, "body", 0.029, 0)]
     if logo:
         groups.insert(0, ("logo", "logo", 0.065, 0))
-    if first == "offer" and offer:
-        groups.extend(deal)
-        if copy["title"] != offer:
-            groups.append(heading)
+    if copy.get("writingSkill", {}).get("posterHeadings"):
+        groups.extend([heading, (support, "body", 0.040, 0.015),
+                       (poster_footer(copy, offer, terms), "body", 0.032, 0.018)])
     else:
-        groups.append(heading)
-        groups.extend(deal)
-    groups.extend([(support, "body", 0.036, 0.015), (copy.get("cta"), "display", 0.033, 0.027)])
+        if first == "offer" and offer:
+            groups.extend(deal)
+            if copy["title"] != offer:
+                groups.append(heading)
+        else:
+            groups.append(heading)
+            groups.extend(deal)
+        groups.extend([(support, "body", 0.036, 0.015), (copy.get("cta"), "display", 0.033, 0.027)])
     available = h - 2 * margin if wide or not has_picture else round(h * 0.55) - margin
 
     def measure(scale):

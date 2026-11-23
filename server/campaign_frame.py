@@ -9,6 +9,7 @@ from .design import DIRECTIONS
 from .poster_composition import LAYOUTS, boxes as reference_boxes, picture_layout
 from .shot_detail import textured_patch
 from .photo_grid import grid_layout
+from .campaign import poster_footer
 
 
 def video_stage(image):
@@ -314,7 +315,7 @@ def campaign_frame(
         if not asset and (background or plan.get("scenePhoto")):
             brand = (brand + "  创意场景示意").strip()
         # The note belongs in the caption. Leave the merchant's photograph room on the card.
-        grid_copy = {**copy, "body": "", "cta": ""} if "moment" in plan else copy
+        grid_copy = {**copy, "body": copy.get("posterDeck", "")} if "moment" in plan else copy
         photo_area, entries = grid_layout(
             size, ts, brand, grid_copy, "" if "moment" in plan else art.get("detail"), mode, first,
             body=copy.get("body") if plan.get("bundleRole") else "",
@@ -486,19 +487,23 @@ def campaign_frame(
                 title = re.sub(r"([，。！？：])", r"\1\n", title, count=1)
         line(title, headline, points, title_role)
         # Full copy is included in copy.txt. The key visual carries its factual support.
-        support_text = (
-            copy.get("offer")
-            or art.get("detail")
-            or ("" if food_type or art.get("composition") == "material" else re.split(r"[。！？]", copy.get("body", ""))[0])
-        )
-        if plan.get("bundleRole") and plan.get("kind") == "poster":
-            support_text = copy.get("body") or support_text
-            if copy.get("offer") and copy["offer"] not in support_text:
-                support_text = copy["offer"] + "  " + support_text
-        if copy.get("terms") and copy["terms"] not in support_text:
-            support_text += "  " + copy["terms"]
-        line(support_text, support, 44, "body")
-        line(copy.get("cta"), foot, 42, "display")
+        if copy.get("writingSkill", {}).get("posterHeadings"):
+            line(copy.get("posterDeck", copy["body"]), support, 48, "body")
+            line(poster_footer(copy, copy.get("offer"), copy.get("terms")), foot, 36, "body")
+        else:
+            support_text = (
+                copy.get("offer")
+                or art.get("detail")
+                or ("" if food_type or art.get("composition") == "material" else re.split(r"[。！？]", copy.get("body", ""))[0])
+            )
+            if plan.get("bundleRole") and plan.get("kind") == "poster":
+                support_text = copy.get("body") or support_text
+                if copy.get("offer") and copy["offer"] not in support_text:
+                    support_text = copy["offer"] + "  " + support_text
+            if copy.get("terms") and copy["terms"] not in support_text:
+                support_text += "  " + copy["terms"]
+            line(support_text, support, 44, "body")
+            line(copy.get("cta"), foot, 42, "display")
     return scene, layer, box
 
 
