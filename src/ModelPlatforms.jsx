@@ -2,14 +2,21 @@ import React, { useEffect, useRef, useState } from "react";
 import { api, Field } from "./ui.jsx";
 
 const kinds = [["text", "策划与文案"], ["image", "图片生成"], ["video", "视频生成"], ["edit","图片编辑"], ["vision", "商品与成品视觉审核"]];
+const categories = [["text", "文字类"], ["image", "图片类"], ["vision", "图片审核类"], ["video", "视频生成类"]];
 const descriptions = {edit:"按商家要求编辑框选区域。",text: "写标题、卖点和短片脚本，只需要文本模型。", image: "生成图片环境，商品原图与准确文案在本地合成。", video: "生成动态环境，再合成商品原图、三镜字幕和配乐。", vision: "接收图片，检查商品与成品；不是图片生成模型。"};
-const protocols = {"image-edits":"Images Edits（同步编辑）",chat: "Chat Completions", images: "Images Generations（同步图片）", "ark-video": "方舟视频任务", "dashscope-video": "百炼异步文生视频", "atlas-video": "Atlas 视频预测任务"};
 const localLabels = {edit:"本地明暗调整",text:"本地文案规则",image:"本地商品排版",video:"本地镜头运动",vision:"本地像素与文字检查"};
 
-function Connection({ kind, platform, busy, act }) {
+function eligibleModels(catalog, kind) {
+  return (catalog?.models || []).filter(model => !model.known || model.kinds.includes(kind));
+}
+
+function Connection({ kind, platform, busy, act, routeVersion, formal }) {
   const configured = platform.connections[kind];
-  const [form, set] = useState({id:platform.id,label:platform.label,capability:kind,...configured,key:""});
-  const [catalog,setCatalog] = useState(configured.catalog || null);
+  const [form, set] = useState({
+    id: platform.id, label: platform.label, capability: kind, baseUrl: configured.baseUrl || "", key: "",
+    model: configured.model || "",
+  });
+  const [catalog, setCatalog] = useState(configured.catalog || null);
   const [syncing,setSyncing] = useState(false);
   const [err,setError] = useState("");
   const [probe,setProbe] = useState(null);
@@ -34,41 +41,81 @@ function Connection({ kind, platform, busy, act }) {
     poll();
     return ()=>{active=false;clearTimeout(timer);};
   },[probe?.id,probe?.state,pollAttempt]);
-  const catalogKey = JSON.stringify([form.url,form.modelsUrl,form.key,form.clearKey]);
-  const synced = useRef(catalogKey);
-  const visibleCatalog = synced.current===catalogKey ? catalog : null;
+  const locked = busy || syncing || probeBusy;
+  const base = form.baseUrl.trim().replace(/\/+$/, "");
+  const sameBase = base === configured.baseUrl;
+  const savedKey = sameBase && configured.hasKey;
+  let local = false;
+  try { local = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(base).hostname); } catch {}
+  const canSync = base && (form.key.trim() || savedKey || local || (sameBase && configured.model));
+  const options = eligibleModels(catalog, kind);
+  const selected = options.some(option => option.id === form.model);
+
+  function changeConnection(name, value) {
+    set({...form, [name]: value, model: ""});
+    setCatalog(null);
+    setProbe(null);
+    setError("");
+  }
   async function sync() {
-    setSyncing(true);setError("");
-    try {setCatalog(await api("/admin/sync-models","POST",form));synced.current=catalogKey;}
-    catch(e) {setError(e.message);}
-    finally {setSyncing(false);}
+    setSyncing(true);
+    setError("");
+    try {
+      const latest = await api("/admin/sync-models", "POST", form);
+      setCatalog(latest);
+      if (!eligibleModels(latest, kind).some(option => option.id === form.model)) {
+        set({...form, model: ""});
+        setProbe(null);
+      }
+    } catch (e) { setError(e.message); }
+    finally { setSyncing(false); }
   }
   async function test() {
     const retry=probe?.id&&probe.state!=="complete"&&tested.current===fingerprint;
+    if (!retry) setProbe(null);
     setProbeBusy(true);setError("");tested.current=fingerprint;
     try {setProbe(await api(retry ? "/admin/probes/"+probe.id+"/retry" : "/admin/probes","POST",form));setPollAttempt(n=>n+1);}
     catch(e) {setError(e.message);setProbeBusy(false);}
   }
-  return <form className="formpanel integration" onSubmit={async e => {e.preventDefault(); if (await act("model-platform",form)) set({...form,key:"",clearKey:false});}}>
-    <h3>{platform.label} · {kinds.find(k => k[0] === kind)[1]}</h3>
-    {platform.id.startsWith("custom-") && <Field label="连接名称" name="label" form={form} set={set} required limit={60} />}
-    <label className="field">接口协议<select value={form.protocol} onChange={e => set({...form,protocol:e.target.value})}>{(kind === "video" && platform.id.startsWith("custom") ? ["ark-video","dashscope-video","atlas-video"] : [configured.protocol]).map(id => <option key={id} value={id}>{protocols[id]}</option>)}</select></label>
-    <Field label="此能力的完整 API 地址" name="url" form={form} set={set} required limit={1200} placeholder={kind === "video" ? "https://…/contents/generations/tasks" : kind === "image" ? "https://…/images/generations" : "https://…/chat/completions"} />
-    <details className="original"><summary>模型列表接口（可选）</summary><Field label="Models API 完整地址" name="modelsUrl" form={form} set={set} limit={1200} placeholder="留空按当前平台地址推导，必须与调用地址同源" /></details>
-    <div className="model-tests"><button type="button" className="secondary" disabled={busy||syncing||probeBusy||!form.url} onClick={sync}>{syncing?"正在同步…":"同步最新模型"}</button><small>{visibleCatalog ? "上次同步："+new Date(catalog.updated).toLocaleString() : "尚未同步该连接的模型目录"}</small></div>
-    {visibleCatalog && <label className="field">从平台最新目录选择<select aria-label="同步模型列表" value="" onChange={e=>set({...form,model:e.target.value})}><option value="">{catalog.models.length?"选择模型（不会自动替换当前模型）":"此接口未返回可用模型"}</option>{catalog.models.filter(m=>!m.known||m.kinds.includes(kind)).map(m=><option key={m.id} value={m.id}>{m.id}{!m.known?" · 能力未标注，请测试确认":""}</option>)}</select><small>已知不支持此能力的模型已过滤。模型可见不代表已开通调用权限。</small></label>}
-    <Field label="此能力的模型 ID" name="model" form={form} set={set} required limit={180} placeholder={kind === "vision" ? "需要明确支持图片输入的模型" : "填写已开通的模型或接入点 ID"} />
-    <label className="field">此能力的 API 密钥<input type="password" autoComplete="new-password" maxLength={2400} value={form.key} placeholder={configured.hasKey ? "已保存；地址不变时留空保留" : "填写密钥；本机服务可留空"} onChange={e=>set({...form,key:e.target.value})} /></label>
-    {configured.hasKey && <label className="checkline"><input type="checkbox" checked={!!form.clearKey} onChange={e=>set({...form,clearKey:e.target.checked})} />清除此能力已保存的密钥</label>}
-    <p className="fineprint">这里只保存这项能力，不改变其他能力的地址、模型或密钥。保存后还需在上方选为调用连接。</p>
-    <div className="model-tests"><button className="primary" disabled={busy||probeBusy||syncing}>保存此能力连接</button><button type="button" className="secondary" disabled={busy||probeBusy||syncing||!form.url||!form.model} onClick={test}>{probeBusy?"正在测试…":kind==="image"?"测试连接 · 生成测试图":kind==="video"?"测试连接 · 生成测试视频":"测试连接"}</button></div>
-    <p className="fineprint">测试使用当前表单的连接，不切换正式调用设置。图片和视频测试会真实生成测试素材，按供应商规则计费。</p>
-    <details><summary>正式模型准入 · {(configured.approved && configured.model===form.model && configured.url===form.url && !form.key && !form.clearKey) || reviewed===fingerprint ? "已核验" : "待核验"}</summary>
+  async function save(e) {
+    e.preventDefault();
+    if (locked || !selected) return;
+    if (await act("model-platform", {...form, activate: true, expectedVersion: routeVersion})) {
+      const saved = {...form, baseUrl: base, key: ""};
+      if (tested.current === fingerprint) tested.current = JSON.stringify(saved);
+      if (reviewed === fingerprint) setReviewed(JSON.stringify(saved));
+      set(saved);
+    }
+  }
+  return <form className="formpanel integration" onSubmit={save}>
+    <h2>{platform.label}</h2>
+    {platform.id.startsWith("custom-") && <Field label="平台名称" name="label" form={form} set={set} limit={60} />}
+    <small>{kinds.find(([id]) => id === kind)[1]}{configured.model && " · 已保存 " + configured.model}</small>
+    <label className="field">Base URL<input type="url" required maxLength={1200} disabled={locked}
+      placeholder="https://api.example.com/v1" value={form.baseUrl}
+      onChange={e => changeConnection("baseUrl", e.target.value)} /></label>
+    <label className="field">API Key<input type="password" autoComplete="new-password" maxLength={2400}
+      disabled={locked} value={form.key} placeholder={savedKey ? "已保存，留空沿用" : local ? "本机服务可留空" : "输入平台密钥"}
+      onChange={e => changeConnection("key", e.target.value)} /></label>
+    <div className="model-tests"><button type="button" className="secondary" disabled={locked || !canSync}
+      onClick={sync}>{syncing ? "正在同步…" : "同步最新模型"}</button>
+      {catalog && <small>上次同步 {new Date(catalog.updated).toLocaleString()}</small>}</div>
+    {catalog && base.startsWith("https://api.atlascloud.ai/") && <small>已同步 Atlas 公开模型目录。选择模型后，测试连接可验证 API Key 和调用权限。</small>}
+    <label className="field">模型<select aria-label="模型" value={selected ? form.model : ""} disabled={locked || !options.length}
+      onChange={e => {set({...form, model: e.target.value}); setError("");}}>
+      <option value="">{!catalog ? "请先同步最新模型" : options.length ? "请选择模型" : "此连接没有当前用途的可用模型"}</option>
+      {options.map(option => <option key={option.id} value={option.id}>{option.id}</option>)}
+    </select></label>
+    <div className="model-tests"><button type="button" className="secondary" disabled={locked || !selected}
+      onClick={test}>{probeBusy ? "正在测试…" : "测试连接"}</button>
+      <button className="primary" disabled={locked || !selected}>保存并启用</button></div>
+    {["image", "edit", "video"].includes(kind) && <small>测试将实际生成素材，并计入平台用量。</small>}
+    {(formal || probe?.state === "complete") && <details><summary>正式模型核验 · {(configured.approved && configured.model===form.model && sameBase && !form.key) || reviewed===fingerprint ? "已核验" : "待核验"}</summary>
       {[["released","发布日期","date"],["source","官方发布依据","url"],["family","模型系列","text"],["version","核实版本","text"],["minimum","系列最低版本","text"],["review","实际输出质量与成本核验记录","text"]].map(([k,l,type])=>
         <label className="field" key={k}>{l}<input type={type} value={metadata[k]||""} onChange={e=>setMetadata({...metadata,[k]:e.target.value})}/></label>)}
       <button type="button" className="secondary" disabled={probe?.state!=="complete"||tested.current!==fingerprint} onClick={async()=>{
         try {await api("/admin/model-admission","POST",{...form,...metadata,probe:probe.id});setReviewed(fingerprint);setError("");} catch(e){setError(e.message);}
-      }}>核准此连接与系列门槛</button></details>
+      }}>核准此连接与系列门槛</button></details>}
     {err&&<p className="error" role="alert">{err}</p>}
     {probe && tested.current===fingerprint && <div className="connection-result" role="status"><strong>{probe.state==="complete"?"连接测试通过":probe.state==="failed"?"连接测试失败":"正在等待平台返回"}</strong><p>{probe.model} · {probe.message||probe.error||"测试在后台执行，完成后将在此显示结果。"}{probe.ms!=null&&" · "+(probe.ms/1000).toFixed(1)+" 秒"}</p>{probe.preview&&(kind==="video"?<video src={probe.preview} muted controls style={{maxWidth:"100%",maxHeight:360}} />:<img src={probe.preview} alt="接口实际返回的测试图" style={{maxWidth:"100%",maxHeight:360}} />)}</div>}
   </form>;
@@ -90,16 +137,11 @@ function ProviderCosts({ costs, act, busy }) {
   </details>;
 }
 
-export default function ModelPlatforms({config,usage,costs,busy,act}) {
+function Routing({config,busy,act}) {
   const {platforms,routes} = config;
   const [selection,select] = useState(Object.fromEntries(kinds.map(([k])=>[k,routes[k]||""])));
   const [backups,setBackups] = useState(config.backups || {});
-  const [kind,chooseKind] = useState("text");
-  const [ids,chooseId] = useState({});
-  const [draft,setDraft] = useState(null);
-  const available = [...platforms,...(draft&&!platforms.some(p=>p.id===draft.id)?[draft]:[])].filter(p=>p.supported.includes(kind));
-  const selected = available.find(p=>p.id===ids[kind])||available.find(p=>p.id===routes[kind])||available[0];
-  return <>
+  return (
     <form className="formpanel integration" onSubmit={e=>{e.preventDefault();act("model-routes",{...selection,backups,expectedVersion:config.routeVersion});}}>
       <h2>按能力选择调用平台</h2>
       {config.routeVersion > 0 && <small>当前路由版本 V{config.routeVersion}</small>}
@@ -122,21 +164,62 @@ export default function ModelPlatforms({config,usage,costs,busy,act}) {
               .map(p=><option key={p.id} value={p.id}>{p.label} · {p.connections[k].model}</option>)}
           </select></label>)}
       </details>
-      {kinds.some(([k])=>!routes[k]&&config.defaults?.[k]?.model)&&<p className="fineprint">「已有配置」沿用之前保存或部署注入的连接。要调整它，请在下方保存独立连接，再在上方选用。</p>}
+      {kinds.some(([k])=>!routes[k]&&config.defaults?.[k]?.model)&&<p className="fineprint">「已有配置」沿用之前保存或部署注入的连接。可在模型连接中保存并启用新的模型。</p>}
       <button className="primary" disabled={busy}>保存调用设置</button>
-      <div className="model-tests"><button type="button" className="secondary" disabled={busy} onClick={()=>act("test-model",{})}>验证已保存的文案连接</button><button type="button" className="secondary" disabled={busy} onClick={()=>act("test-vision",{})}>验证已保存的视觉连接</button></div>
     </form>
-    <h2>配置独立连接</h2>
-    <p className="fineprint">选择能力与平台 → 填写连接并同步模型 → 测试并保存 → 在上方选用并保存调用设置。</p>
-    <div className="adminnav">{kinds.map(([k,label])=><button key={k} className={k===kind?"sel":""} onClick={()=>chooseKind(k)}>{label}</button>)}</div>
-    <label className="field">{kinds.find(k=>k[0]===kind)[1]}平台<select aria-label="配置平台" value={selected.id} onChange={e=>chooseId({...ids,[kind]:e.target.value})}>{available.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
-    {kind!=="text"&&<p className="fineprint">仅列出 Trupic 当前已接入此能力的连接类型。DeepSeek 的文案连接不用于生图、视频或图片审核。</p>}
-    {kind==="video"&&<p className="fineprint">选择已开通的文生视频模型。方舟、百炼与 Atlas 分别使用各自的异步任务接口。</p>}
-    <button type="button" className="secondary" disabled={busy} onClick={()=>{const p={id:"custom-"+crypto.randomUUID().replaceAll("-",""),label:"新增兼容连接",supported:[kind],connections:{[kind]:{url:"",model:"",hasKey:false,protocol:kind==="video"?"ark-video":kind==="image"?"images":kind==="edit"?"image-edits":"chat"}}};setDraft(p);chooseId({...ids,[kind]:p.id});}}>新增兼容连接</button>
-    <Connection key={selected.id+kind} kind={kind} platform={selected} busy={busy} act={act} />
+  );
+}
+
+export default function ModelPlatforms({config,usage,costs,busy,act}) {
+  const {platforms,routes} = config;
+  const [category, chooseCategory] = useState("text");
+  const [imageKind, chooseImageKind] = useState("image");
+  const kind = category === "image" ? imageKind : category;
+  const [ids, chooseId] = useState({});
+  const [drafts, setDrafts] = useState([]);
+  const available = [...platforms, ...drafts.filter(draft => !platforms.some(p => p.id === draft.id))]
+    .filter(platform => platform.supported.includes(kind));
+  const selected = available.find(p => p.id === ids[kind])
+    || available.find(p => p.id === routes[kind])
+    || available.find(p => p.connections[kind]?.model)
+    || available.find(p => p.id === "custom") || available[0];
+
+  function addPlatform() {
+    const id = "custom-" + crypto.randomUUID().replaceAll("-", "");
+    const platform = {id, label: "新平台", supported: kinds.map(([key]) => key),
+      connections: Object.fromEntries(kinds.map(([key]) => [key, {}]))};
+    setDrafts([...drafts, platform]);
+    chooseId({...ids, [kind]: id});
+  }
+  return <>
+    <div className="adminnav" aria-label="模型分类">
+      {categories.map(([id, label]) => <button key={id} type="button" className={category === id ? "sel" : ""}
+        aria-pressed={category === id} onClick={() => chooseCategory(id)}>{label}</button>)}
+    </div>
+    {category === "image" && <div className="adminnav" aria-label="图片用途">
+      {[["image", "图片生成"], ["edit", "图片编辑"]].map(([id, label]) => <button key={id} type="button"
+        className={imageKind === id ? "sel" : ""} onClick={() => chooseImageKind(id)}>{label}</button>)}
+    </div>}
+    <section className="formpanel">
+      <h2>{categories.find(([id]) => id === category)[1]}平台</h2>
+      <p>当前使用 {platforms.find(p => p.id === routes[kind])?.label || "默认连接"}
+        {" · "}{config.effective?.[kind]?.model || localLabels[kind]}</p>
+      <label className="field">选择平台<select aria-label="选择平台" value={selected.id}
+        onChange={e => chooseId({...ids, [kind]: e.target.value})}>
+        {available.map(platform => <option key={platform.id} value={platform.id}>
+          {platform.label}{platform.connections[kind]?.model ? " · " + platform.connections[kind].model : ""}
+        </option>)}
+      </select></label>
+      <button type="button" className="secondary" disabled={busy} onClick={addPlatform}>添加平台</button>
+    </section>
+    <Connection key={selected.id + kind} kind={kind} platform={selected} busy={busy} act={act}
+      routeVersion={config.routeVersion} formal={config.formal} />
+    <details className="formpanel"><summary>高级设置与用量</summary>
+    <Routing key={config.routeVersion} config={config} act={act} busy={busy} />
     {costs && <ProviderCosts costs={costs} act={act} busy={busy} />}
     <h2>今日模型调用</h2><small>UTC · 未配置的能力使用本地处理</small>
     {!usage.length&&<p className="muted">今天还没有模型请求记录。</p>}
     {usage.map(row=><div className="reviewrow" key={[row.platform,row.model,row.kind].join("/")}><strong>{platforms.find(p=>p.id===row.platform)?.label||"默认连接"} · {row.model}</strong><p>{kinds.find(k=>k[0]===row.kind)?.[1]||row.kind} · 请求 {row.calls} 次 · 成功 {row.succeeded} 次 · 平均 {(row.meanMs/1000).toFixed(1)} 秒</p><small>输入 token：{row.inputTokens??"未返回"}；输出 token：{row.outputTokens??"未返回"}</small></div>)}
+    </details>
   </>;
 }

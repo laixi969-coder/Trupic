@@ -210,7 +210,7 @@ def chat_request(cfg, name, messages, max_tokens, kind):
     data = {"model": name, "messages": messages, "max_tokens": max_tokens}
     if schema := cfg.get("responseSchema"):
         data["response_format"] = {"type": "json_schema", "json_schema": {"name": "visual_audit", "schema": schema}}
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "Trupic/1.0"}
     if cfg["key"]:
         headers["Authorization"] = "Bearer " + cfg["key"]
     req = urllib.request.Request(cfg["url"], json.dumps(data).encode(), headers)

@@ -1357,6 +1357,139 @@ class WorkflowTests(unittest.TestCase):
                 c.execute('DELETE FROM model_route')
                 c.execute('DELETE FROM model_provider WHERE id=?',(platform,))
 
+    def test_atlas_catalog_and_base_url_protocols(self):
+        from server import model_tools as mt, providers
+        self.admin()
+        for base in ("https://api.atlascloud.ai", "https://api.atlascloud.ai/v1",
+                     "https://api.atlascloud.ai/api/v1"):
+            for kind, path in [("text", "/v1/chat/completions"), ("vision", "/v1/chat/completions"),
+                               ("image", "/v1/images/generations"), ("video", "/api/v1/model/generateVideo")]:
+                cfg = providers.resolve_base(dict(id="atlas", capability=kind, baseUrl=base), None)
+                self.assertEqual(cfg["url"], "https://api.atlascloud.ai" + path)
+                self.assertEqual(mt.models_endpoint(cfg), "https://api.atlascloud.ai/api/v1/models")
+        rows = [
+            dict(model="writer", type="Text", input_modalities=["text"], supported_protocols=["openai.chat.completions"]),
+            dict(model="review", type="Text", input_modalities=["text", "image"], supported_protocols=["openai.chat.completions"]),
+            dict(model="image", type="Image", categories=["TEXT-TO-IMAGE"]),
+            dict(model="video", type="Video", categories=["TEXT-TO-VIDEO"]),
+            dict(model="hidden", type="Image", categories=["TEXT-TO-IMAGE"], display_console=False),
+            dict(model="audio", type="Audio"),
+        ]
+        payload = dict(id="atlas", capability="image", baseUrl="https://api.atlascloud.ai/api/v1", key="secret")
+        with patch.object(mt, "request_json", return_value=dict(code=200, data=rows)) as remote:
+            result = post(self.c, "admin/sync-models", **payload)
+        self.assertEqual(result.status_code, 200, result.json)
+        self.assertEqual(remote.call_args.args[0]["key"], "")
+        self.assertEqual(remote.call_args.args[1], "https://api.atlascloud.ai/api/v1/models")
+        indexed = {m["id"]: m for m in result.json["models"]}
+        self.assertEqual(indexed["review"]["kinds"], ["text", "vision"])
+        self.assertEqual(indexed["image"]["kinds"], ["image"])
+        self.assertEqual(indexed["video"]["kinds"], ["video"])
+        self.assertNotIn("hidden", indexed)
+        self.assertTrue(indexed["audio"]["known"])
+        self.assertEqual(indexed["audio"]["kinds"], [])
+        with patch.object(mt.PROBES, "submit") as queue:
+            result = post(self.c, "admin/probes", **payload, model="image")
+        self.assertEqual(result.status_code, 200, result.json)
+        self.assertEqual(queue.call_args.args[-1]["url"], "https://api.atlascloud.ai/v1/images/generations")
+        self.assertEqual(queue.call_args.args[-1]["key"], "secret")
+
+    def test_platform_catalog_reused_across_categories_and_multiple_platforms(self):
+        from server import model_tools as mt, providers
+        self.admin()
+        platforms = ["custom-" + uuid.uuid4().hex for _ in range(2)]
+        models = [dict(id="writer", domain="LLM"), dict(id="picture", domain="ImageGeneration"),
+                  dict(id="reviewer", domain="VLM"), dict(id="movie", domain="VideoGeneration"),
+                  dict(id="other", capabilities=["vendor-specific"])]
+        try:
+            for index, platform in enumerate(platforms):
+                payload = dict(id=platform, label="平台 " + str(index), capability="text",
+                               baseUrl=f"https://platform-{index}.example/v1", key=f"private-{index}")
+                with patch.object(mt, "request_json", return_value=dict(data=models)):
+                    self.assertEqual(post(self.c, "admin/sync-models", **payload).status_code, 200)
+                self.assertEqual(post(self.c, "admin/model-platform", **payload, model="writer").status_code, 200)
+                overview = self.c.get("/api/admin").json["modelPlatforms"]
+                saved = next(p for p in overview["platforms"] if p["id"] == platform)
+                for kind, name in [("image", "picture"), ("vision", "reviewer"), ("video", "movie")]:
+                    connection = saved["connections"][kind]
+                    self.assertTrue(connection["hasKey"])
+                    self.assertEqual(connection["baseUrl"], payload["baseUrl"])
+                    self.assertEqual(len(connection["catalog"]["models"]), 5)
+                    pick = {**payload, "capability":kind, "key":"", "model":name}
+                    with patch.object(mt.PROBES, "submit") as queue:
+                        result = post(self.c, "admin/probes", **pick)
+                        self.assertEqual(result.status_code, 200, result.json)
+                        self.assertEqual(queue.call_args.args[-1]["key"], payload["key"])
+                        self.assertEqual(queue.call_args.args[-1]["model"], name)
+                    self.assertEqual(post(self.c, "admin/model-platform", **pick).status_code, 200)
+                self.assertFalse(next(m for m in saved["connections"]["image"]["catalog"]["models"] if m["id"] == "other")["known"])
+            self.assertEqual(post(self.c, "admin/model-routes", text=platforms[0], image=platforms[1],
+                                  vision=platforms[0], video=platforms[1]).status_code, 200)
+            self.assertEqual(providers.connection("image")["provider"], platforms[1])
+            self.assertEqual(providers.connection("video")["model"], "movie")
+            self.assertEqual(providers.connection("text")["provider"], platforms[0])
+            self.assertNotIn("private-", self.c.get("/api/admin").text)
+            with patch.object(mt, "request_json") as remote:
+                result = post(self.c, "admin/probes", id=platforms[0], capability="image",
+                              baseUrl="https://changed.example/v1", model="picture", key="")
+                self.assertEqual(result.status_code, 400)
+                remote.assert_not_called()
+        finally:
+            with studio.db(True) as c:
+                for platform in platforms:
+                    c.execute("DELETE FROM model_route WHERE platform=?", (platform,))
+                    c.execute("DELETE FROM model_provider WHERE id=?", (platform,))
+
+    def test_base_url_model_selection_and_activation(self):
+        from server import model_tools as mt, providers
+        self.admin()
+        platform = "custom-" + uuid.uuid4().hex
+        base = "https://gateway.example/proxy/v1"
+        payload = dict(id=platform, capability="text", baseUrl=base + "/", key="test-private")
+        version = self.c.get("/api/admin").json["modelPlatforms"]["routeVersion"]
+        save = dict(**payload, model="chosen", expectedVersion=version, activate=True)
+        try:
+            self.assertEqual(post(self.c, "admin/model-platform", **save).status_code, 400)
+            with patch.object(mt, "request_json", return_value=dict(data=[dict(id="chosen"), dict(id="newer")])) as remote:
+                result = post(self.c, "admin/sync-models", **payload)
+                self.assertEqual(result.status_code, 200, result.json)
+                self.assertEqual(remote.call_args.args[1], base + "/models")
+            for change in [dict(key="other"), dict(baseUrl="https://other.example/v1"), dict(model="removed")]:
+                self.assertEqual(post(self.c, "admin/probes", **{**save, **change}).status_code, 400)
+            with patch.object(mt.PROBES, "submit") as queue:
+                self.assertEqual(post(self.c, "admin/probes", **save).status_code, 200)
+                cfg = queue.call_args.args[-1]
+                self.assertEqual((cfg["url"], cfg["key"], cfg["model"]), (base + "/chat/completions", payload["key"], "chosen"))
+            self.assertEqual(post(self.c, "admin/model-platform", **save).status_code, 200)
+            self.assertEqual(providers.connection("text")["model"], "chosen")
+            self.assertEqual(post(self.c, "admin/model-platform", **{**save, "model":"newer"}).status_code, 400)
+            self.assertEqual(providers.connection("text")["model"], "chosen")
+            with patch.object(mt, "request_json", return_value=dict(data=[dict(id="newer")])) as remote:
+                self.assertEqual(post(self.c, "admin/sync-models", **{**payload, "key":""}).status_code, 200)
+                self.assertEqual(remote.call_args.args[0]["key"], payload["key"])
+            self.assertEqual(post(self.c, "admin/probes", **save).status_code, 400)
+        finally:
+            with studio.db(True) as c:
+                c.execute("DELETE FROM model_route WHERE platform=?", (platform,))
+                c.execute("DELETE FROM model_provider WHERE id=?", (platform,))
+
+    def test_base_url_expands_capability_endpoints_and_preserves_legacy_settings(self):
+        from server import model_tools as mt, providers
+        for platform, kind, base, endpoint, catalog in [
+            ("custom", "edit", "/proxy/v1", "/proxy/v1/images/edits", "/proxy/v1/models"),
+            ("ark", "video", "/api/v3", "/api/v3/contents/generations/tasks", "/api/v3/models"),
+            ("atlas", "video", "/v1", "/api/v1/model/generateVideo", "/v1/models"),
+            ("bailian", "video", "/compatible-mode/v1", "/api/v1/services/aigc/video-generation/video-synthesis", "/api/v1/models"),
+        ]:
+            host = "https://gateway.example"
+            with self.subTest(platform=platform):
+                cfg = providers.resolve_base(dict(id=platform, capability=kind, baseUrl=host + base), None)
+                self.assertEqual(cfg["url"], host + endpoint)
+                self.assertEqual(mt.models_endpoint(cfg), host + catalog)
+        old = dict(url="https://gateway.example/legacy", protocol="chat", modelsUrl="https://gateway.example/catalog")
+        cfg = providers.resolve_base(dict(id="custom", capability="text", baseUrl=providers.connection_base(old)), old)
+        self.assertEqual((cfg["url"], cfg["modelsUrl"]), (old["url"], old["modelsUrl"]))
+
     def test_live_model_catalog_pagination_capabilities_and_failed_sync(self):
         from server import model_tools as mt
         from urllib.error import HTTPError

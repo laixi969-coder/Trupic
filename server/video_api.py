@@ -20,7 +20,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def request_json(cfg, url, payload=None, limit=1_000_000):
-    headers = {'Content-Type':'application/json'}
+    headers = {'Content-Type':'application/json', 'Accept':'application/json', 'User-Agent':'Trupic/1.0'}
     if cfg.get('protocol') == 'dashscope-video' and payload is not None:
         headers['X-DashScope-Async'] = 'enable'
     if cfg['key']:

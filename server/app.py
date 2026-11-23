@@ -1616,9 +1616,15 @@ def admin_action(action):
         return jsonify(count=discover())
     if action in ("model-platform", "model-routes"):
         with db(True) as c:
-            (providers.save if action == "model-platform" else providers.select)(
-                c, t, v
-            )
+            if action == "model-routes":
+                providers.select(c, t, v)
+            else:
+                activate = v.get("activate") is True and v.get("capability") in providers.KINDS
+                before = providers.route_snapshot(c) if activate else None
+                providers.save(c, t, v)
+                if activate:
+                    providers.select(c, t, {v["capability"]: v["id"],
+                                            "expectedVersion": v.get("expectedVersion")}, before=before)
         return jsonify(ok=True)
     if action == "test-vision":
         import secrets

@@ -110,7 +110,7 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
         "n": 1,
         "response_format": "b64_json",
     }
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "Trupic/1.0"}
     if cfg["imageKey"]:
         headers["Authorization"] = "Bearer " + cfg["imageKey"]
     started, ok = time.monotonic(), False

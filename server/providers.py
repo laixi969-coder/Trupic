@@ -43,9 +43,103 @@ def protocols_for(platform, kind):
 def capability(record, kind):
     explicit = json.loads(record.get("connections") or "{}")
     if kind in explicit:
-        return explicit[kind] if explicit[kind].get("model") else None
+        cfg = explicit[kind]
+        if not cfg.get("model"):
+            return None
+        if cfg.get("baseUrl") and urlsplit(cfg["baseUrl"]).hostname == "api.atlascloud.ai":
+            resolved = resolve_base(dict(id=record["id"], capability=kind, baseUrl=cfg["baseUrl"]), None)
+            return {**cfg, **{key: resolved[key] for key in ("url", "protocol", "modelsUrl")}}
+        return cfg
     if kind in ("text", "vision") and record.get(kind):
         return dict(url=record["url"], key=record["key"], model=record[kind], protocol="chat")
+    return None
+
+
+ENDPOINT_SUFFIX = {
+    "chat": "/chat/completions",
+    "images": "/images/generations",
+    "image-edits": "/images/edits",
+    "ark-video": "/contents/generations/tasks",
+    "dashscope-video": "/services/aigc/video-generation/video-synthesis",
+    "atlas-video": "/model/generateVideo",
+}
+
+
+def connection_base(cfg):
+    return cfg.get("baseUrl") or cfg["url"].rstrip("/").removesuffix(ENDPOINT_SUFFIX[cfg["protocol"]])
+
+
+def resolve_base(payload, previous):
+    """Expand the simple form for the existing save, discovery and probe paths."""
+    if "baseUrl" not in payload:
+        return payload
+    base = payload["baseUrl"]
+    if not isinstance(base, str) or len(base) > 1200:
+        raise ValueError("Base URL 无效。")
+    base = base.strip().rstrip("/")
+    safe_url(base)
+    platform, kind = payload["id"], payload["capability"]
+    protocol = protocols_for(platform, kind)[0]
+    parts = urlsplit(base)
+    if parts.hostname == "api.atlascloud.ai" and parts.path in ("", "/v1", "/api/v1"):
+        protocol = "atlas-video" if kind == "video" else PROTOCOLS[kind][0]
+        root = parts._replace(path="/api/v1" if kind == "video" else "/v1").geturl()
+        return {**payload, "baseUrl": base, "url": root + ENDPOINT_SUFFIX[protocol],
+                "protocol": protocol, "modelsUrl": ""}
+    if previous and base == connection_base(previous):
+        return {**payload, "baseUrl": base, "url": previous["url"],
+                "protocol": previous["protocol"], "modelsUrl": previous.get("modelsUrl", "")}
+    parts = urlsplit(base)
+    host = parts.hostname
+    if kind == "video" and platform.startswith("custom"):
+        if host == "api.atlascloud.ai":
+            protocol = "atlas-video"
+        elif host.endswith(".maas.aliyuncs.com") or (host.startswith("dashscope") and host.endswith(".aliyuncs.com")):
+            protocol = "dashscope-video"
+        elif previous:
+            protocol = previous["protocol"]
+    root = base
+    if protocol in ("atlas-video", "dashscope-video") and not root.endswith("/api/v1"):
+        path = parts.path.removesuffix("/compatible-mode/v1").removesuffix("/v1")
+        root = parts._replace(path=path + "/api/v1").geturl()
+    return {**payload, "baseUrl": base, "url": root + ENDPOINT_SUFFIX[protocol],
+            "protocol": protocol, "modelsUrl": ""}
+
+
+def editable_connection(record, kind):
+    """Reuse a saved platform connection when configuring another capability."""
+    current = capability(record, kind)
+    if current:
+        return current
+    for source_kind in supported(record["id"]):
+        source = capability(record, source_kind)
+        if source and source.get("baseUrl"):
+            resolved = resolve_base(dict(id=record["id"], capability=kind,
+                                         baseUrl=source["baseUrl"]), None)
+            return dict(url=resolved["url"], baseUrl=source["baseUrl"],
+                        protocol=resolved["protocol"], modelsUrl=source.get("modelsUrl", ""),
+                        key=source["key"], model="")
+    return None
+
+
+def cached_catalog(c, platform, kind, cfg):
+    from .model_tools import models_endpoint
+
+    rows = c.execute("SELECT * FROM model_catalog WHERE platform=? ORDER BY updated DESC",
+                     (platform,)).fetchall()
+    record = c.execute("SELECT * FROM model_provider WHERE id=?", (platform,)).fetchone()
+    for row in rows:
+        if row["kind"] == kind and row["signature"] == catalog_signature(cfg):
+            return row
+        source = capability(dict(record), row["kind"]) if record else None
+        if not source or source.get("key") != cfg.get("key"):
+            continue
+        try:
+            same_catalog = models_endpoint(source) == models_endpoint(cfg)
+        except ValueError:
+            continue
+        if same_catalog and row["signature"] == catalog_signature(source):
+            return row
     return None
 
 
@@ -57,7 +151,11 @@ def save_capability(c, actor, payload):
         raise ValueError("该平台当前接入方式不支持这项能力。请为该能力选择其他平台。")
     old = c.execute("SELECT * FROM model_provider WHERE id=?", (platform,)).fetchone()
     record = dict(old) if old else dict(id=platform, connections="{}")
+    previous = editable_connection(record, kind) if "baseUrl" in payload else capability(record, kind)
+    payload = resolve_base(payload, previous)
     label = PRESETS[platform][0] if platform in PRESETS else payload.get("label", "").strip()[:60]
+    if not label and payload.get("baseUrl"):
+        label = record.get("label") or urlsplit(payload["baseUrl"]).hostname[:60]
     if not label:
         raise ValueError("请填写平台名称。")
     def field(name, limit):
@@ -74,7 +172,6 @@ def save_capability(c, actor, payload):
         # Known text-only model names cannot accidentally receive pictures.
         if kind != "text" and re.match(r"deepseek-(?:chat|reasoner|r1|v3)(?:$|[-.])", model, re.I):
             raise ValueError("这个 DeepSeek 模型是文本模型，请用于策划与文案。")
-        previous = capability(record, kind)
         if not key and previous and previous["url"] == url and not payload.get("clearKey"):
             key = previous["key"]
         if payload.get("clearKey"):
@@ -90,6 +187,9 @@ def save_capability(c, actor, payload):
         if urlsplit(models_url).netloc != urlsplit(url).netloc or urlsplit(models_url).scheme != urlsplit(url).scheme:
             raise ValueError("模型列表接口须与此能力接口同源，避免把密钥发送到其他服务。")
     connections[kind] = dict(url=url, model=model, key=key, protocol=protocol, modelsUrl=models_url)
+    if "baseUrl" in payload:
+        require_catalog_model(c, platform, kind, connections[kind])
+        connections[kind]["baseUrl"] = payload["baseUrl"]
     c.execute("""INSERT INTO model_provider(id,label,url,key,text,vision,connections) VALUES(?,?,?,'','','',?)
         ON CONFLICT(id) DO UPDATE SET label=excluded.label,connections=excluded.connections""",
         (platform,label,PRESETS.get(platform,("",""))[1],json.dumps(connections)))
@@ -147,9 +247,10 @@ def overview(c):
         record = records.get(platform, dict(id=platform, label=label, url=url, key="", text="", vision=""))
         connections = {}
         for kind in supported(platform):
-            cfg = capability(record, kind) or dict(url=DEFAULT_URLS.get((platform,kind), url if kind in ("text","vision") else ""), model="",key="",protocol=protocols_for(platform, kind)[0])
+            cfg = editable_connection(record, kind) or dict(url=DEFAULT_URLS.get((platform,kind), url if kind in ("text","vision") else ""), model="",key="",protocol=protocols_for(platform, kind)[0])
             connections[kind] = {k:v for k,v in cfg.items() if k != "key"} | {"hasKey":bool(cfg.get("key"))}
-            cached = c.execute("SELECT data,updated FROM model_catalog WHERE platform=? AND kind=? AND signature=?",(platform,kind,catalog_signature(cfg))).fetchone()
+            connections[kind]["baseUrl"] = connection_base(cfg) or url.removesuffix(ENDPOINT_SUFFIX["chat"])
+            cached = cached_catalog(c, platform, kind, cfg)
             candidate_cfg = {**cfg, "provider":platform}
             connections[kind]["approved"] = bool(cfg.get("model") and model_admission.eligible(c,kind,candidate_cfg))
             if cached:
@@ -209,11 +310,12 @@ def save(c, actor, payload):
     audit(c, actor, "更新模型平台", label)
 
 
-def select(c, actor, payload):
+def select(c, actor, payload, before=None):
     version = route_version(c)
     if "expectedVersion" in payload and payload["expectedVersion"] != version:
         raise ValueError("模型路由已变更，请刷新并核对后再保存。")
-    before = route_snapshot(c)
+    if before is None:
+        before = route_snapshot(c)
     labels = []
     for kind in KINDS:
         if kind not in payload:
@@ -300,13 +402,21 @@ def catalog_signature(cfg):
     return hashlib.sha256(json.dumps([cfg.get(k,"") for k in ("url","modelsUrl","key")]).encode()).hexdigest()
 
 
+def require_catalog_model(c, platform, kind, cfg):
+    row = cached_catalog(c, platform, kind, cfg)
+    if not row or not any(m["id"] == cfg["model"] and (not m["known"] or kind in m["kinds"])
+                          for m in json.loads(row["data"])):
+        raise ValueError("请同步当前连接的最新模型并从列表中选择。")
+
+
 def candidate(payload, require_model=True):
     platform, kind = payload.get("id"), payload.get("capability")
     if not isinstance(platform,str) or (platform not in PRESETS and not re.fullmatch(r"custom-[0-9a-f]{32}",platform)) or kind not in KINDS or kind not in supported(platform):
         raise ValueError("请选择有效的平台与能力。")
     with db() as c:
         row = c.execute("SELECT * FROM model_provider WHERE id=?",(platform,)).fetchone()
-    previous = capability(dict(row),kind) if row else None
+    previous = (editable_connection(dict(row), kind) if "baseUrl" in payload else capability(dict(row), kind)) if row else None
+    payload = resolve_base(payload, previous)
     cfg = {}
     for key, limit in (("url",1200),("modelsUrl",1200),("model",180),("key",2400)):
         value = payload.get(key, "")
@@ -322,7 +432,10 @@ def candidate(payload, require_model=True):
     if cfg["protocol"] not in protocols_for(platform, kind):
         raise ValueError("接口协议与能力不匹配。")
     if require_model and not cfg["model"]:
-        raise ValueError("请先填写或同步选择模型。")
+        raise ValueError("请先同步模型并选择一个模型。")
     if kind != "text" and re.match(r"deepseek-(?:chat|reasoner|r1|v3)(?:$|[-.])",cfg["model"],re.I):
         raise ValueError("此模型用于文本，不支持当前用途。")
+    if require_model and "baseUrl" in payload:
+        with db() as c:
+            require_catalog_model(c, platform, kind, cfg)
     return kind, dict(provider=platform, **cfg)

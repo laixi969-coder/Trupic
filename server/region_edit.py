@@ -53,7 +53,7 @@ def request_edit(cfg, image, instruction, fields, timeout):
         raw.getvalue(),
         f"\r\n--{boundary}--\r\n".encode(),
     ]
-    headers = {"Content-Type": "multipart/form-data; boundary=" + boundary}
+    headers = {"Content-Type": "multipart/form-data; boundary=" + boundary, "User-Agent": "Trupic/1.0"}
     if cfg.get("key"):
         headers["Authorization"] = "Bearer " + cfg["key"]
     request = urllib.request.Request(cfg["url"], b"".join(parts), headers)

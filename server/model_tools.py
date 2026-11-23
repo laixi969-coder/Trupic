@@ -35,16 +35,20 @@ def models_endpoint(cfg):
         url = cfg['modelsUrl']
     else:
         parts = urlsplit(cfg['url'])
-        if parts.hostname and ('maas.aliyuncs.com' in parts.hostname or 'dashscope' in parts.hostname):
+        if parts.hostname == "api.atlascloud.ai":
+            path = "/api/v1/models"
+        elif parts.hostname and ('maas.aliyuncs.com' in parts.hostname or 'dashscope' in parts.hostname):
             path = '/api/v1/models'
+        elif cfg.get("protocol") == "atlas-video" and parts.path.endswith("/api/v1/model/generateVideo"):
+            path = parts.path.removesuffix("/api/v1/model/generateVideo") + "/v1/models"
         else:
-            path = parts.path
-            for suffix in ('/chat/completions','/images/generations','/images/edits','/contents/generations/tasks'):
+            path = parts.path.rstrip("/")
+            for suffix in providers.ENDPOINT_SUFFIX.values():
                 if path.endswith(suffix):
                     path = path[:-len(suffix)] + '/models'
                     break
             else:
-                raise ValueError('请填写该平台的模型列表完整地址。')
+                raise ValueError('无法定位模型目录，请核对 Base URL。')
         url = urlunsplit((parts.scheme,parts.netloc,path,'',''))
     providers.safe_url(url)
     source, target = urlsplit(cfg['url']), urlsplit(url)
@@ -58,6 +62,8 @@ def model_row(row):
     if not isinstance(name,str) or not name or len(name)>180:
         return None
     modality = row.get('modalities') or row.get('inference_metadata') or row
+    if not isinstance(modality, dict):
+        modality = row
     inputs = [str(v).lower() for v in modality.get('input_modalities',modality.get('request_modality',[]))]
     outputs = [str(v).lower() for v in modality.get('output_modalities',modality.get('response_modality',[]))]
     caps = row.get('capabilities') or row.get('task_type') or []
@@ -73,25 +79,53 @@ def model_row(row):
         kinds.append('edit')
     if 'video' in outputs or 'VG' in caps or domain == 'VideoGeneration':
         kinds.append('video')
-    return dict(id=name,kinds=kinds,known=bool(inputs or outputs or caps or domain),created=row.get('published_time') or row.get('created'))
+    return dict(id=name,kinds=kinds,known=bool(kinds),created=row.get('published_time') or row.get('created'))
+
+
+def atlas_model_row(row):
+    # The Atlas catalog uses "model" as the callable ID and exposes media categories.
+    name = row.get("model")
+    if row.get("display_console") is False or not isinstance(name, str) or not name or len(name) > 180:
+        return None
+    kind = row.get("type")
+    categories = row.get("categories") or []
+    kinds = []
+    if kind == "Text":
+        protocols = row.get("supported_protocols")
+        if protocols is None or "openai.chat.completions" in protocols:
+            kinds.append("text")
+            if "image" in (row.get("input_modalities") or []):
+                kinds.append("vision")
+    elif kind == "Image":
+        if "TEXT-TO-IMAGE" in categories:
+            kinds.append("image")
+        if "IMAGE-TO-IMAGE" in categories:
+            kinds.append("edit")
+    elif kind == "Video" and "TEXT-TO-VIDEO" in categories:
+        kinds.append("video")
+    return dict(id=name, kinds=kinds, known=True, created=row.get("created"))
 
 
 def sync_models(kind,cfg):
     endpoint = models_endpoint(cfg)
+    atlas = urlsplit(endpoint).hostname == "api.atlascloud.ai" and urlsplit(endpoint).path == "/api/v1/models"
     page, rows, seen, cursor = 1, [], set(), None
     while page <= 50:
-        params = dict(page_no=page,page_size=100) if '/api/v1/models' in endpoint else dict(after=cursor) if cursor else {}
+        params = dict(after=cursor) if cursor else {}
+        if not cursor and urlsplit(endpoint).hostname.endswith(".aliyuncs.com") and urlsplit(endpoint).path == "/api/v1/models":
+            params = dict(page_no=page, page_size=100)
         url = endpoint + ('?'+urlencode(params) if params else '')
-        result = request_json(cfg,url)
+        # Atlas publishes its catalog without authentication, as used by its official MCP.
+        result = request_json({**cfg, "key": ""}, url, limit=8_000_000) if atlas else request_json(cfg, url)
         if result.get('success') is False or result.get('error'):
             raise ValueError('平台未返回模型目录，请核对模型列表接口和权限。')
         output = result.get('output') or {}
         values = output.get('models') if isinstance(output,dict) and 'models' in output else result.get('data')
         if not isinstance(values,list):
-            raise ValueError('模型列表响应格式不受支持，请填写 Models API 地址。')
+            raise ValueError('模型目录格式不受支持，请核对 Base URL。')
         before = len(seen)
         for value in values:
-            row = model_row(value) if isinstance(value,dict) else None
+            row = (atlas_model_row(value) if atlas else model_row(value)) if isinstance(value,dict) else None
             if row and row['id'] not in seen:
                 rows.append(row); seen.add(row['id'])
         total = output.get('total',len(rows)) if isinstance(output,dict) else len(rows)
@@ -109,7 +143,7 @@ def sync_models(kind,cfg):
     updated = now()
     with db(True) as c:
         c.execute('INSERT INTO model_catalog VALUES(?,?,?,?,?) ON CONFLICT(platform,kind) DO UPDATE SET signature=excluded.signature,data=excluded.data,updated=excluded.updated',(cfg['provider'],kind,providers.catalog_signature(cfg),dump(rows),updated))
-    return dict(models=rows,updated=updated,source=endpoint)
+    return dict(models=rows,updated=updated,source=endpoint,publicCatalog=atlas)
 
 
 def probe_image(cfg, folder):
@@ -180,7 +214,9 @@ def register(app,services):
         try:
             return jsonify(sync_models(kind,cfg))
         except urllib.error.HTTPError as exc:
-            raise ValueError(f'模型同步失败（HTTP {exc.code}），请检查列表地址、密钥和权限；原有目录保持不变。') from exc
+            if exc.code == 403 and b"1010" in exc.read(2048):
+                raise ValueError("模型目录请求被平台网关拦截（HTTP 403 / 1010），请稍后重试。") from exc
+            raise ValueError(f'模型同步失败（HTTP {exc.code}），请检查 Base URL、密钥和权限；原有目录保持不变。') from exc
         except OSError as exc:
             raise ValueError('模型同步连接失败，原有目录保持不变。') from exc
 

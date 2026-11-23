@@ -68,7 +68,7 @@ npm start
 
 | 能力 | 配置 |
 | --- | --- |
-| 文案模型与复核 | Chat Completions 完整接口地址、模型名称及服务所需密钥。首次调用创作文案，再单独发起事实与表达复核。海报选稿优先使用配置的文案模型。未指定模型时可使用已启动的项目本机 Qwen 服务（见 `npm run vision:serve`）；模型不可用或候选不足时停在选稿环节。 |
+| 文案模型与复核 | 填写 Base URL 和 API Key，同步并选择文案模型。首次调用创作文案，再单独发起事实与表达复核。海报选稿优先使用配置的文案模型。未指定模型时可使用已启动的项目本机 Qwen 服务（见 `npm run vision:serve`）；模型不可用或候选不足时停在选稿环节。 |
 | 图像生成 | 支持 Images Generations、返回 `data[0].b64_json` 的接口、图像模型及对应密钥。常规分层导出发送创意描述生成背景或概念配图。小程序朋友圈在配置 GPT Image 或百炼 Qwen-Image 时，也发送去除元数据的缩小原片作为布景参考，再叠加实拍主体与逐字标题；离线可用随项目提供的无字布景。商家原图的主体在本地合成。商业海报 agent 的整图入口 `python -m server.qwen_image` 支持百炼 `qwen-image-3.0-pro` 和 `qwen-image-3.0`，可随提示词发送指定商品原图。 |
 | 授权参考来源 | RSS / Atom 链接与授权条件，或 Pinterest 画板数字 ID、拥有读取权限的令牌及引用条件。每日发现新条目、去重、记录来源并提出候选方法，供管理员核实。 |
 | 本地活动 | 在「本地活动」核对主办方来源、城市和日期。系统根据经营地区和本周日期选取主题。 |
@@ -77,16 +77,16 @@ npm start
 
 运营人员也可使用环境变量配置。环境变量优先于界面设置。
 
-「运营管理 → 模型平台」按**策划与文案、图片生成、图片编辑、视频生成、商品与成品视觉审核**五项能力独立设置主连接和可选备用连接。不同能力可以来自不同平台，同一平台也能分别保存地址、密钥和模型。连接保存后，在上方选择并保存调用设置。选择「本地…」可明确关闭对应外部模型；仍有旧连接或部署环境变量时，下拉框显示「已有配置 · 模型名」；未配置时明确显示本地处理。调整模型只需在本页保存独立连接并选用。DeepSeek 当前接入的 Chat Completions 连接仅用于文案；图像输入审核与图片生成是两种不同能力。
+在「运营管理 → 模型平台」填写平台的 **Base URL**（例如 `https://api.example.com/v1`）和 **API Key**，点击「同步最新模型」，从下拉框选择模型后即可「测试连接」。点击「保存并启用」将所选模型用于当前用途。本机服务可留空密钥，已保存的密钥可在原地址沿用。
 
-每项连接旁均提供：
+模型按文字类、图片类、图片审核类、视频生成类展示。每类均可选择多个已添加的平台，并独立选择该平台的模型。「添加平台」可保存不同地址或账号的平台，支持自定义名称。同一平台在其他分类中复用已保存的 Base URL、API Key 和同步目录，图片类另有图片编辑入口。「高级设置与用量」可切换备用连接、本地处理或原有部署配置，并查看账单和用量。
 
-- **同步最新模型**：用当前表单地址与密钥真实读取平台 Models API，支持分页并记录同步时间。按平台能力元数据过滤已知不匹配的模型；没有能力元数据的模型标注需测试确认。模型可见不等于已开通调用权限，不会自动覆盖当前模型。失败保留上次成功目录。可填写与调用接口同源的模型列表地址。[方舟 Models API](https://docs.volcengine.com/docs/ark/models-api?lang=zh) · [百炼模型列表 API](https://help.aliyun.com/zh/model-studio/list-models)
+- **同步最新模型**使用当前地址与密钥读取平台模型目录，按能力过滤并记录同步时间。更换地址或密钥后需重新同步。[方舟 Models API](https://docs.volcengine.com/docs/ark/models-api?lang=zh) · [百炼模型列表 API](https://help.aliyun.com/zh/model-studio/list-models)
 - **测试连接**：使用当前表单执行实际请求，不切换正式路由。文案检查结构化响应，视觉审核识别随机色卡，图片实际生成并解码，视频提交异步任务、查询、下载并解码 216 帧。图片和视频可在测试结果内预览；显示耗时和错误原因。测试会产生平台用量。视频查询超时后在同一测试结果上重试会复用原任务。
 
-云端视频接入方舟异步任务、Atlas Cloud 文生视频和百炼万相异步文生视频。连接使用对应平台的提交与查询协议。各模型返回的素材在本地按确认时长合成，重试复用已有任务。百炼可填写所属工作空间的完整 video-synthesis 地址。[Atlas 视频协议](https://www.atlascloud.ai/docs/models/video) · [百炼视频协议](https://www.alibabacloud.com/help/en/model-studio/text-to-video-api-reference)动态视频提供成品和含净画面、字幕、音轨的剪辑包；静态 HyperFrames 源工程不适用于动态背景，不提供该项导出。今日请求统计按平台、模型和用途展示请求、耗时及平台返回的 token 用量；视频统计为任务提交响应，并非成品质量结论。
+云端视频接入方舟异步任务、Atlas Cloud 文生视频和百炼万相异步文生视频。连接使用对应平台的提交与查询协议。各模型返回的素材在本地按确认时长合成，重试复用已有任务。百炼可使用所属工作空间的 Base URL。[Atlas 视频协议](https://www.atlascloud.ai/docs/models/video) · [百炼视频协议](https://www.alibabacloud.com/help/en/model-studio/text-to-video-api-reference)动态视频提供成品和含净画面、字幕、音轨的剪辑包；静态 HyperFrames 源工程不适用于动态背景，不提供该项导出。今日请求统计按平台、模型和用途展示请求、耗时及平台返回的 token 用量；视频统计为任务提交响应，并非成品质量结论。
 
-方舟可填写账户已开通的模型或推理接入点 ID。百炼可替换成业务空间与地域对应的完整地址。视觉审核所选模型须支持同一请求内的多张 Base64 图片。各平台的 Chat Completions 文档列出适配的模型和输入格式。[Atlas Cloud](https://www.atlascloud.ai/docs/llm-protocols) · [火山方舟](https://docs.volcengine.com/docs/ark/chat-api) · [阿里云百炼](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope) · [DeepSeek](https://api-docs.deepseek.com/api/create-chat-completion/)
+方舟与百炼按所填地址和密钥同步模型。视觉审核所选模型须支持同一请求内的多张 Base64 图片。各平台的 Chat Completions 文档列出适配的模型和输入格式。[Atlas Cloud](https://www.atlascloud.ai/docs/llm-protocols) · [火山方舟](https://docs.volcengine.com/docs/ark/chat-api) · [阿里云百炼](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope) · [DeepSeek](https://api-docs.deepseek.com/api/create-chat-completion/)
 
 设置 `TRUPIC_DAILY_TEXT_CALLS`、`TRUPIC_DAILY_IMAGE_CALLS`、`TRUPIC_DAILY_VIDEO_CALLS`、`TRUPIC_DAILY_EDIT_CALLS` 和 `TRUPIC_DAILY_VISION_CALLS` 可分别限制整个服务在 UTC 自然日内发出的模型与图像请求次数。使用非负整数，留空表示不限次数，0 表示禁止该能力发起外部请求（已选云端连接会报错，可切换至本地处理）。服务在发送请求前计数，超时也占用一次。运营管理的「模型平台」显示当日模型调用记录。
 
