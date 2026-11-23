@@ -6,6 +6,32 @@ import { api, Modal, Busy, dateText } from "./ui.jsx";
 
 const statusText = { queued: "等待制作", running: "正在制作", failed: "制作中断", complete: "已完成" };
 
+function RunProgress({ run, busy, retry }) {
+  const done = run.items.filter(item => item.state === "complete").length;
+  const failed = run.items.filter(item => item.state === "failed").length;
+  const running = run.items.some(item => item.state === "running");
+  let title = "已提交，正在排队";
+  if (run.complete) title = "制作完成";
+  else if (failed) title = run.active ? "部分项目失败，其余项目继续制作" : "制作结束，有项目失败";
+  else if (running) title = "正在制作";
+
+  return <section className="creation-progress" aria-label="制作进度">
+    <div role="status">
+      <strong>{title}</strong><span>已完成 {done} / {run.items.length} 项</span>
+      <progress aria-label="已完成项目" value={done} max={run.items.length} />
+      <ul>{run.items.map(item => <li key={item.job}>
+        {item.label} · {statusText[item.state]}
+        {item.state === "running" && item.copyReady && item.kind !== "copy" && " · 文案已就绪"}
+        {item.state === "failed" && item.error && <span className="error">{item.error}</span>}
+      </li>)}</ul>
+    </div>
+    {run.items.filter(item => item.state === "failed").map(item =>
+      <button type="button" key={item.job} className="secondary" disabled={!!busy} onClick={() => retry(item.job)}>重试{item.label}</button>)}
+    {done > 0 && <button type="button" className="textbtn" onClick={() =>
+      document.getElementById("creation-" + run.id)?.scrollIntoView({block:"start"})}>查看已完成作品 ↓</button>}
+  </section>;
+}
+
 export default function AutoCreate({ assets, draft, patch, refresh, textRef, checkAsset, options, prices, profile, durations }) {
   const facts = draft.extraFacts || "";
   const setFacts = (extraFacts) => patch({ extraFacts });
@@ -20,6 +46,8 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [runs, setRuns] = useState([]);
+  const [statusOffline, setStatusOffline] = useState(false);
+  const runRevision = useRef(0);
   const [zoom, setZoom] = useState(null);
   const [copied, setCopied] = useState("");
   const [submitted, setSubmitted] = useState("");
@@ -50,17 +78,19 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
     let active = true, timer;
     async function poll() {
       try {
+        const revision = runRevision.current;
         const rows = await api("/creations");
         if (!active) return;
+        if (revision !== runRevision.current) { timer = setTimeout(poll, 0); return; }
+        setStatusOffline(false);
+        setRuns(rows);
 
         if (rows.some((row) => row.requestKey === keyRef.current)) setSubmitted(keyRef.current);
         const next = rows.flatMap((row) => row.items.map((item) => item.job + item.state)).join();
         if (next !== progress.current && (next || progress.current !== null)) await refreshRef.current();
-        if (!active) return;
-        setRuns(rows);
         progress.current = next;
       } catch (e) {
-        if (active) setError(e.message);
+        if (active) setStatusOffline(true);
       }
       if (active) timer = setTimeout(poll, 2000);
     }
@@ -141,17 +171,21 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
     if (Date.now() > plan.expires) { setPlanVersion((v) => v + 1); return; }
     await perform("create", async () => {
       const row = await api("/creations", "POST", { quote: plan.quote, copyChoice: needsChoice ? choice : "", confirmedCost: plan.cost, requestKey: keyRef.current });
+      runRevision.current++;
       setRuns((current) => [row, ...current.filter((r) => r.id !== row.id)]);
-      setSubmitted(keyRef.current);
-      await refreshRef.current();
+      setSubmitted(row.requestKey);
     });
   }
   async function retry(job) {
     await perform(job, async () => {
       await api("/jobs/" + job + "/retry", "POST", {});
-      setRuns(await api("/creations"));
+      const rows = await api("/creations");
+      runRevision.current++;
+      setRuns(rows);
     });
   }
+
+  const currentRun = runs.find(run => run.requestKey === keyRef.current);
 
   return <>
     <section className="auto-create" aria-label="一键创作">
@@ -242,10 +276,13 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
         </div>}
         {needsChoice && plan?.request === request && <CopyChoices key={plan.quote} quote={plan.quote} value={choice} onChange={setChosen} disabled={!!busy || submitted === keyRef.current} />}
         {error && <p className="error" role="alert">{error} <button className="textbtn" type="button" disabled={!!busy} onClick={() => setPlanVersion((v) => v + 1)}>重新检查需求</button></p>}
-        <div className="auto-footer"><small>保留商品原貌。</small><button className="primary" disabled={!!busy || planning || (!plan?.ready && !reviewAsset) || (needsChoice && !choice) || plan?.request !== request || submitted === keyRef.current}>{busy === "create" ? <Busy text="开始制作" /> : submitted === keyRef.current && plan?.ready ? "已开始 · 修改需求可再创作" : <><Sparkles size={16} />{reviewAsset ? "核对素材并继续" : needsChoice ? "用所选文案制作" : "开始制作"}<ArrowRight size={16} /></>}</button></div>
+        {busy === "create" && <p role="status">正在提交制作请求，等待任务确认…</p>}
+        {currentRun && <RunProgress run={currentRun} busy={busy} retry={retry} />}
+        {statusOffline && <p role="status">暂时无法更新制作状态，正在自动重连。</p>}
+        <div className="auto-footer"><small>保留商品原貌。</small><button className="primary" disabled={!!busy || planning || (!plan?.ready && !reviewAsset) || (needsChoice && !choice) || plan?.request !== request || submitted === keyRef.current}>{busy === "create" ? <Busy text="正在提交" /> : submitted === keyRef.current && plan?.ready ? "本次需求已提交" : <><Sparkles size={16} />{reviewAsset ? "核对素材并继续" : needsChoice ? "用所选文案制作" : "开始制作"}<ArrowRight size={16} /></>}</button></div>
       </form>
     </section>
-    {!!runs.length && <section className="auto-results" aria-label="创作结果"><h2>你的创作</h2>{runs.map((run) => <article className="auto-run" key={run.id}>
+    {!!runs.length && <section className="auto-results" aria-label="创作结果"><h2>你的创作</h2>{runs.map((run) => <article className="auto-run" id={"creation-" + run.id} key={run.id}>
       <header><div><small>{dateText(run.created)}</small><h3>{run.title}</h3><p>{run.brief}</p></div>{run.complete ? <a className="primary" href={run.download} download><Download size={15} />整套下载</a> : <span role="status">{run.items.filter((item) => item.state === "complete").length} / {run.items.length} 项完成{run.active ? " · 正在制作" : " · 有项目需要重试"}</span>}</header>
       <div className="auto-deliveries">{run.items.map((item) => <section className={"auto-delivery " + (item.kind === "copy" ? "auto-copy" : "")} key={item.job}>
         <h4>{item.label}</h4>
