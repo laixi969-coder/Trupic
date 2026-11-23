@@ -1357,6 +1357,52 @@ class WorkflowTests(unittest.TestCase):
                 c.execute('DELETE FROM model_route')
                 c.execute('DELETE FROM model_provider WHERE id=?',(platform,))
 
+    def test_catalog_release_cutoff_prices_and_cached_enforcement(self):
+        from server import model_tools as mt, model_catalog as catalog, providers
+        self.admin()
+        platform = "custom-" + uuid.uuid4().hex
+        payload = dict(id=platform, capability="text", baseUrl="https://release.example/v1", key="fixture")
+        rows = [
+            dict(id="old", release_date="2025-12-31"),
+            dict(id="boundary", release_date="2026-01-01"),
+            dict(id="unknown"),
+            dict(id="created-only", created=1790000000),
+            dict(id="future", release_date="9999-01-01"),
+            dict(id="invalid", release_date="invalid"),
+        ]
+        with patch.object(mt, "request_json", return_value=dict(data=rows)):
+            result = post(self.c, "admin/sync-models", **payload)
+        self.assertEqual(result.status_code, 200, result.json)
+        self.assertEqual([m["id"] for m in result.json["models"]], ["boundary"])
+        self.assertEqual((result.json["hiddenUnknown"], result.json["hiddenOlder"], result.json["hiddenFuture"]), (3,1,1))
+        for name in ("old", "unknown", "created-only", "future", "invalid"):
+            self.assertEqual(post(self.c, "admin/probes", **payload, model=name).status_code, 400)
+            self.assertEqual(post(self.c, "admin/model-platform", **payload, model=name).status_code, 400)
+        try:
+            self.assertEqual(post(self.c, "admin/model-platform", **payload, model="boundary").status_code, 200)
+            overview = self.c.get("/api/admin").json["modelPlatforms"]
+            connection = next(p for p in overview["platforms"] if p["id"] == platform)["connections"]["text"]
+            self.assertEqual([m["id"] for m in connection["catalog"]["models"]], ["boundary"])
+            self.assertTrue(connection["selectable"])
+            with studio.db(True) as c:
+                c.execute("UPDATE model_catalog SET data=? WHERE platform=?",
+                          (json.dumps([dict(id="boundary", known=False, kinds=[], created=1790000000)]), platform))
+            self.assertEqual(post(self.c, "admin/model-routes", text=platform).status_code, 400)
+        finally:
+            with studio.db(True) as c:
+                c.execute("DELETE FROM model_provider WHERE id=?", (platform,))
+        verified = catalog.catalog_view([dict(id="bytedance/seedream-v5.5/text-to-image"),
+                                         dict(id="bytedance/seedream-v5.5-unverified")])
+        self.assertEqual(verified["models"][0]["released"], "2026-11-09")
+        self.assertEqual(verified["hiddenUnknown"], 1)
+        self.assertIn("USD 0.016/张", catalog.atlas_price(dict(type="Image", price=dict(actual=dict(base_price="0.016", unit="image"))))["priceLabel"])
+        text_price = catalog.atlas_price(dict(type="Text", price=dict(tiered_price=True,
+            actual=dict(input_price="0", output_price="1.2"))))
+        self.assertIn("输入 USD 0/百万 tokens", text_price["priceLabel"])
+        self.assertIn("阶梯", text_price["priceNote"])
+        self.assertIn("单位待核实", catalog.atlas_price(dict(type="Video", price=dict(actual=dict(base_price="0.134"))))["priceLabel"])
+        self.assertEqual(catalog.atlas_price(dict(type="Image", price=dict(actual=dict(base_price="NaN")))), {})
+
     def test_atlas_catalog_and_base_url_protocols(self):
         from server import model_tools as mt, providers
         self.admin()
@@ -1375,6 +1421,7 @@ class WorkflowTests(unittest.TestCase):
             dict(model="hidden", type="Image", categories=["TEXT-TO-IMAGE"], display_console=False),
             dict(model="audio", type="Audio"),
         ]
+        rows = [{**row, "release_date":"2026-01-01"} for row in rows]
         payload = dict(id="atlas", capability="image", baseUrl="https://api.atlascloud.ai/api/v1", key="secret")
         with patch.object(mt, "request_json", return_value=dict(code=200, data=rows)) as remote:
             result = post(self.c, "admin/sync-models", **payload)
@@ -1401,6 +1448,7 @@ class WorkflowTests(unittest.TestCase):
         models = [dict(id="writer", domain="LLM"), dict(id="picture", domain="ImageGeneration"),
                   dict(id="reviewer", domain="VLM"), dict(id="movie", domain="VideoGeneration"),
                   dict(id="other", capabilities=["vendor-specific"])]
+        models = [{**row, "release_date":"2026-01-01"} for row in models]
         try:
             for index, platform in enumerate(platforms):
                 payload = dict(id=platform, label="平台 " + str(index), capability="text",
@@ -1450,7 +1498,7 @@ class WorkflowTests(unittest.TestCase):
         save = dict(**payload, model="chosen", expectedVersion=version, activate=True)
         try:
             self.assertEqual(post(self.c, "admin/model-platform", **save).status_code, 400)
-            with patch.object(mt, "request_json", return_value=dict(data=[dict(id="chosen"), dict(id="newer")])) as remote:
+            with patch.object(mt, "request_json", return_value=dict(data=[dict(id="chosen", release_date="2026-01-01"), dict(id="newer", release_date="2026-01-01")])) as remote:
                 result = post(self.c, "admin/sync-models", **payload)
                 self.assertEqual(result.status_code, 200, result.json)
                 self.assertEqual(remote.call_args.args[1], base + "/models")
@@ -1464,7 +1512,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(providers.connection("text")["model"], "chosen")
             self.assertEqual(post(self.c, "admin/model-platform", **{**save, "model":"newer"}).status_code, 400)
             self.assertEqual(providers.connection("text")["model"], "chosen")
-            with patch.object(mt, "request_json", return_value=dict(data=[dict(id="newer")])) as remote:
+            with patch.object(mt, "request_json", return_value=dict(data=[dict(id="newer", release_date="2026-01-01")])) as remote:
                 self.assertEqual(post(self.c, "admin/sync-models", **{**payload, "key":""}).status_code, 200)
                 self.assertEqual(remote.call_args.args[0]["key"], payload["key"])
             self.assertEqual(post(self.c, "admin/probes", **save).status_code, 400)
@@ -1497,6 +1545,9 @@ class WorkflowTests(unittest.TestCase):
         payload = dict(id='custom-'+uuid.uuid4().hex,capability='image',url='https://catalog.example/v1/images/generations',key='catalog-private',model='')
         self.assertEqual(post(studio.app.test_client(),'admin/sync-models',**payload).status_code,403)
         replies = [dict(data=[dict(id='text-only',domain='LLM'),dict(id='image-model',modalities=dict(input_modalities=['text'],output_modalities=['image']))],has_more=True,last_id='image-model'),dict(data=[dict(id='manual-model')],has_more=False)]
+        for reply in replies:
+            for row in reply['data']:
+                row['release_date'] = "2026-01-01"
         with patch.object(mt,'request_json',side_effect=replies) as remote:
             response = post(self.c,'admin/sync-models',**payload)
         self.assertEqual(response.status_code,200,response.json)
@@ -1514,9 +1565,9 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(mt,'request_json') as remote:
             self.assertEqual(post(self.c,'admin/sync-models',**{**payload,'modelsUrl':'https://elsewhere.example/models'}).status_code,400)
             remote.assert_not_called()
-        with patch.object(mt,'request_json',side_effect=[dict(output=dict(total=2,models=[dict(model='qwen-text',capabilities=['TG'])])),dict(output=dict(total=2,models=[dict(model='qwen-vision',capabilities=['TG','VU'])]))]) as remote:
+        with patch.object(mt,'request_json',side_effect=[dict(output=dict(total=2,models=[dict(model='qwen-text',release_date='2026-01-01',capabilities=['TG'])])),dict(output=dict(total=2,models=[dict(model='qwen-vision',release_date='2026-01-01',capabilities=['TG','VU'])]))]) as remote:
             result = mt.sync_models('text',dict(provider='custom',url='https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/chat/completions',key='',model=''))
-        self.assertEqual(result['models'][1]['kinds'],['text','vision'])
+        self.assertEqual(next(r for r in result['models'] if r['id']=='qwen-vision')['kinds'],['text','vision'])
         self.assertIn('page_no=2',remote.call_args.args[1])
 
     def test_capability_probes_validate_actual_outputs_and_authentication(self):

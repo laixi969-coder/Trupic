@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, urlunsplit, urlencode
 from PIL import Image
 from flask import abort, jsonify, send_file
-from . import model, providers
+from . import model, providers, model_catalog
 from .store import DATA, db, dump, ident, now
 from .video_api import request_json, prepare_background
 
@@ -127,6 +127,9 @@ def sync_models(kind,cfg):
         for value in values:
             row = (atlas_model_row(value) if atlas else model_row(value)) if isinstance(value,dict) else None
             if row and row['id'] not in seen:
+                row.update(model_catalog.release_metadata(value, endpoint))
+                if atlas:
+                    row.update(model_catalog.atlas_price(value))
                 rows.append(row); seen.add(row['id'])
         total = output.get('total',len(rows)) if isinstance(output,dict) else len(rows)
         if result.get('has_more') is True:
@@ -143,7 +146,7 @@ def sync_models(kind,cfg):
     updated = now()
     with db(True) as c:
         c.execute('INSERT INTO model_catalog VALUES(?,?,?,?,?) ON CONFLICT(platform,kind) DO UPDATE SET signature=excluded.signature,data=excluded.data,updated=excluded.updated',(cfg['provider'],kind,providers.catalog_signature(cfg),dump(rows),updated))
-    return dict(models=rows,updated=updated,source=endpoint,publicCatalog=atlas)
+    return dict(**model_catalog.catalog_view(rows),updated=updated,source=endpoint,publicCatalog=atlas)
 
 
 def probe_image(cfg, folder):

@@ -49,7 +49,8 @@ function Connection({ kind, platform, busy, act, routeVersion, formal }) {
   try { local = ["localhost", "127.0.0.1", "[::1]"].includes(new URL(base).hostname); } catch {}
   const canSync = base && (form.key.trim() || savedKey || local || (sameBase && configured.model));
   const options = eligibleModels(catalog, kind);
-  const selected = options.some(option => option.id === form.model);
+  const selectedModel = options.find(option => option.id === form.model);
+  const selected = !!selectedModel;
 
   function changeConnection(name, value) {
     set({...form, [name]: value, model: ""});
@@ -103,9 +104,20 @@ function Connection({ kind, platform, busy, act, routeVersion, formal }) {
     {catalog && base.startsWith("https://api.atlascloud.ai/") && <small>已同步 Atlas 公开模型目录。选择模型后，测试连接可验证 API Key 和调用权限。</small>}
     <label className="field">模型<select aria-label="模型" value={selected ? form.model : ""} disabled={locked || !options.length}
       onChange={e => {set({...form, model: e.target.value}); setError("");}}>
-      <option value="">{!catalog ? "请先同步最新模型" : options.length ? "请选择模型" : "此连接没有当前用途的可用模型"}</option>
-      {options.map(option => <option key={option.id} value={option.id}>{option.id}</option>)}
+      <option value="">{!catalog ? "请先同步最新模型" : options.length ? "请选择模型" : "暂无已核实发布日期的可用模型"}</option>
+      {options.map(option => <option key={option.id} value={option.id}>{option.id} · {option.priceLabel || "平台未提供价格"}</option>)}
     </select></label>
+    {configured.model && configured.selectable === false && <p className="fineprint">当前已保存模型尚未通过发布日期筛选，请选择已核实的模型。</p>}
+    <small>仅显示已核实于 2026-01-01 及以后发布的模型。
+      {catalog?.hiddenUnknown > 0 && ` 已隐藏 ${catalog.hiddenUnknown} 个发布日期待核实的模型。`}
+      {catalog?.hiddenOlder > 0 && ` 已排除 ${catalog.hiddenOlder} 个早期模型。`}</small>
+    {selectedModel && <div className="connection-result">
+      <p>发布日期 {selectedModel.released}</p>
+      <p>{selectedModel.priceLabel || "平台未提供价格"}</p>
+      {selectedModel.priceNote && <small>{selectedModel.priceNote}</small>}
+      <p><a href={selectedModel.releaseSource} target="_blank" rel="noreferrer">发布依据</a>
+        {selectedModel.priceSource && <> · <a href={selectedModel.priceSource} target="_blank" rel="noreferrer">平台价格</a></>}</p>
+    </div>}
     <div className="model-tests"><button type="button" className="secondary" disabled={locked || !selected}
       onClick={test}>{probeBusy ? "正在测试…" : "测试连接"}</button>
       <button className="primary" disabled={locked || !selected}>保存并启用</button></div>
@@ -153,14 +165,14 @@ function Routing({config,busy,act}) {
       }}>
         <option value="">{!config.formal&&config.defaults?.[k]?.model ? "已有配置 · "+config.defaults[k].model : localLabels[k]+"（默认）"}</option>
         {(config.defaults?.[k]?.model || selection[k]==="local-rules") && <option value="local-rules">{localLabels[k]}</option>}
-        {platforms.filter(p=>p.supported.includes(k)&&p.connections[k]?.model&&(!config.formal||p.connections[k].approved)).map(p=><option value={p.id} key={p.id}>{p.label} · {p.connections[k].model}</option>)}
+        {platforms.filter(p=>p.supported.includes(k)&&p.connections[k]?.model&&p.connections[k].selectable&&(!config.formal||p.connections[k].approved)).map(p=><option value={p.id} key={p.id}>{p.label} · {p.connections[k].model}</option>)}
       </select><small>已生效：{config.effective?.[k]?.model || localLabels[k]}{config.effective?.[k]?.url && <><br />{config.effective[k].url}</>}</small></label>)}</div>
       <p className="fineprint">一键创作会实际使用已保存的调用设置。白底图、透明贴片与样机保留本地制作；云端失败时提示重试。配置模型不代表已完成连接验证。</p>
       <details><summary>备用模型</summary>
         {kinds.map(([k,label])=><label key={k} className="field">{label}备用连接
           <select value={backups[k]||""} disabled={!selection[k] || selection[k]==="local-rules"} onChange={e=>setBackups({...backups,[k]:e.target.value})}>
             <option value="">无备用连接</option>
-            {platforms.filter(p=>p.id!==selection[k] && p.connections[k]?.model && (!config.formal||p.connections[k].approved))
+            {platforms.filter(p=>p.id!==selection[k] && p.connections[k]?.model && p.connections[k].selectable && (!config.formal||p.connections[k].approved))
               .map(p=><option key={p.id} value={p.id}>{p.label} · {p.connections[k].model}</option>)}
           </select></label>)}
       </details>

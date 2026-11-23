@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from urllib.parse import urlsplit
-from . import model_admission
+from . import model_admission, model_catalog
 from .store import audit, db, dump, now
 
 PRESETS = {
@@ -253,8 +253,11 @@ def overview(c):
             cached = cached_catalog(c, platform, kind, cfg)
             candidate_cfg = {**cfg, "provider":platform}
             connections[kind]["approved"] = bool(cfg.get("model") and model_admission.eligible(c,kind,candidate_cfg))
+            connections[kind]["selectable"] = False
             if cached:
-                connections[kind]["catalog"] = dict(models=json.loads(cached["data"]),updated=cached["updated"])
+                visible = model_catalog.catalog_view(json.loads(cached["data"]))
+                connections[kind]["catalog"] = dict(**visible, updated=cached["updated"])
+                connections[kind]["selectable"] = any(m["id"] == cfg.get("model") for m in visible["models"])
         platforms.append(dict(id=platform,label=label,url=record["url"],text=record.get("text",""),vision=record.get("vision",""),hasKey=bool(record.get("key")),connections=connections,supported=list(supported(platform))))
     return {"routeVersion": route_version(c), "formal": model_admission.formal(), "platforms": platforms, "backups": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_backup")}, "routes": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_route")}, "protocols": PROTOCOLS}
 
@@ -328,7 +331,10 @@ def select(c, actor, payload, before=None):
             row = c.execute("SELECT * FROM model_provider WHERE id=?", (platform,)).fetchone()
             if kind not in supported(platform) or not row or not capability(dict(row), kind):
                 raise ValueError("请先保存该平台对应能力的接口与模型。")
-            if model_admission.formal() and not model_admission.eligible(c,kind,{"provider":platform, **capability(dict(row),kind)}):
+            cfg = capability(dict(row), kind)
+            if cfg.get("baseUrl"):
+                require_catalog_model(c, platform, kind, cfg)
+            if model_admission.formal() and not model_admission.eligible(c,kind,{"provider":platform, **cfg}):
                 raise ValueError("正式调用需要核验发布日期、系列版本和测试记录。")
         labels.append(
             (row["label"] or PRESETS.get(platform,(platform,))[0]) if row else "本地处理" if platform else "默认连接"
@@ -405,8 +411,8 @@ def catalog_signature(cfg):
 def require_catalog_model(c, platform, kind, cfg):
     row = cached_catalog(c, platform, kind, cfg)
     if not row or not any(m["id"] == cfg["model"] and (not m["known"] or kind in m["kinds"])
-                          for m in json.loads(row["data"])):
-        raise ValueError("请同步当前连接的最新模型并从列表中选择。")
+                          for m in model_catalog.catalog_view(json.loads(row["data"]))["models"]):
+        raise ValueError("请同步并选择已核实于 2026 年 1 月 1 日及以后发布的模型。")
 
 
 def candidate(payload, require_model=True):
