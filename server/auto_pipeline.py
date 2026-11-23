@@ -4,7 +4,7 @@ import json
 import threading
 from . import model
 from .campaign import LOCKED
-from .creative import draft_copy, generate_copy
+from .creative import generate_copy
 from .store import db, dump
 
 COPY_LOCK = threading.Lock()
@@ -14,7 +14,7 @@ def shared_copy(spec):
     plan = spec['plan']
     result = copy.deepcopy(spec['replacement'])
     run_id = plan.get('creationRun')
-    if spec.get('copySelected') or not run_id or not model.route('text')['model']:
+    if spec.get('copySelected') or not run_id:
         return result
     # The group uses one approved draft even when image/video jobs start together.
     with COPY_LOCK:
@@ -24,26 +24,32 @@ def shared_copy(spec):
         if summary.get('copyError'):
             raise ValueError(summary['copyError'])
         approved = summary.get('sharedCopy')
-        if not approved:
+        if not approved or approved.get("engine") == "本地创意规则":
+            if not model.engine_name():
+                raise ValueError("请在模型平台启用文字模型后重试文案。")
             writing = copy.deepcopy(plan)
-            writing['kind'] = 'copy'
+            roles = plan.get("coordination", {}).get("roles", [])
+            if roles == ["copy", "motion"]:
+                writing["kind"] = "video"
+            elif roles == ["copy"]:
+                writing["kind"] = "copy"
+            else:
+                writing["kind"] = "poster"
             failure_message = "文案制作未完成，请检查文案模型配置后重试此项。"
             try:
                 approved = generate_copy(writing)
                 flag = approved.get("reviewFlag")
-                if flag == "模型调用未完成":
-                    failure_message = approved.get("callError") or failure_message
-                    raise ValueError(failure_message)
+                if flag and flag != "模型调用未完成":
+                    approved = generate_copy(writing, revision_note=approved.get("revisionNote") or flag)
+                    flag = approved.get("reviewFlag")
                 if flag:
-                    # Rebuild from verified merchant inputs; never release the rejected draft.
-                    approved = draft_copy(writing)
-                    approved.update(reviewFlag=flag, review=f"{flag}，使用已确认资料重新成稿。",
-                                    attemptedModel=model.route("text")["model"])
+                    failure_message = approved.get("callError") or f"文案未通过检查（{flag}）：{approved.get('revisionNote') or '请重试文案。'}"
+                    raise ValueError(failure_message)
                 if locked := LOCKED.search(plan['original']):
                     approved['title'] = locked.group(1)
                 # Exact commercial details remain shared, including all caveats.
                 facts = plan['coordination']['facts']
-                missing = [fact for fact in facts if fact not in approved['body']]
+                missing = [fact for fact in facts if fact.strip() != plan['original'].strip() and fact not in approved['body']]
                 if missing:
                     approved['body'] += '；' + '；'.join(missing)
                 summary['sharedCopy'] = approved

@@ -119,6 +119,8 @@ def render_background(folder, plan, copy, cfg):
     prompt = ('制作商品广告的动态空环境，不能出现商品、包装、人物、文字或商标。中心和标题区域保持低细节，轻微环境运动。'
               '商品原图、标题和字幕将随后精确合成。主题：'+plan['coordination']['product']+'。创意：'+plan['coordination']['concept']+
               '。分镜信息：'+json.dumps(copy['storyboard'],ensure_ascii=False))
+    if direction := plan.get("promptBrief", {}).get("prompts", {}).get("video"):
+        prompt += "。短片创作指令：" + direction
     if method := plan.get("videoReference",{}).get("method"):
         prompt += "。仅参考以下镜头衔接方法，保留商家商品与事实：" + method
     if not task:

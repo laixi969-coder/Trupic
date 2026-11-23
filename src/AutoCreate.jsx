@@ -265,7 +265,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
             <button className="textbtn" type="button" onClick={()=>patch({videoReference:null})}>移除参考</button></p>}
         </details>}
         {options}
-        {draft.kind !== "video" && <label className="checkline"><input type="checkbox" checked={manualCopy} onChange={e=>setManualCopy(e.target.checked)}/> 制作前自选文案</label>}
+        {draft.kind !== "video" && <label className="checkline"><input type="checkbox" checked={manualCopy} onChange={e=>setManualCopy(e.target.checked)}/> 制作前自选文案 <small>未勾选时自动写稿并审稿</small></label>}
         {(plan?.questions?.length > 0 || facts || (draft.kind === "video" && draft.duration > 15)) && <div className="auto-questions"><p>{plan?.message || "补充商品信息"}</p>{plan?.questions?.map((question) => <p key={question}>{question}</p>)}<label className="field">补充信息<textarea value={facts} maxLength={400} disabled={!!busy} onChange={(e) => setFacts(e.target.value)} placeholder="把实际价格、日期或适用条件写在这里" /></label></div>}
         <div className="auto-plan" role="status" aria-live="polite">
           {busy === "upload" ? "正在检查图片…" : planning ? "正在理解需求、安排成品…" : plan?.ready ? <><strong>将为你制作：{plan.deliveries.map((item) => item.label).join("、")}</strong><span>{plan.cost} 积分 · 每项成功交付后结算</span></> : <span>{plan?.message || "写下想推广的商品或服务。"}</span>}
@@ -287,6 +287,10 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
       <div className="auto-deliveries">{run.items.map((item) => <section className={"auto-delivery " + (item.kind === "copy" ? "auto-copy" : "")} key={item.job}>
         <h4>{item.label}</h4>
         {item.text ? <p className="auto-copy-text">{item.text}</p> : item.preview ? <button type="button" className="bundle-image" onClick={() => setZoom(item)} aria-label={"预览" + item.label}><img src={item.preview} alt={item.label} />{item.video && <span className="auto-video-tag">▶ 播放短片</span>}</button> : <div className="bundle-placeholder" role="status">{statusText[item.state]}</div>}
+        {item.directions && <details className="auto-facts"><summary>查看创作提示词与模型</summary>
+          {item.copyEngine && <p>文案来源 · {item.copyEngine}</p>}<p>提示词来源 · {item.promptEngine}</p>
+          {Object.entries(item.directions).map(([channel, value]) => <p key={channel}><b>{{copy:"文案",image:"画面",video:"视频"}[channel]}指令</b> {value}</p>)}
+        </details>}
         {item.error && <p role="alert" className="error">此项生成失败，预占积分已退回。{item.error}</p>}
         <div className="auto-item-actions">{item.text && <button className="textbtn" type="button" onClick={() => perform("copy", async () => { await navigator.clipboard.writeText(item.text); setCopied(item.job); })}>{copied === item.job ? "已复制" : "复制文案"}</button>}{item.download && <><a href={item.download} download>下载此项</a><a href={"#work/" + item.work}>查看建议与版本</a></>}{item.state === "failed" && <button className="secondary" disabled={!!busy} onClick={() => retry(item.job)}><RefreshCw size={14} />重试此项</button>}</div>
       </section>)}</div>

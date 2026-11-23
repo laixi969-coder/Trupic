@@ -15,7 +15,7 @@ from PIL import Image, ImageOps
 from .model import reserve_provider_call, route
 from .store import db, now
 from .design import DIRECTIONS
-from . import qwen_image
+from . import atlas_image, qwen_image
 from .moment_poster import PLATES, SET_BRIEFS
 
 
@@ -127,6 +127,8 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
                 reserve_provider_call("image")
                 data = request_edit(edits, original.convert("RGB"), prompt,
                                     {"size": size, "output_format": "png"}, 240)
+        elif atlas_image.matches(selected):
+            data = atlas_image.generate(selected, folder, prompt, width, height)
         elif cfg["imageModel"] in qwen_image.MODELS:
             if moment:
                 with TemporaryDirectory() as tmp:
@@ -159,6 +161,8 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
         return path, cfg["imageModel"]
     except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
         if strict:
+            if atlas_image.matches(selected) and isinstance(exc, ValueError):
+                raise
             raise ValueError("图片生成接口未返回可用画面，请检查图片连接后重试此项。") from exc
         if preset:
             return preset, "ImageGen 商业布景 · 图像服务未返回可用画面"

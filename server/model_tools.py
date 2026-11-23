@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, urlunsplit, urlencode
 from PIL import Image
 from flask import abort, jsonify, send_file
-from . import model, providers, model_catalog
+from . import atlas_image, model, providers, model_catalog
 from .store import DATA, db, dump, ident, now
 from .video_api import request_json, prepare_background
 
@@ -150,10 +150,13 @@ def sync_models(kind,cfg):
 
 
 def probe_image(cfg, folder):
-    model.reserve_provider_call('image')
-    result = request_json(cfg,cfg['url'],dict(model=cfg['model'],prompt='A green ceramic cup on a neutral background. No text.',size='1024x1024',n=1,response_format='b64_json'),limit=32_000_000)
-    encoded = result['data'][0]['b64_json']
-    raw = base64.b64decode(encoded,validate=True)
+    prompt = "A green ceramic cup on a neutral background. No text."
+    if atlas_image.matches(cfg):
+        raw = atlas_image.generate(cfg, folder, prompt, 1024, 1024)
+    else:
+        model.reserve_provider_call('image')
+        result = request_json(cfg,cfg['url'],dict(model=cfg['model'],prompt=prompt,size='1024x1024',n=1,response_format='b64_json'),limit=32_000_000)
+        raw = base64.b64decode(result['data'][0]['b64_json'],validate=True)
     if len(raw)>24_000_000:
         raise ValueError('图片响应过大。')
     with Image.open(io.BytesIO(raw)) as image:

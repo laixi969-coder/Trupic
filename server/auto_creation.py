@@ -9,7 +9,7 @@ from flask import abort, jsonify, send_file
 from itsdangerous import BadSignature
 
 from .campaign import LOCKED, OFFER, storyboard
-from .creative import draft_copy
+from .creative import copy_inputs
 from .copy_choices import apply_choice, selected_copy
 from .design import visual_requests
 from . import pricing, work_history, wallet, commerce
@@ -173,16 +173,8 @@ def coordinate(services, c, tenant, v):
     # Local creative director writes one brief; the text and visual stages share it.
     optimize(base, infer=False)
     product = base["plan"]["promptBrief"]["reading"]["product"]
-    locked = LOCKED.search(brief)
-    cp = draft_copy(base["plan"])
-    cp["title"] = locked.group(1) if locked else cp["title"]
-    if not locked and "抹茶" in brief + product and "牛奶" in facts:
-        cp["title"] = "给牛奶加一点" + (kit.get("name") or profile.get("name") or "抹茶")
-    if lines:
-        cp["body"] = "；".join(lines)
-    if re.search(r"不要行动|不需要行动|不加引导", brief):
-        cp["cta"] = ""
-    cp["detailLine"] = cp["body"]
+    cp = copy_inputs(base["plan"])
+    cp["body"] = "；".join(lines)
     promotion = route["workflow"] == "promotion" or bool(re.search(r"半价|买.{1,4}送", visual_requests(brief)))
     condition = r"仅限|适用|不限|全店|全场|不与|同享|不叠加|无其他限制|月\d+日|\d{4}[-/]\d|今天|明天|本周|周[一二三四五六日末]|长期"
     cp["terms"] = "；".join(line for line in lines if re.search(condition, line)) if promotion else ""
@@ -254,7 +246,7 @@ def coordinate(services, c, tenant, v):
         notes.append("文案由后台所选模型制作，并统一用于图片和短片。")
     if "motion" in roles:
         notes.append("视频使用所选视频接口生成动态环境，再合成商品、字幕与配乐。" if model.route("video")["model"] else "视频按确认的时长制作，合成字幕与配乐。")
-    return dict(ready=True,deliveryMode=mode,title=cp["title"],brief=brief,shared=common,items=specs,cost=sum(pricing.quoted_cost(row["spec"]) for row in specs),notes=notes)
+    return dict(ready=True,deliveryMode=mode,title=cp["title"] or brief[:40],brief=brief,shared=common,items=specs,cost=sum(pricing.quoted_cost(row["spec"]) for row in specs),notes=notes)
 
 
 def register(app, services):
@@ -276,7 +268,9 @@ def register(app, services):
                                           (job["work"], job["version"])).fetchone()[0])
             else:
                 cp = json.loads(job["copy_checkpoint"]) if job["copy_checkpoint"] else spec["replacement"]
-            items.append({**item,"kind":spec["kind"],"state":job["state"],"copyReady":bool(job["copy_checkpoint"]),"error":job["error"],"work":job["work"],"preview":base+"/poster" if done and spec["kind"]!="copy" else None,"video":base+"/video" if done and spec["kind"]=="video" else None,"text":"\n\n".join(cp[k] for k in ("title","body","cta") if cp.get(k)) if done and spec["kind"]=="copy" else None,"download":base+"/download" if done else None})
+            items.append({**item, "promptEngine":spec["plan"].get("promptBrief", {}).get("engine"),
+                          "directions":spec["plan"].get("promptBrief", {}).get("prompts", {}),
+                          "copyEngine":cp.get("engine") if cp else None, "kind":spec["kind"],"state":job["state"],"copyReady":bool(job["copy_checkpoint"]),"error":job["error"],"work":job["work"],"preview":base+"/poster" if done and spec["kind"]!="copy" else None,"video":base+"/video" if done and spec["kind"]=="video" else None,"text":"\n\n".join(cp[k] for k in ("title","body","cta") if cp.get(k)) if done and spec["kind"]=="copy" else None,"download":base+"/download" if done else None})
         complete=bool(items) and all(i["state"]=="complete" for i in items)
         return dict(id=row["id"],requestKey=row["request_key"],title=row["title"],brief=row["brief"],created=row["created"],items=items,complete=complete,active=any(i["state"] in ("queued","running") for i in items),download=f"/api/creations/{row['id']}/download",summary=json.loads(row["plan"]))
 

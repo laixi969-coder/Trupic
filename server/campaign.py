@@ -7,7 +7,6 @@ from .design import RULES
 from .shot_detail import product_detail
 
 ROUTES = json.loads(RULES.with_name("copy-directions.json").read_text())
-BENEFITS = json.loads(RULES.with_name("benefit-scenes.json").read_text())
 UNSUPPORTED = re.compile(
     "不支持|不能|不可|不具备|不带|无法|并非|没有|暂不|不提供|无此|不含|别提|不要|不提|禁止|避免|未经|未确认|待确认|待核实|待定|尚未|没确认|是否|假设|比如|例如|参考|竞品|对手|别家|希望能|能否|可能|据说|如果|尚无|未核实|仅限|仅部分|部分型号|仅高配|选装|能不能|可不可以|竞对|友商|待查|暂未|不确定|不清楚|未知"
 )
@@ -30,36 +29,6 @@ def evidence_clauses(plan):
             else:
                 positive.append(sentence)
     return positive, excluded
-
-
-def confirmed_feature(feature, subject, positive, excluded):
-    if any(re.search(subject, sentence) for sentence in excluded):
-        return None
-    return next(
-        (m.group() for sentence in positive if (m := re.search(feature, sentence))),
-        None,
-    )
-
-
-def benefit_scene(plan, row):
-    if not row:
-        return None
-    positive, excluded = evidence_clauses(plan)
-    situation = "。".join([*positive, plan.get("audience", "")])
-    for rule in BENEFITS:
-        if row["product"] not in rule["products"]:
-            continue
-        feature = confirmed_feature(
-            rule["feature"], rule["subject"], positive, excluded
-        )
-        if feature:
-            scene = next(
-                s
-                for s in rule["scenes"]
-                if not s.get("when") or re.search(s["when"], situation)
-            )
-            return {**scene, "evidence": feature}
-    return None
 
 
 LOCKED = re.compile(
@@ -92,13 +61,6 @@ def quoted_specs(plan):
     ]
 
 
-SIGNALS = (
-    ("耳罩可拆洗", "耳罩脏了？拆下来洗", "耳罩可拆洗。"),
-    ("可拆洗耳罩", "耳罩脏了？拆下来洗", "可拆洗耳罩。"),
-    ("可折叠", "用时展开，收时折起", "可折叠。"),
-    ("一键开盖", "一按，盖就开", "一键开盖。"),
-    ("可进洗碗机", "喝完，交给洗碗机", "可进洗碗机。"),
-)
 DECLARED = re.compile(
     r"(?:确认信息|已确认|商品特点|卖点|实物特点)[：:]\s*([^。；;\n]{2,70})"
 )
@@ -116,110 +78,6 @@ def copy_route(plan):
     return None
 
 
-def copy_angle(plan, index, use_social=False):
-    row = copy_route(plan)
-    if not row:
-        explicit = DECLARED.search(plan["original"])
-        evidence = (plan.get("facts") or (explicit.group(1) if explicit else "")).strip(
-            " ，。"
-        )
-        first = re.split("[，。；]", evidence)[0]
-        if 3 <= len(first) <= 20:
-            product = plan["profile"].get("product") or plan["subject"]
-            titles = (first, product + "怎么挑？", "挑" + product + "，看这个细节")
-            return dict(
-                title=titles[index],
-                body=evidence,
-                cta="查看商品详情。",
-                detailLine=first,
-            )
-        return {}
-    title, body = row["routes"][index]
-    if use_social:
-        style = row
-        words = {}
-        if scene := row.get("socialScene"):
-            sources = "。".join(
-                (
-                    plan["original"],
-                    plan.get("facts", ""),
-                    plan["profile"].get("facts", ""),
-                )
-            )
-            for clause in re.split(r"[。！？，；,;\n]", sources):
-                if re.search(
-                    "不要|不提|不含|没有|没刻度|无刻度|不带|不陪|不想|未确认|假设|如果|是否|别写|避免",
-                    clause,
-                ):
-                    continue
-                if match := re.search(scene["match"], clause):
-                    style = scene
-                    words = match.groupdict()
-                    break
-        options = [line.format(**words) for line in style["socialTitles"]]
-        recent = plan.get("recent", [])
-        # Keep the chosen creative angle when possible, then try the next unused line.
-        choice = index
-        if options[index] in recent:
-            for offset in range(1, len(options)):
-                other = (index + offset) % len(options)
-                if options[other] not in recent:
-                    choice = other
-                    break
-        title = options[choice]
-        body = (
-            style["socialBodies"][choice].format(**words)
-            if "socialBodies" in style
-            else row["routes"][choice][1]
-        )
-    brief = plan["original"]
-    known = "。".join((brief, plan.get("facts", ""), plan["profile"].get("facts", "")))
-    reveal = row["reveal"]
-    cta = row["cta"]
-    if index == 0:
-        positive, excluded = evidence_clauses(plan)
-        for signal, headline, line in SIGNALS:
-            if confirmed_feature(
-                signal, signal.replace("可", ".{0,4}"), positive, excluded
-            ):
-                title, body, reveal = headline, line, line
-                break
-    if not use_social and row["latin"] == "MATCHA" and "午休" in brief and index == 0:
-        title = "午休这杯，先别搅"
-    if row["latin"] == "BREAK" and "学生" in (brief + plan["audience"]) and index == 0:
-        title = "下课铃一响，谁还敢说没空打球？" if use_social else "下课铃响，轮到开球"
-        body = "把课表合上，喊上想一起打球的人。先到球桌的那个，来开第一杆。"
-    brief_goal = plan.get("briefGoal", plan.get("goal"))
-    if row["latin"] == "TABLE" and brief_goal == "邀请新客进店":
-        title = ("第一次来，第一筷想涮什么？", "先挑锅底，还是先问同桌？", "把最想吃的那盘放在手边")[index]
-        body = "第一次围上这口锅，先和同桌说说喜欢的口味。照着菜单，挑一盘大家都想动筷的。"
-        reveal, cta = "从桌上最想尝的那一口开始。", "约个饭搭子，一起来选。"
-    elif row["latin"] == "TABLE" and brief_goal == "邀请老客再次到店":
-        title = ("上次那一筷，还记得吗？", "这次换谁先下菜？", "把上回那桌人再叫齐")[index]
-        body = "想一想上回哪一盘最先见底。把名字发到群里，问问那桌老朋友，这次还想涮什么。"
-        reveal, cta = "上回最惦记的是哪一口？", "把这句发给上次同桌的人。"
-    if row["latin"] == "SCENT" and "试香" in brief:
-        cta = "到店，亲自闻一闻。"
-    if row["latin"] == "MARKET" and not OFFER.search(known):
-        reveal = "清单上要买什么？从那一站开逛。"
-    if row["latin"] == "MATCHA" and "分层" not in known:
-        reveal = "下一口，试试把茶和奶搅匀。"
-    if plan.get("kind") == "video" and title == "耳罩脏了？拆下来洗":
-        title = "耳罩脏了，怎么办？"
-    benefit = benefit_scene(plan, row) if use_social else None
-    if benefit:
-        options = benefit["titles"]
-        order = options[index:] + options[:index]
-        title = next(
-            (line for line in order if line not in plan.get("recent", [])), order[0]
-        )
-        body = reveal = benefit["evidence"] + "。"
-    specs = quoted_specs(plan)
-    return dict(
-        title=title, body=body, cta=cta, detailLine=specs[0] if specs else reveal
-    )
-
-
 def offer_and_terms(plan, conditions):
     known = "。".join(
         (plan["original"], plan.get("facts", ""), plan["profile"].get("facts", ""))
@@ -230,6 +88,9 @@ def offer_and_terms(plan, conditions):
 
 def complete_body(plan, body, offer, terms):
     details = [plan.get("facts", ""), plan["profile"].get("facts", "")]
+    if plan.get("autoCreation") and plan.get("facts", "").strip() == plan["original"].strip():
+        # The one-line brief can include a price. Keep the separate offer and terms.
+        details = [plan["profile"].get("facts", "")] if not re.search("仅|限|有效|起售|不与|不叠加|满减|每人|截止|会员|适用", plan["original"]) else details
     found = DECLARED.search(plan["original"])
     if found:
         details.insert(0, found.group(1))
@@ -250,8 +111,7 @@ def storyboard(plan, copy, asset=None):
     if plan.get("bundleRole"):
         line = re.split(r"[。；;\n]", copy["body"], maxsplit=1)[0]
     else:
-        row = copy_route(plan) or {}
-        line = copy.get("detailLine") or row.get("reveal") or copy["body"].split("。")[0]
+        line = copy.get("detailLine") or copy["body"].split("。")[0]
         if line.rstrip("。！？") == copy["title"].rstrip("。！？"):
             line = next(
                 (part for part in re.split("[。！？]", copy["body"])

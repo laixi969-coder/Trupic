@@ -128,7 +128,7 @@ Page({
       const q = menu || await api.request("works/" + this.id + "/revision-quote", "POST", {action, base});
       if (!menu) {
         const consent = await new Promise((resolve, reject) => wx.showModal({
-          title: "确认修改", content: "本次共 " + q.cost + " 积分，原作品会保留。", success: resolve, fail: reject,
+          title: "确认修改", content: (q.changes?.title ? "新标题：" + q.changes.title + "\n" : "") + "本次共 " + q.cost + " 积分，原作品会保留。", success: resolve, fail: reject,
         }));
         if (!consent.confirm) return;
       }

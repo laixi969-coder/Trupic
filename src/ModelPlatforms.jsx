@@ -4,7 +4,7 @@ import { api, Field } from "./ui.jsx";
 const kinds = [["text", "策划与文案"], ["image", "图片生成"], ["video", "视频生成"], ["edit","图片编辑"], ["vision", "商品与成品视觉审核"]];
 const categories = [["text", "文字类"], ["image", "图片类"], ["vision", "图片审核类"], ["video", "视频生成类"]];
 const descriptions = {edit:"按商家要求编辑框选区域。",text: "写标题、卖点和短片脚本，只需要文本模型。", image: "生成图片环境，商品原图与准确文案在本地合成。", video: "生成动态环境，再合成商品原图、三镜字幕和配乐。", vision: "接收图片，检查商品与成品；不是图片生成模型。"};
-const localLabels = {edit:"本地明暗调整",text:"本地文案规则",image:"本地商品排版",video:"本地镜头运动",vision:"本地像素与文字检查"};
+const localLabels = {edit:"本地明暗调整",text:"停用文字模型",image:"本地商品排版",video:"本地镜头运动",vision:"本地像素与文字检查"};
 
 function eligibleModels(catalog, kind) {
   return (catalog?.models || []).filter(model => !model.known || model.kinds.includes(kind));

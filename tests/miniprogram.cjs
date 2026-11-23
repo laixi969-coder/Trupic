@@ -22,9 +22,29 @@ test(
     const port = listener.address().port;
     await new Promise((done) => listener.close(done));
     const origin = "http://127.0.0.1:" + port;
+    const writer = require("node:http").createServer(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const { messages } = JSON.parse(raw);
+      const input = JSON.parse(messages[1].content);
+      const draft = { title: "这一杯，等你来", body: "看看杯中的颜色。", cta: "来看看。" };
+      let result = {};
+      if (input["候选"]) result = { approved: [0, 1, 2] };
+      else if ("优惠" in input) result = {
+        options: ["这一杯，等你来", "慢慢喝，也慢慢聊", "杯边有一圈绿"].map(title =>
+          ({ ...draft, title, shareTo: "午休常一起喝茶的同事", reply: "帮我留个座。" })),
+      };
+      else if ("writingBrief" in input) result = draft;
+      else if (input.draft) result = { ok: true, headlineOk: true, closingOk: true };
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }));
+    }).listen(0, "127.0.0.1");
+    await once(writer, "listening");
+    t.after(() => writer.close());
     const server = spawn(join(root, ".venv/bin/python"), ["-m", "server.app"], {
       cwd: root,
-      env: { ...process.env, PORT: String(port), TRUPIC_DATA: temp },
+      env: { ...process.env, PORT: String(port), TRUPIC_DATA: temp,
+        TRUPIC_MODEL: "fixture-writer", TRUPIC_MODEL_URL: "http://127.0.0.1:" + writer.address().port + "/v1/chat/completions" },
       stdio: "ignore",
     });
     t.after(async () => {

@@ -4,7 +4,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from .creative import RISK, UNKNOWN, draft_copy, prepare, uidnum
+from .creative import RISK, UNKNOWN, prepare, uidnum
 from .model import settings
 from .store import audit, db, ident, now
 
@@ -94,20 +94,8 @@ def run_tests(rule):
         ("护理知识", "美容院日常护理知识分享", "日常护理"),
     ]:
         p = prepare(brief, {}, [], rule)
-        a = draft_copy(p)
-        b = draft_copy(p, 1)
-        output.append(
-            dict(
-                name=name,
-                ok=p["subject"] == subject
-                and a["title"] != b["title"]
-                and bool(a["cta"])
-                if "护理" not in name
-                else p["goal"] == "分享实用知识",
-                sample=a["title"],
-                baseline=draft_copy(prepare(brief, {}, [], baseline))["title"],
-            )
-        )
+        output.append(dict(name=name, ok=p["subject"] == subject and bool(p["angle"]),
+                           sample=p["angle"], baseline=prepare(brief, {}, [], baseline)["angle"]))
     try:
         prepare("编造优惠价格", {}, [], rule)
         blocked = False

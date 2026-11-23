@@ -49,7 +49,7 @@ def apply_poster_layout(plan, copy):
     # Preserve factual and merchant constraints following the former art direction.
     prompts["image"] = art["concept"] + prompts["image"].removeprefix(old["concept"])
     if old.get("modelConcept"):
-        prompts["image"] = prompts["image"].replace(" " + old["modelConcept"], "")
+        art["modelConcept"] = old["modelConcept"]
     plan["posterArt"] = art
 
 
@@ -147,7 +147,7 @@ def optimize(spec, *, infer=True, previous=None):
         reading["style"] = plan.get("design", {}).get("id", reading["style"])
         # A changed angle or layout gets fresh instructions, even on an older work.
         engine = "本地提示词规则"
-    elif infer and model.engine_name() != "本地创意规则":
+    elif infer and model.engine_name():
         # Freeform business claims must never become a new source of evidence.
         sources = [
             plan["original"],
@@ -159,7 +159,7 @@ def optimize(spec, *, infer=True, previous=None):
                 "你是 Trupic 的创作提示词策划。理解商家口语，区分真实卖点、目标受众和表现手法。根据素材和媒介选择执行方向。"
                 "只输出 JSON。product、audience、focus、visual 分别逐字摘取原文中的商品、受众、想突出的事实或动作、视觉约束，保留否定和限定词；不确定留空。"
                 f"method 选 moment/question/invite，style 选 {'/'.join(TREATMENTS)}，pace 选 steady/quiet/brisk。优先明确要求与已选版式。"
-                "返回 directions 对象，只填写媒介需要的 copy/image/video 键。构思 image 时先比较从实物动作和从材质入手的两种画面，只交与商品及标题关系更紧的一种。用两句话点名观众第一眼看见的事件、标题借哪条轮廓或光影落位。原图观察是视觉依据，不可用来添加经营声明。video 交代在哪个动作或形状上切镜、下一镜多看见什么。遵守指定版式和禁区，不写示例广告语。",
+                "返回 directions 对象，只填写媒介需要的 copy/image/video 键。构思 image 时先比较从实物动作和从材质入手的两种画面，只交与商品及标题关系更紧的一种。用两句话点名观众第一眼看见的事件、标题借哪条轮廓或光影落位。原图观察是视觉依据，不可用来添加经营声明。video 交代在哪个动作或形状上切镜、下一镜多看见什么。遵守指定版式和禁区，不写示例广告语。只在商家明确指定标题时要求逐字照抄标题，给出的品名或片名可在正文呈现。",
                 {
                     "需求": plan["original"],
                     "档案": {
@@ -183,7 +183,7 @@ def optimize(spec, *, infer=True, previous=None):
                     "原图观察": plan.get("sourceReview", {}).get("reason", ""),
                     "本地创作技能": skill_plan["instructions"],
                 },
-                320,
+                900,
             )
             valid = {}
             for k in ("product", "audience", "focus", "visual"):
@@ -219,7 +219,7 @@ def optimize(spec, *, infer=True, previous=None):
                             "directions": candidates,
                             "原图观察": plan.get("sourceReview", {}).get("reason", ""),
                         },
-                        80,
+                        360,
                     )
                     if review.get("ok") is True:
                         refinements = candidates
@@ -256,7 +256,7 @@ def optimize(spec, *, infer=True, previous=None):
     anchors = [
         x for x in (plan.get("facts"), plan["profile"].get("facts"), offer, terms) if x
     ]
-    action = wenan.conversion(plan, product)
+    action = wenan.conversion(plan)
     if action:
         plan["goal"] = {
             "下单": "引导下单",
@@ -271,15 +271,11 @@ def optimize(spec, *, infer=True, previous=None):
         "video": "开头写能在前三秒读完的一句，中段只说一处能从原图看出的卖点，末镜只给一个行动。",
     }[kind]
     if action:
-        copy += (
-            "本次以「"
-            + action["goal"]
-            + "」收口。正文承接标题，落到一个动作，参考末句「"
-            + action["line"]
-            + "」。"
-        )
+        copy += f"末句围绕「{action['goal']}」给出一个具体行动。"
+        if action["channel"]:
+            copy += f"使用商家提供的「{action['channel']}」渠道。"
     if wenan.social_headline(plan):
-        copy += wenan.social_brief(plan)
+        copy += wenan.HEADLINE_BRIEF
     if wenan.no_cta(plan):
         copy = copy.replace("结尾给一个行动", "结尾停在品牌主张").replace(
             "末镜只给一个行动", "末镜收在品牌或品名"

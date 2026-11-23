@@ -118,7 +118,7 @@ def engine_name():
     cfg = route("text")
     if cfg["url"] and cfg["model"]:
         return cfg["model"]
-    return "Apple 设备端模型" if cfg.get("provider") != "local-rules" and apple_available() else "本地创意规则"
+    return "Apple 设备端模型" if cfg.get("provider") != "local-rules" and apple_available() else ""
 
 
 def reserve_provider_call(kind):

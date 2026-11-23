@@ -1179,7 +1179,7 @@ function App() {
                       <p>
                         {densePosterAdvice
                           ? "把主标题和正文分开排，保留原文和原版供对照。"
-                          : `建议换成「${versionData.suggestion?.title}」，保留原始版本供对照。`}
+                          : "生成新文案，确认后制作新版本。"}
                       </p>
                       <button
                         className="secondary"

@@ -11,8 +11,8 @@ from flask import abort
 from itsdangerous import BadSignature
 
 from . import model, wenan
-from .campaign import LOCKED, copy_route, quoted_specs
-from .creative import draft_copy, unsupported_copy
+from .campaign import LOCKED, quoted_specs
+from .creative import copy_inputs, unsupported_copy
 from .store import DATA
 from .visual_review import compact_local_vision, preflight, source_images
 
@@ -57,7 +57,7 @@ def write_options(spec, tenant, previous=()):
     plan = spec["plan"]
     cfg = model.route("text")
     local_photo = compact_local_vision(cfg)
-    if not cfg.get("model") and model.engine_name() == "本地创意规则":
+    if not cfg.get("model") and not model.engine_name():
         weights = Path(
             os.getenv(
                 "TRUPIC_VISION_MODEL_DIR",
@@ -117,7 +117,7 @@ def write_options(spec, tenant, previous=()):
         ]
         if wenan.social_headline(plan):
             paragraphs += [
-                wenan.social_brief(plan),
+                wenan.HEADLINE_BRIEF,
                 next(
                     line
                     for line in wenan.FORMATS[wenan.SHARING].splitlines()
@@ -170,7 +170,7 @@ def write_options(spec, tenant, previous=()):
         ]
         return model.routed_chat({**cfg, "responseSchema": schema}, messages, tokens, "text")
 
-    base = draft_copy(plan)
+    base = copy_inputs(plan)
     for key in ("offer", "terms"):
         if value := spec.get("replacement", {}).get(key):
             base[key] = value
@@ -190,14 +190,7 @@ def write_options(spec, tenant, previous=()):
             "在每个标题中放一个具体的动作或物件。正文只写商品或项目名加一个真实细节，总共不超过24字。"
             "把时间和预约留给末句。不要用抽象形容词和广告口号。reply 要回应标题，不得重复标题。"
         )
-    direction = copy_route(plan) or {}
     try:
-        if wenan.social_headline(plan):
-            row = direction
-            if row:
-                inputs["可改写的社交创意"] = row.get("socialTitles", [])
-            if inputs.get("可改写的社交创意"):
-                task += "结合实拍，在适用的不同创意上完成三组稿。可保留好句，结合商家的商品或空间写正文和末句。"
         result, engine = ask(
             task, inputs, 900, option_schema("title", "body", "cta", "shareTo", "reply")
         )
@@ -221,15 +214,6 @@ def write_options(spec, tenant, previous=()):
             ):
                 continue
             title, body, cta = (row[k].strip() for k in ("title", "body", "cta"))
-            if (
-                direction.get("photoCaption")
-                and spec.get("asset")
-                and "实拍" in plan["original"]
-                and not plan["profile"].get("facts")
-                and not spec.get("replacement", {}).get("offer")
-                and not re.search("卖点|正文|介绍|强调|必须", plan["original"])
-            ):
-                body = direction["photoCaption"]
             if named_subject and named_subject not in title + body + cta:
                 body = named_subject + (" · " + body if body else "")
             if locked:

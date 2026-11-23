@@ -11,12 +11,18 @@ import unittest
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from functools import wraps
 from unittest.mock import patch
 
 from PIL import Image
 
 workspace = tempfile.TemporaryDirectory()
 os.environ["TRUPIC_DATA"] = workspace.name
+from server.store import DATA
+
+if str(DATA) != os.path.realpath(workspace.name):
+    raise RuntimeError("Workflow tests require an isolated temporary database.")
+
 from server import app as studio
 from server.creative import generate_copy, prepare
 
@@ -31,6 +37,23 @@ def submit_revision(client, path, **data):
     return post(client, path, **data, quote=quote.json["quote"], confirmed=True, confirmedCost=quote.json["cost"])
 
 
+def with_text_model(test):
+    """Supply a deterministic text provider to tests of billing, rendering and revisions."""
+    def answer(prompt, inputs, *args):
+        if "writingBrief" in inputs:
+            title = "换个角度见面" if "上一稿" in prompt else "等你来碰面"
+            return dict(title=title, body="把今天的这一刻留给你。", cta="问问详情。"), "fixture-writer"
+        if "draft" in inputs:
+            return dict(ok=True, headlineOk=True, closingOk=True), "fixture-writer"
+        return {}, "fixture-writer"
+
+    @wraps(test)
+    def run(*args, **kwargs):
+        with patch("server.model.engine_name", return_value="fixture-writer"), patch("server.model.ask", side_effect=answer):
+            return test(*args, **kwargs)
+    return run
+
+
 def submit_with_copy(client, path, **data):
     """Select a deterministic fixture when testing the downstream rendering pipeline."""
     from server.copy_choices import proposal_specs
@@ -40,7 +63,13 @@ def submit_with_copy(client, path, **data):
         q = studio.quotes.loads(token)
         spec = next((s for s in proposal_specs(q) if s["kind"] == "poster"), None)
         if spec:
-            base = {**studio.draft_copy(spec["plan"]), **spec.get("replacement", {})}
+            base = studio.draft_copy(spec["plan"])
+            if q.get("bundle"):
+                base.update(spec.get("replacement", {}))
+            else:
+                base.update({k:v for k,v in spec.get("replacement", {}).items() if v})
+                base["body"] = base["body"] or "一起看看今天的新发现。"
+            base["engine"] = "fixture-writer"
             import hashlib
             data["copyChoice"] = studio.quotes.dumps(
                 {"quoteId": hashlib.sha256(token.encode()).hexdigest(), "draft": base},
@@ -199,6 +228,7 @@ class WorkflowTests(unittest.TestCase):
                 confirmed = post(self.c, "creations/plan", **{**payload, "assetConfirmed":True}, assetMode="processed")
                 self.assertTrue(confirmed.json["ready"], confirmed.json)
 
+    @with_text_model
     def test_v3_signed_specs_balance_reservations_and_trash(self):
         self.admin()
         self.assertEqual(post(self.c,"profile",industryTags=["台球","休闲"],name="").status_code,200)
@@ -240,6 +270,7 @@ class WorkflowTests(unittest.TestCase):
         finally:
             post(self.c,"admin/pricing",**{**rates,"version":self.c.get("/api/admin/pricing").json["version"]})
 
+    @with_text_model
     def test_v3_signed_payments_and_invite_milestones(self):
         import hashlib,hmac
         self.admin()
@@ -701,6 +732,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(spec["plan"]["videoReference"]["authorized"])
         self.assertEqual(spec["replacement"]["storyboard"][1]["end"], 8)
 
+    @with_text_model
     def test_v3_poster_region_preserves_pixels_and_task_margin(self):
         from PIL import ImageChops
 
@@ -986,6 +1018,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(c.execute("SELECT credits FROM merchant WHERE id=?",(tenant,)).fetchone()[0],20)
             self.assertEqual(c.execute("SELECT COUNT(*) FROM credit_event WHERE tenant=? AND action='release'",(tenant,)).fetchone()[0],1)
 
+    @with_text_model
     def test_v3_export_all_advertised_durations(self):
         with self.c.session_transaction() as sess: tenant=sess["tenant"]
         with studio.db(True) as c:
@@ -1011,6 +1044,7 @@ class WorkflowTests(unittest.TestCase):
                     self.assertEqual(len(shots),{15:3,30:5,45:7}[duration])
                     self.assertIn(f"00:00:{duration:02d},000",z.read("captions.srt").decode())
 
+    @with_text_model
     def test_v3_reference_assets_and_scoped_edit(self):
         ids=[]
         for name in ("matcha","hotpot","retail"):
@@ -1048,6 +1082,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("38元",latest[0]["body"])
         self.assertIn("48元",latest[1]["body"])
 
+    @with_text_model
     def test_home_brief_without_photo_revision_and_adoption(self):
         q = post(self.c, "creations/plan", brief="帮我宣传台球室").json
         self.assertTrue(q["ready"], q)
@@ -1067,7 +1102,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(done["state"], "complete", done)
             latest = self.c.get("/api/works/" + poster).json["versions"][0]
             if action == "revision":
-                self.assertEqual(latest["title"], initial["suggestion"]["title"])
+                self.assertEqual(latest["title"], "换个角度见面")
             if action == "layout":
                 self.assertEqual(latest["body"], initial["body"])
         self.assertTrue(next(r for r in self.state()["recs"] if r["topicId"] == topic["topicId"])["adopted"])
@@ -1095,15 +1130,15 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotEqual(response.data, before)
         self.assertEqual(post(self.c, url + "/restore/1").status_code, 200)
 
-    def test_home_hotpot_copy_addresses_first_visit_and_return_visit(self):
+    def test_home_hotpot_preview_has_no_industry_copy(self):
         def draft(brief):
             plan = post(self.c, "creations/plan", brief=brief).json
             return studio.quotes.loads(plan["quote"])["items"][0]["spec"]["replacement"]
         new = draft("给首次到店的顾客写一份菌菇火锅推广文案")
         returning = draft("给回头客写一份菌菇火锅邀约文案")
-        self.assertIn("喜欢的口味", new["body"])
-        self.assertIn("上回", returning["body"])
-        self.assertNotEqual(new["title"], returning["title"])
+        for preview in (new, returning):
+            self.assertEqual((preview["title"], preview["cta"]), ("", ""))
+            self.assertFalse(preview["engine"])
 
     def test_home_fidelity_uses_merchant_region_and_preflight_before_jobs(self):
         bundle, _ = self.bundle_plan(cutout=True)
@@ -1327,7 +1362,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(failed["reviewFlag"], "模型调用未完成")
                 self.assertIn("超时", failed["callError"])
 
-    def test_rejected_shared_draft_uses_checked_fallback_and_records_model(self):
+    def test_rejected_shared_draft_is_rewritten_and_never_silently_replaced(self):
         from server import providers
         platform = 'custom-' + uuid.uuid4().hex
         try:
@@ -1336,14 +1371,12 @@ class WorkflowTests(unittest.TestCase):
                 providers.select(c,"test",dict(text=platform))
             q = post(self.c,"creations/plan",brief="给台球室写一条邀约文案").json
             rejected = dict(title="虚构的标题",reviewFlag="模型草稿复核未通过")
-            with patch("server.auto_pipeline.generate_copy",return_value=rejected):
+            with patch.object(studio, "optimize"), patch("server.auto_pipeline.generate_copy",return_value=rejected) as writer:
                 run = submit_with_copy(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
                 done = self.finish(run["items"][0]["job"])
-            self.assertEqual(done["state"],"complete",done)
-            work = self.c.get("/api/works/"+done["work"]).json["versions"][0]
-            self.assertEqual(work["engine"],"本地创意规则")
-            self.assertNotEqual(work["title"],rejected["title"])
-            self.assertTrue(any(q["label"]=="待抽查" and "text-proof" in q["detail"] for q in work["quality"]))
+            self.assertEqual(done["state"],"failed",done)
+            self.assertIn("模型草稿复核未通过",done["error"])
+            self.assertEqual(writer.call_count, 2)
         finally:
             with studio.db(True) as c:
                 c.execute("DELETE FROM model_route WHERE platform=?",(platform,))
@@ -1693,6 +1726,8 @@ class WorkflowTests(unittest.TestCase):
             stream=io.BytesIO();Image.new('RGB',(720,720),'#aabb99').save(stream,format='PNG')
             def remote(request,timeout):
                 payload=json.loads(request.data)
+                if payload['model'] == 'fixture-text':
+                    return io.BytesIO(json.dumps({'choices': [{'message': {'content': json.dumps({'method': 'moment'})}}]}).encode())
                 self.assertEqual(request.get_header('Authorization'),'Bearer private-image')
                 self.assertEqual(payload['model'],'fixture-image')
                 return io.BytesIO(json.dumps(dict(data=[dict(b64_json=base64.b64encode(stream.getvalue()).decode())])).encode())
@@ -1708,7 +1743,9 @@ class WorkflowTests(unittest.TestCase):
                     finished=self.finish(item['job'])
                     self.assertEqual(finished['state'],'complete',finished)
             text_call.assert_not_called()
-            self.assertEqual(images.call_count,3)
+            models = [json.loads(call.args[0].data)["model"] for call in images.call_args_list]
+            self.assertEqual(models.count("fixture-image"), 3)
+            self.assertIn("fixture-text", models)
             result=self.c.get('/api/creations/'+group['id']).json
             self.assertEqual(result['title'],'一口清新')
         finally:
@@ -2030,6 +2067,7 @@ class WorkflowTests(unittest.TestCase):
         post(self.c, "jobs/" + j["id"] + "/retry")
         self.assertEqual(self.state()["credits"], 116)
 
+    @with_text_model
     def test_suggestion_and_versions(self):
         job = submit_with_copy(self.c, "jobs", **self.plan()).json
         self.finish(job["id"])
@@ -2038,7 +2076,7 @@ class WorkflowTests(unittest.TestCase):
         j = submit_revision(self.c, url + "/revise", base=1, requestKey=uuid.uuid4().hex).json
         self.assertEqual(self.finish(j["id"])["state"], "complete")
         versions = self.c.get("/api/" + url).json["versions"]
-        self.assertEqual(versions[0]["title"], one["suggestion"]["title"])
+        self.assertEqual(versions[0]["title"], "换个角度见面")
         self.assertNotEqual(versions[0]["title"], versions[1]["title"])
         post(self.c, url + "/restore/1")
         self.assertEqual(self.state()["works"][0]["current"], 1)
@@ -2071,6 +2109,7 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertEqual(self.state()["credits"], 120)
 
+    @with_text_model
     def test_export_real_video_and_text(self):
         for kind in ["video", "copy"]:
             j = submit_with_copy(self.c, "jobs", **self.plan(kind)).json
@@ -2273,6 +2312,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(state["recs"]), 3)
         self.assertEqual(state["credits"], 120)
 
+    @with_text_model
     def test_topic_adoption_only_after_delivery(self):
         post(self.c, "profile", name="春野", product="菌菇火锅", industry="火锅")
         topic = self.c.get("/api/topics").json[0]
@@ -2519,6 +2559,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("角色参考图", response.json["error"])
 
+    @with_text_model
     def test_audio_video_review_uses_actual_middle_shot(self):
         render = studio.render
 
@@ -2580,6 +2621,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(report["attempts"][1]["issues"], [])
         self.assertEqual(self.state()["credits"], 108)
 
+    @with_text_model
     def test_semantic_review_checks_frames_and_rechecks_repairs(self):
         self.admin()
         req = self.plan("video")
@@ -2606,6 +2648,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(self.finish(j["id"])["state"], "failed")
         self.assertEqual(self.state()["credits"], 108)
 
+    @with_text_model
     def test_weekly_preference_and_observed_response_rates(self):
         from server.creative import recommendations
 
@@ -2757,7 +2800,7 @@ class WorkflowTests(unittest.TestCase):
                 side_effect=[
                     (result, "test-model"),
                     (
-                        {"ok": True, "headlineOk": True, "reason": "创意与资料一致"},
+                        {"ok": True, "headlineOk": True, "closingOk": True, "reason": "创意与资料一致"},
                         "test-model",
                     ),
                 ],
@@ -2973,7 +3016,7 @@ class WorkflowTests(unittest.TestCase):
                     {"name": "测试", "id": "base", "method": "moment"},
                 )
                 result = generate_copy(plan)
-                self.assertEqual(result["engine"], "本地创意规则")
+                self.assertFalse(result["engine"])
                 self.assertTrue(result["reviewFlag"])
                 remote.assert_not_called()
             model_response = io.BytesIO(
@@ -3148,6 +3191,7 @@ class WorkflowTests(unittest.TestCase):
         auto = choose_style({"original": "书店品牌故事"})
         self.assertNotEqual(next_style(auto)["id"], auto["id"])
 
+    @with_text_model
     def test_export_settings_reach_downloaded_files(self):
         from server.formats import RATIOS, SHORT_EDGES, output_spec
 
@@ -3303,7 +3347,7 @@ class WorkflowTests(unittest.TestCase):
             "头戴式耳机，已确认：耳罩可拆洗。活动价129元，仅限本店。", {}, [], rule
         )
         plan["kind"] = "video"
-        cp = draft_copy(plan)
+        cp = {**draft_copy(plan), "title":"耳罩焕新", "detailLine":"耳罩可拆洗", "cta":"来看看"}
         shots = storyboard(plan, cp)
         self.assertEqual([s["start"] for s in shots], [0, 3, 6])
         self.assertIn("耳罩", shots[0]["line"])
@@ -3311,7 +3355,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("129元", shots[2]["caption"])
         self.assertIn("仅限本店", shots[2]["caption"])
         self.assertEqual(len({s["line"] for s in shots}), 3)
-        self.assertNotEqual(draft_copy(plan, 1)["title"], cp["title"])
+        self.assertEqual(shots[0]["line"], cp["title"])
         restricted = draft_copy(
             prepare("为头戴耳机做宣传，耳罩不可拆洗。", {}, [], rule)
         )
@@ -3361,6 +3405,7 @@ class WorkflowTests(unittest.TestCase):
             400,
         )
 
+    @with_text_model
     def test_prompt_agent_compiles_per_medium_and_persists_signed_brief(self):
         brief = "为抹茶拿铁做推广，面向午休的上班族，开头抓人，慢一点，28元 / 杯，仅限堂食，标题用「春山入盏」。"
         for kind, channels in (
@@ -3368,7 +3413,7 @@ class WorkflowTests(unittest.TestCase):
             ("poster", {"copy", "image"}),
             ("video", {"copy", "image", "video"}),
         ):
-            with patch("server.model.engine_name", return_value="本地创意规则"):
+            with patch("server.model.engine_name", return_value=""):
                 q = post(
                     self.c,
                     "preview",
@@ -3442,12 +3487,8 @@ class WorkflowTests(unittest.TestCase):
         brief = "洗衣液2瓶39元，本周日截止，全店可用，无需凑单。写一条不超过45字的促销消息，只给结果。"
         plan = prepare(brief, {}, [], dict(id="base", name="基础", method="moment"))
         plan["kind"] = "copy"
-        with patch("server.model.engine_name", return_value="本地创意规则"):
-            output = generate_copy(plan)
-        self.assertEqual(output["title"], "洗衣液2瓶39元")
-        self.assertEqual(output["body"], "本周日截止，全店可用，无需凑单。")
-        self.assertEqual(output["cta"], "")
-        self.assertEqual(output["writingSkill"]["mode"], "本地规则")
+        with patch("server.model.engine_name", return_value=""), self.assertRaisesRegex(ValueError, "文字模型"):
+            generate_copy(plan)
         for kind, section in [
             ("copy", "小红书、朋友圈和社媒"),
             ("poster", "广告语、海报、系列"),
@@ -3474,179 +3515,56 @@ class WorkflowTests(unittest.TestCase):
                 output = generate_copy(plan)
             self.assertEqual(output["writingSkill"]["mode"], "模型创作与复核")
             self.assertEqual(ask.call_count, 2)
-            for call in ask.call_args_list:
-                self.assertIn(wenan.CORE, call.args[0])
-                self.assertIn(wenan.FORMATS[section].strip(), call.args[0])
-                self.assertIn(
-                    wenan.FORMATS["卖货任务：让创意推动决策"].strip(), call.args[0]
-                )
+            self.assertIn(wenan.CORE, ask.call_args_list[0].args[0])
+            self.assertIn(wenan.FORMATS[section].strip(), ask.call_args_list[0].args[0])
+            self.assertEqual(ask.call_args_list[1].args[1]["draft"]["title"], output["title"])
 
-    def test_wenan_sharing_and_factual_deliverables(self):
-        from server import wenan
-        from server.prompt_agent import optimize
-
-        rule = dict(id="baseline", name="基础", method="moment")
-        plan = prepare("为抹茶拿铁写门店海报，让顾客想拍给朋友。", {}, [], rule)
-        plan["kind"] = "poster"
-        optimize(dict(kind="poster", plan=plan, asset=""), infer=False)
-        self.assertIn(wenan.SHARING, wenan.sections(plan))
-        self.assertIn(wenan.FORMATS[wenan.SHARING].strip(), wenan.instructions(plan))
-        with patch("server.model.engine_name", return_value="本地创意规则"):
-            output = generate_copy(plan)
-        self.assertIn("抹茶", output["title"])
-        self.assertEqual(output["writingSkill"]["version"], wenan.VERSION)
-        plan = prepare(
-            "商品规格栏只留一行。请写明灯泡为E27螺口、额定功率8瓦，只给规格。",
-            {},
-            [],
-            rule,
-        )
-        plan["kind"] = "copy"
-        self.assertNotIn(wenan.SHARING, wenan.sections(plan))
-        with patch("server.model.engine_name", return_value="本地创意规则"):
-            output = generate_copy(plan)
-        self.assertEqual(
-            (output["title"], output["body"], output["cta"]),
-            ("灯泡为E27螺口、额定功率8瓦", "", ""),
-        )
-
-    def test_headline_has_a_social_use_without_requesting_shares(self):
-        from server import wenan
-        from server.campaign import storyboard
-        from server.creative import draft_copy
-        from server.prompt_agent import optimize
-
-        rule = dict(id="baseline", name="基础", method="moment")
-        for kind in ("poster", "copy", "video"):
-            plan = prepare("为水果店做周末宣传", {}, [], rule)
-            plan["kind"] = kind
-            optimize(dict(kind=kind, plan=plan, asset=""), infer=False)
-            self.assertIn(wenan.HEADLINE_BRIEF, plan["promptBrief"]["prompts"]["copy"])
-            draft = draft_copy(plan)
-            self.assertEqual(draft["title"], "嘴硬的人，切的水果最整齐。")
-            self.assertNotEqual(draft["title"], draft_copy(plan, 1)["title"])
-            self.assertEqual(storyboard(plan, draft)[0]["line"], draft["title"])
-        for consent in (False, None):
-            review = {"ok": True}
-            if consent is not None:
-                review["headlineOk"] = consent
-            with (
-                patch("server.model.engine_name", return_value="fixture"),
-                patch(
-                    "server.model.ask",
-                    side_effect=[
-                        (
-                            {
-                                "title": "周末水果上新",
-                                "body": "到店看看。",
-                                "cta": "来看看。",
-                            },
-                            "fixture",
-                        ),
-                        (review, "fixture"),
-                    ],
-                ) as ask,
-            ):
-                self.assertEqual(generate_copy(plan)["title"], draft["title"])
-                self.assertIn("单独遮住正文", ask.call_args.args[0])
-        locked = prepare("宣传葡萄，标题用「葡萄到家」。", {}, [], rule)
-        self.assertEqual(draft_copy(locked, 1)["title"], "葡萄到家")
-        self.assertFalse(wenan.social_headline(locked))
-
-    def test_shareable_copy_uses_the_situation_in_the_brief(self):
-        from server.creative import draft_copy
-
-        rule = dict(id="baseline", name="基础", method="moment")
-        for brief, expected in (
-            ("为轿车做试驾，带妈妈到店", "妈，副驾在那边。"),
-            ("宣传洗衣液，瓶盖带刻度", "「倒一点」到底是哪条线？"),
-            ("为百货做海报，和朋友专门来买一盒电池", "拎了两袋「顺便」，忘了买电池。"),
+    def test_copy_review_sees_photo_and_requires_exact_offer(self):
+        plan = prepare("猫和老鼠电影票9.9元", {}, [], dict(id="base", name="基础", method="moment"))
+        plan.update(kind="poster", autoCreation=True, sourceReview={"reason": "黑猫站在屋顶"})
+        draft = dict(title="今晚，屋顶见", body="一只黑猫，等你入场。电影票9.9元。", cta="问问场次")
+        with patch("server.model.engine_name", return_value="writer"), patch(
+            "server.model.ask", side_effect=[(draft, "writer"), ({"ok":True, "closingOk":True}, "writer")]
+        ) as ask:
+            cp = generate_copy(plan)
+        self.assertEqual(cp["engine"], "writer")
+        self.assertEqual(cp["title"], draft["title"])
+        self.assertIn("9.9元", cp["body"])
+        self.assertEqual(ask.call_args.args[1]["上传图片可见内容"], "黑猫站在屋顶")
+        with patch("server.model.engine_name", return_value="writer"), patch(
+            "server.model.ask", return_value=({**draft, "title":plan["original"]}, "writer")
         ):
-            with self.subTest(brief=brief):
-                plan = prepare(brief, {}, [], rule)
-                self.assertEqual(draft_copy(plan)["title"], expected)
-                plan["recent"] = [expected]
-                self.assertNotEqual(draft_copy(plan)["title"], expected)
-        unsupported = prepare("宣传洗衣液，瓶盖没有刻度", {}, [], rule)
-        self.assertNotIn("哪条线", draft_copy(unsupported)["title"])
+            self.assertEqual(generate_copy(plan)["reviewFlag"], "标题复述了输入需求")
 
-    def test_closing_action_follows_goal_and_available_channel(self):
-        from server.campaign import storyboard
-        from server.creative import draft_copy
+    def test_closing_action_uses_merchant_channel_without_stock_copy(self):
+        from server import wenan
 
         rule = dict(id="baseline", name="基础", method="moment")
-        for brief, expected in (
-            ("轿车周末试驾，请引导私信询问时间", "私信问问周末哪天能试驾。"),
-            (
-                "洗衣液仅在商品页下单，没有小程序",
-                "在商品页下单这款洗衣液。",
-            ),
-            ("百货逛街本来要买一把雨伞，周末引导到店", "周末到店，先把雨伞买上。"),
-            ("给洗衣液做海报，只要主标题", ""),
+        for brief, goal, channel in (
+            ("轿车周末试驾，请引导私信询问时间", "询问", "私信"),
+            ("洗衣液仅在商品页下单，没有小程序", "下单", "商品页"),
+            ("百货周末引导到店", "到店", ""),
         ):
             plan = prepare(brief, {}, [], rule)
-            for kind in ("poster", "copy", "video"):
-                plan["kind"] = kind
-                draft = draft_copy(plan)
-                self.assertEqual(draft["cta"], expected)
-                if expected:
-                    self.assertEqual(storyboard(plan, draft)[-1]["line"], expected)
+            self.assertEqual(wenan.conversion(plan), {"goal": goal, "channel": channel})
         plan = prepare("为洗衣液做海报，引导小程序下单", {}, [], rule)
-        with (
-            patch("server.model.engine_name", return_value="fixture"),
-            patch(
-                "server.model.ask",
-                side_effect=[
-                    (
-                        dict(
-                            title="两件白衣一起洗",
-                            body="先看看瓶身说明。",
-                            cta="扫码即可了解更多。",
-                        ),
-                        "fixture",
-                    ),
-                    (dict(ok=True, headlineOk=True, closingOk=True), "fixture"),
-                ],
-            ),
+        with patch("server.model.engine_name", return_value="writer"), patch(
+            "server.model.ask", side_effect=[
+                (dict(title="两件白衣一起洗", body="先看看瓶身说明。", cta="点链接购买。"), "writer"),
+                (dict(ok=True, headlineOk=True, closingOk=True), "writer")
+            ]
         ):
             result = generate_copy(plan)
-            self.assertEqual(result["title"], "两件白衣一起洗")
-            self.assertEqual(result["cta"], "在小程序下单这款洗衣液。")
+        self.assertEqual(result["reviewFlag"], "行动引导未通过复核")
+        self.assertFalse(result["engine"])
 
-    def test_benefit_and_emotion_reach_the_headline(self):
-        from server.campaign import benefit_scene, copy_route, storyboard
-        from server.creative import draft_copy
-        from server.prompt_agent import optimize
-
+    def test_only_approved_model_copy_or_explicit_title_can_fill_quote(self):
+        from server.creative import copy_inputs
         rule = dict(id="baseline", name="基础", method="moment")
-        for kind in ("poster", "video", "copy"):
-            titles = []
-            for audience, marker in (("帮朋友搬家", "纸箱"), ("回老家探望爸妈", "菜")):
-                plan = prepare(
-                    "宣传轿车试驾。面向" + audience + "的人。请私信询问试驾时间。",
-                    {},
-                    [],
-                    rule,
-                    facts="后排座椅可放倒",
-                )
-                plan["kind"] = kind
-                optimize(dict(kind=kind, plan=plan, asset=""), infer=False)
-                draft = draft_copy(plan)
-                self.assertIn(marker, draft["title"])
-                self.assertIn("放倒", draft["title"])
-                self.assertIn("后排座椅可放倒", draft["body"])
-                self.assertIn("私信", draft["cta"])
-                scene = benefit_scene(plan, copy_route(plan))
-                self.assertIn(scene["emotion"], plan["promptBrief"]["prompts"]["copy"])
-                self.assertEqual(storyboard(plan, draft)[0]["line"], draft["title"])
-                titles.append(draft["title"])
-            self.assertNotEqual(*titles)
-        for brief, facts in (
-            ("给轿车做试驾海报。", ""),
-            ("轿车试驾。后排可放倒，还没确认。", ""),
-            ("轿车试驾。后排不能放倒。", "后排可放倒"),
-            ("轿车试驾。竞品后排可放倒。", ""),
-        ):
-            plan = prepare(brief, {}, [], rule, facts=facts)
-            self.assertIsNone(benefit_scene(plan, copy_route(plan)))
-            self.assertNotIn("放倒", draft_copy(plan)["title"])
+        for brief in ("为轿车做试驾，带妈妈到店", "宣传洗衣液，瓶盖带刻度", "为水果店做周末海报"):
+            with self.subTest(brief=brief):
+                cp = copy_inputs(prepare(brief, {}, [], rule))
+                self.assertEqual((cp["title"], cp["body"], cp["cta"]), ("", "", ""))
+        cp = copy_inputs(prepare("宣传葡萄，标题用「葡萄到家」，仅限本店。", {}, [], rule))
+        self.assertEqual(cp["title"], "葡萄到家")
+        self.assertIn("仅限本店", cp["terms"])

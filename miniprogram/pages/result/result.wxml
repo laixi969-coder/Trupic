@@ -22,7 +22,7 @@
 </block>
 <view wx:if="{{!isMoment}}" class="panel">
   <view class="heading">专业建议</view>
-  <view class="note">换个开场：{{version.suggestion.title}}</view>
+  <view class="note">可以用文字模型重写开场。</view>
   <button class="secondary" data-action="revision" bindtap="revise" disabled="{{busy}}">应用文案建议</button>
   <block wx:if="{{version.layoutSuggestion}}">
     <view class="note">{{densePosterAdvice ? '把主标题和正文分开排，保留原文和原版供对照。' : (version.layoutSuggestion.layoutIntent || version.layoutSuggestion.intent)}}</view>

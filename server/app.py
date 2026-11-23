@@ -32,11 +32,10 @@ from .background import make_scene
 from .creative import (
     CASES,
     METHODS,
-    NUMCLAIM,
+    unconfirmed_number,
     RISK,
     draft_copy,
     generate_copy,
-    next_suggestion,
     prepare,
 )
 from .governance import active_rule, discover, run_tests, retrieve_method
@@ -235,12 +234,10 @@ def pack(c, w, all_versions=False):
         n = r["n"]
         base = f"/api/works/{w['id']}/v/{n}"
         folder = DATA / w["tenant"] / "works" / w["id"] / str(n)
-        suggestion = next_suggestion(spec, copy)[1] if all_versions else {}
         versions.append(
             dict(
                 n=n,
                 created=r["created"],
-                suggestion=suggestion,
                 layoutSuggestion=layout_alternative(spec["plan"], copy, w["kind"])
                 if all_versions and w["kind"] != "copy"
                 else None,
@@ -688,7 +685,7 @@ def preview():
         cost=cost,
         kind=s["kind"],
         ratio=s["ratio"],
-        engine=model.engine_name(),
+        engine=model.engine_name() or "未启用文字模型",
         quote=quotes.dumps({"tenant": t, "spec": s, "cost": cost}),
     )
 
@@ -759,6 +756,8 @@ def enqueue(t, v, work=None, *, moment=False):
             nxt = c.execute("SELECT MAX(n)+1 FROM version WHERE work=?", (work,)).fetchone()[0]
             s["variant"] = nxt - 1
             revisions.prepare(s, json.loads(r["copy"]), q["action"], q.get("ratio"), v.get("option", 0),q.get("instruction"),q.get("field"),q.get("region"))
+            if q.get("rewrite"):
+                s["replacement"] = q["rewrite"]
             if q["action"] == "region":
                 s["variant"] = json.loads(r["spec"])["variant"]
                 s["regionEdit"] = dict(work=work,version=q["base"],box=q["region"],instruction=q["instruction"])
@@ -838,10 +837,16 @@ def revision_quote(id):
         if action == "edit":
             instruction = revisions.resolve_instruction(spec,cp,instruction,v.get("field"))
         revisions.prepare(spec, cp, action, v.get("ratio"),instruction=instruction,field=v.get("field"),region=v.get("region"))
+        rewrite = None
+        if action == "revision":
+            rewrite = generate_copy(spec["plan"], revision_note="在保留事实与指定标题的前提下，换一个创意角度。上一稿标题：" + cp["title"])
+            if rewrite.get("reviewFlag"):
+                raise ValueError(rewrite.get("callError") or rewrite.get("revisionNote") or rewrite["reviewFlag"])
+            spec["replacement"] = rewrite
         cost = pricing.snapshot(spec, pricing.current(c), "revision")
-        quote = quotes.dumps(dict(tenant=t, work=id, base=base, action=action, ratio=v.get("ratio"),
+        quote = quotes.dumps(dict(tenant=t, work=id, base=base, action=action, rewrite=rewrite, ratio=v.get("ratio"),
                                   pricingSnapshot=spec["pricingSnapshot"], cost=cost, instruction=instruction,field=v.get("field"),region=v.get("region"),duplicate=v.get("duplicate") is True), salt="revision")
-        return jsonify(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta")} if action=="edit" else None)
+        return jsonify(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta")} if action in ("edit","revision") else None)
 
 
 @app.post("/api/works/<id>/revise")
@@ -876,13 +881,19 @@ def produce_job(id):
     try:
         if (p.get("autoCreation") and model.route("vision")["model"]) or (not p.get("bundleRole") and not p.get("autoCreation")):
             preflight(s, DATA / t / "assets")
-        if not p.get("promptBrief"):
+        cached_copy = j["copy_checkpoint"]
+        if (cached_copy and p.get("autoCreation") and not s.get("copySelected")
+                and json.loads(cached_copy).get("engine") == "本地创意规则"):
+            cached_copy = None
+        refine_preview = (p.get("autoCreation") and n == 1 and not cached_copy
+                          and not p.get("promptOptimizationAttempted") and model.route("text")["model"])
+        if not p.get("promptBrief") or refine_preview:
             if "moment" in p:
                 moments.read_photo(p)
             optimize(s)
+            p["promptOptimizationAttempted"] = True
             with db(True) as c:
                 c.execute("UPDATE job SET spec=? WHERE id=?", (dump(s), id))
-        cached_copy = j["copy_checkpoint"]
         if "moment" in p and not (cached_copy or s.get("replacement") or p["moment"].get("drafts")):
             moments.prepare_drafts(s, t)
         cp = (
@@ -891,6 +902,8 @@ def produce_job(id):
             else shared_copy(s) if p.get("autoCreation") and n == 1 else s.get("replacement")
             or (moments.first_copy(p) if "moment" in p else generate_copy(p, 0))
         )
+        if cp.get("reviewFlag") and not cp.get("engine"):
+            raise ValueError(cp.get("callError") or cp.get("revisionNote") or cp["reviewFlag"])
         ap = None
         if s["asset"]:
             with db() as c:
@@ -916,9 +929,7 @@ def produce_job(id):
         if s["kind"] == "video" and cp["storyboard"][1].get("evidence"):
             words += " " + cp["storyboard"][1]["line"]
             known += " " + p.get("markedDetail", {}).get("label", "")
-        if RISK.search(words) or any(
-            claim not in known for claim in NUMCLAIM.findall(words)
-        ):
+        if RISK.search(words) or unconfirmed_number(words, known):
             raise ValueError("检测到未经确认的经营声明，请补充事实后重新创作。")
         if not cached_copy:
             with db(True) as c:
@@ -1502,7 +1513,7 @@ def admin_state():
                 "hasPinToken": bool(cfg["pinToken"]),
                 "hasImageKey": bool(cfg["imageKey"]),
                 "hasKey": bool(cfg["key"]),
-                "engine": model.engine_name(),
+                "engine": model.engine_name() or "未启用文字模型",
             },
             skills=skill_library_catalog(c),
             works=works,

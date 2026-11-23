@@ -1,6 +1,5 @@
 """Creative planning, licensed reference methods, and grounded copy generation."""
 
-import copy as copylib
 import datetime as dt
 import hashlib
 import json
@@ -9,13 +8,10 @@ import re
 from . import model, wenan
 from .campaign import (
     LOCKED,
-    benefit_scene,
     complete_body,
-    copy_angle,
-    copy_route,
     offer_and_terms,
 )
-from .design import DIRECTIONS, direction
+from .design import direction
 
 CASES = [
     dict(
@@ -55,119 +51,19 @@ CASES = [
         brief="为面包店的可颂写一份早餐推广，用通勤前的早晨作为创意起点。",
     ),
 ]
-# Each brief can lead with a scene, a question, or an invitation.
+# Visual categories supply a subject and camera cue for layout.
 SCENES = [
-    (
-        "台球|桌球|球房",
-        "台球",
-        "下班以后，开一局",
-        "今晚，谁先开球？",
-        "把见面约在球桌边",
-        "把群聊里的「改天见」换成一声开球。约上那个总说有空的朋友，今晚在球桌边碰面。",
-        "喊上球友，一起来开球。",
-        "撞球的一瞬",
-        "pool",
-    ),
-    (
-        "火锅|锅底|涮肉|聚餐",
-        "火锅",
-        "人到齐，就开涮",
-        "今晚，谁来下第一筷？",
-        "把群聊搬到锅边",
-        "聊天框里说不完的话，留到同一张桌上。围着锅坐下，先问问朋友今天想涮什么。",
-        "把这顿饭发给想见的人。",
-        "围桌的距离",
-        "",
-    ),
-    (
-        "抹茶|奶茶|茶饮|咖啡|柑橘|饮品|果茶|饮料",
-        "饮品",
-        "把午后留给这一杯",
-        "今天，想喝哪一杯？",
-        "碰个杯，再出发",
-        "工作告一段落，给自己留一杯的时间。一个人慢慢喝，或约上身边的朋友，把今天的闲聊放进午后。",
-        "约个时间，一起来喝一杯。",
-        "手边的一杯",
-        "matcha",
-    ),
-    (
-        "面包|可颂|烘焙|甜品|蛋糕",
-        "烘焙",
-        "早一点，遇见好滋味",
-        "明早，想带走哪一口？",
-        "给早餐留个位置",
-        "出门之前，先把早餐安排好。给自己挑一份喜欢的，也可以给同行的人捎上一份。",
-        "路过时，进店挑一份。",
-        "清晨的第一口",
-        "bakery",
-    ),
-    (
-        "美容|护肤|美甲|护理|美发",
-        "日常护理",
-        "给自己留一点时间",
-        "你的护理习惯是什么？",
-        "从一个小习惯聊起",
-        "把日常护理里最拿不准的小问题记下来。聊清自己的习惯，再一起看看适合从哪一步开始。",
-        "带着你的问题来聊聊。",
-        "日常的一刻",
-        "",
-    ),
-    (
-        "花店|花束|鲜花|花艺",
-        "花艺",
-        "挑一束，带回今天",
-        "这束花，想送给谁？",
-        "给平常的一天送束花",
-        "想起一个人的时候，不妨把心意放进一束花里。来看看今天喜欢的颜色，挑给对方，也挑给自己。",
-        "说说想送花的人，一起挑一束。",
-        "挑选花束的瞬间",
-        "",
-    ),
-    (
-        "书店|图书|阅读",
-        "阅读",
-        "给下一页留点时间",
-        "下一本，想读什么？",
-        "来书架旁碰个面",
-        "沿着书架慢慢走，会遇见原本没打算寻找的那一本。把今天感兴趣的话题带来，给自己留一段阅读时间。",
-        "到店翻一翻，再做选择。",
-        "翻开一页",
-        "",
-    ),
-    (
-        "服装|穿搭|衣服|穿搭",
-        "穿搭",
-        "给今天换种穿法",
-        "下一次见面，怎么穿？",
-        "一起挑一身喜欢的",
-        "从日程里挑一个具体的场合，再想今天想穿成什么样。把喜欢的颜色记下来，到店慢慢搭配。",
-        "带上你的搭配想法来看看。",
-        "出门前的搭配",
-        "",
-    ),
-    (
-        "健身|瑜伽|运动",
-        "运动",
-        "今天，给身体一点时间",
-        "下班后，一起动一动？",
-        "把约定放进日程",
-        "忙了一天，给自己留出一段活动的时间。找个合拍的朋友，把下一次见面约在运动时。",
-        "约上伙伴，来了解一下。",
-        "出发前一刻",
-        "",
-    ),
+    ('台球|桌球|球房', '台球', '撞球的一瞬'),
+    ('火锅|锅底|涮肉|聚餐', '火锅', '围桌的距离'),
+    ('抹茶|奶茶|茶饮|咖啡|柑橘|饮品|果茶|饮料', '饮品', '手边的一杯'),
+    ('面包|可颂|烘焙|甜品|蛋糕', '烘焙', '清晨的第一口'),
+    ('美容|护肤|美甲|护理|美发', '日常护理', '日常的一刻'),
+    ('花店|花束|鲜花|花艺', '花艺', '挑选花束的瞬间'),
+    ('书店|图书|阅读', '阅读', '翻开一页'),
+    ('服装|穿搭|衣服|穿搭', '穿搭', '出门前的搭配'),
+    ('健身|瑜伽|运动', '运动', '出发前一刻'),
 ]
-FALLBACK = (
-    "",
-    "门店",
-    "把今天的好发现分享给你",
-    "这次，想为谁挑选？",
-    "给日常添个新选择",
-    "有时候，一个合适的选择就藏在路过的街角。带着自己的需要，到店看看，也聊聊你的想法。",
-    "来店里，找到你喜欢的。",
-    "日常的发现",
-    "",
-)
+FALLBACK = ("", "门店", "日常的发现")
 METHODS = {
     "moment": "从生活瞬间切入",
     "question": "用一个问题开场",
@@ -220,7 +116,6 @@ def prepare(brief, profile, history, rule, reference="", facts=""):
         sc = (
             *sc[:1],
             art["name"],
-            *sc[2:7],
             {
                 "auto": "看见车身的线条",
                 "commerce": "靠近，看见细节",
@@ -228,8 +123,7 @@ def prepare(brief, profile, history, rule, reference="", facts=""):
                 "home": "触摸日常的纹理",
                 "retail": "走进今天的好发现",
                 "beauty": "看见光落在瓶身",
-            }.get(sector, sc[7]),
-            sc[8],
+            }.get(sector, sc[2]),
         )
     goal = next(
         (
@@ -244,7 +138,7 @@ def prepare(brief, profile, history, rule, reference="", facts=""):
             ]
             if re.search(pattern, brief)
         ),
-        "引起兴趣并引导到店",
+        "介绍商品或活动",
     )
     audience = profile.get("audience") or next(
         (
@@ -290,7 +184,7 @@ def prepare(brief, profile, history, rule, reference="", facts=""):
         subject=sc[1],
         reference=match["method"],
         referenceId=match["id"],
-        shot=sc[7],
+        shot=sc[2],
         rule=rule["name"],
         ruleId=rule["id"],
         original=brief,
@@ -308,92 +202,30 @@ def promotion_terms(brief):
     return "，".join(dict.fromkeys(part for part in clauses if conditions.match(part)))
 
 
-def draft_copy(plan, variant=0):
-    brief, prof = plan["original"], plan["profile"]
-    sc = scene_for(brief, prof)
-    index = (list(METHODS).index(plan["method"]) + variant) % 3
-    title = sc[2 + index]
-    body = sc[5]
-    cta = sc[6]
-    interpreted = plan.get("promptBrief", {}).get("reading", {}).get("product", "")
-    product = (interpreted if interpreted != plan["subject"] else "") or prof.get(
-        "product", ""
-    ).strip()
-    for word in [
-        "热可可",
-        "燕麦拿铁",
-        "茉莉奶绿",
-        "草莓蛋糕",
-        "番茄锅底",
-        "桂花乌龙",
-        "抹茶拿铁",
-        "桂花拿铁",
-        "柑橘气泡水",
-        "芝士蛋糕",
-        "抹茶",
-        "柑橘",
-        "可颂",
-        "奶茶",
-        "生椰拿铁",
-    ]:
-        if word in brief:
-            product = word
-            break
-    if sc == FALLBACK and not product and plan.get("sector", "general") == "general":
-        found = re.search(
-            r"(?:宣传|推广|介绍|上新|为)([\u4e00-\u9fffA-Za-z0-9]{2,12}?)(?:做|写|的|[，。！、\s]|$)",
-            brief,
-        )
-        product = found.group(1) if found else prof.get("name", "")
-    sector = plan.get("sector", "general")
-    if sc == FALLBACK and sector != "general":
-        art = DIRECTIONS[sector]
-        title = (art["headline"], plan["shot"], "挑选" + (product or art["name"]))[
-            index
-        ]
-        body, cta = art["copy"], art["cta"]
-    elif sc == FALLBACK and product:
-        title = (product, product + "怎么挑？", "这次，看看" + product)[index]
-    use_social = wenan.social_headline(plan)
-    direction = copy_angle(plan, index, use_social)
-    if use_social and not direction and product and sc == FALLBACK:
-        # For an unfamiliar SKU, give the audience a use for the line without inventing specifications.
-        title = (
-            f"刚看到{product}，就想到你。",
-            f"你挑{product}，第一眼看哪儿？",
-            f"你挑{product}的眼光，借我用一下。",
-        )[index]
-    if direction:
-        title, body, cta = direction["title"], direction["body"], direction["cta"]
-    if plan["goal"] == "分享实用知识":
-        title = "关于" + (product or sc[1]) + "，你想问什么？"
-        body = "挑选之前，先想清使用场景和自己的偏好。把最想了解的问题写下来，我们从你的实际需要聊起。"
-    if plan["goal"] == "引导咨询预约" and "试驾" not in brief:
-        cta = "发来方便的时间，我们约着见。"
-    if prof.get("tone") == "简洁直接":
-        body = re.split(r"(?<=[。！？])", body, maxsplit=1)[0]
+def copy_inputs(plan):
+    """Quote metadata and merchant-specified text, before a model writes any copy."""
+    locked = LOCKED.search(plan["original"])
     offer, terms = offer_and_terms(plan, promotion_terms)
-    locked = LOCKED.search(brief)
-    if locked:
-        title = locked.group(1)
-    if product and product not in title + body:
-        body = product + "。" + body
-    body = complete_body(plan, body, offer, terms)
-    return wenan.apply_local(
-        plan,
-        dict(
-            title=title,
-            detailLine=direction.get("detailLine", ""),
-            offer=offer,
-            terms=terms,
-            body=body,
-            cta=cta,
-            engine="本地创意规则",
-            angle=plan["angle"],
-            method=plan["method"],
-            shot=plan["shot"],
-        ),
-    )
+    return dict(title=locked.group(1) if locked else "", body="", cta="", detailLine="",
+                offer=offer, terms=terms, angle=plan["angle"], method=plan["method"],
+                shot=plan["shot"], engine="", review="")
+
+
+def draft_copy(plan, variant=0):
+    """Prepare a factual preview for older quote and internal preview callers."""
+    draft = copy_inputs(plan)
+    draft["title"] = draft["title"] or plan["profile"].get("product") or plan["subject"]
+    draft["body"] = complete_body(plan, "", draft["offer"], draft["terms"])
+    draft["detailLine"] = draft["body"]
+    draft["engine"] = "商家资料预览"
+    return draft
+
+
+def unconfirmed_number(content, known):
+    def claims(text):
+        return {re.sub(r"\s+", "", match) for match in NUMCLAIM.findall(text)}
+
+    return bool(claims(content) - claims(known))
 
 
 def unsupported_copy(content, known):
@@ -415,21 +247,29 @@ def unsupported_copy(content, known):
     )
     return (
         RISK.search(content)
-        or any(x not in known for x in NUMCLAIM.findall(content))
+        or unconfirmed_number(content, known)
         or any(x in content and x not in known for x in guarded)
     )
 
 
-def generate_copy(plan, variant=0):
-    base = draft_copy(plan, variant)
-    if model.engine_name() == "本地创意规则":
-        return base
+def generate_copy(plan, variant=0, *, revision_note=""):
+    base = copy_inputs(plan)
+    if not model.engine_name():
+        raise ValueError("请在模型平台启用文字模型后生成文案。")
     spec = wenan.spec_line(plan)
     skill = wenan.instructions(plan)
     prompt = (
         skill
         + "\n按上述 Skill 和商家要求写成品。只返回 JSON 对象，含 title、body、cta、detailLine。cta 在无需行动引导时可为空。detailLine 为可选的短片中段字幕。目标篇幅按用户要求和当前交付尺寸。"
     )
+    prompt += " 根据素材重新创作，标题不要照抄整句需求，明确指定的标题和规格须逐字保留。"
+    action = wenan.conversion(plan)
+    if not action:
+        prompt += " 本次没有指定交易动作，cta 留空。片名和商品名是资料，除非用户明确指定标题，否则可以另写创意标题。"
+    elif not action["channel"]:
+        prompt += " 未提供渠道，不得写点击、私信、扫码或拨打电话。"
+    if revision_note:
+        prompt += " 上一稿需要重写：" + revision_note + "。围绕用户提供的主题重新写标题和正文，保留明确指定的字句和交易条件。不要复述创作需求。"
     if spec:
         prompt += " 本次只交一行已给定的规格，放入 title，body 与 cta 留空。"
     try:
@@ -437,7 +277,7 @@ def generate_copy(plan, variant=0):
         val, engine = model.ask(
             prompt,
             {
-                "plan": plan,
+                "plan": {k: plan[k] for k in ("original", "facts", "profile", "sourceReview", "goal", "kind") if k in plan},
                 "writingBrief": directions.get("copy", ""),
                 "filmBrief": directions.get("video", ""),
                 "variation": variant,
@@ -451,11 +291,14 @@ def generate_copy(plan, variant=0):
                 <= maxlen
             ):
                 return {**base, "reviewFlag": "模型草稿格式异常"}
+        if (not spec and not LOCKED.search(plan["original"]) and not wenan.factual_only(plan["original"])
+                and val["title"].strip() == plan["original"].strip()):
+            return {**base, "reviewFlag": "标题复述了输入需求"}
         if spec and (
             val["title"].strip() != spec or val["body"].strip() or val["cta"].strip()
         ):
             return {**base, "reviewFlag": "模型草稿格式异常"}
-        if wenan.no_cta(plan):
+        if not action:
             val["cta"] = ""
         detail = val.get("detailLine", "")
         if not isinstance(detail, str) or len(detail) > 32:
@@ -481,39 +324,37 @@ def generate_copy(plan, variant=0):
             if wenan.social_headline(plan)
             else ""
         )
-        benefit = benefit_scene(plan, copy_route(plan)) if headline_review else None
-        if benefit:
-            headline_review += " 本稿指定了已确认卖点。标题中的情绪与分享理由必须依赖该卖点，审核通过时在 benefitEvidence 逐字返回所用的卖点原文。"
-        action = wenan.conversion(plan)
         action_review = (
             " 独立审末句，核对目标、与商品的关系、入口依据及动作是否唯一。通过时另返 closingOk 为 true。"
             if action
             else ""
         )
+        review_prompt = (
+            "核对草稿与商家明确要求、原始资料和原图观察。价格、片名、商品名和限制条件必须准确。"
+            "图片中可见的细节和邀请式创意表达可以使用。只有出现具体事实错误、杜撰承诺或违反明确要求才退稿。"
+            "行动引导可提出询问，不得编造预约或购买渠道。返回 JSON，ok 为布尔值，reason 简短写出依据。"
+            + headline_review + action_review
+        )
         review, _ = model.ask(
-            skill
-            + "\n本次只执行独立审稿，检查媒介、品牌关联、必含事实和明确禁区。你是独立的事实审核员。核对成品与商家原始需求及档案，拒绝一切未提供的价格、商品特点、优惠或功效。检查文案是否回应营销目标、可读性、行动引导、图片与文案创意是否匹配。返回 JSON：ok 布尔值，reason 简短中文说明。"
-            + headline_review
-            + action_review,
+            review_prompt,
             {
                 "source": known,
                 "visual": plan["shot"],
+                "上传图片可见内容": plan.get("sourceReview", {}).get("reason", ""),
                 "goal": plan["goal"],
                 "closing": action,
-                "benefitEvidence": benefit["evidence"] if benefit else "",
                 "draft": val,
             },
-            180,
+            450,
         )
         if (
             review.get("ok") is not True
             or (headline_review and review.get("headlineOk") is not True)
-            or (benefit and review.get("benefitEvidence") != benefit["evidence"])
         ):
             return {
                 **base,
                 "reviewFlag": "模型草稿复核未通过",
-                "review": "模型草稿未通过复核，已使用保守版本。",
+                "revisionNote": str(review.get("reason", ""))[:200],
             }
         if action and (
             review.get("closingOk") is not True
@@ -537,7 +378,8 @@ def generate_copy(plan, variant=0):
                 )
             )
         ):
-            val["cta"] = action["line"]
+            return {**base, "reviewFlag": "行动引导未通过复核",
+                    "revisionNote": "请按照商家要求写一个可执行的行动，只使用已提供的渠道。"}
         return {
             **base,
             **{k: val[k].strip() for k in ("title", "body", "cta")},
@@ -556,27 +398,8 @@ def generate_copy(plan, variant=0):
             **base,
             "callError": model.copy_failure_message(exc),
             "reviewFlag": "模型调用未完成",
-            "review": "模型未返回可用内容，已使用本地创意规则。",
+            "review": "模型未返回可用内容。",
         }
-
-
-def next_suggestion(spec, current):
-    p = copylib.deepcopy(spec["plan"])
-    start = list(METHODS).index(p["method"])
-    for step in range(1, 4):
-        p["method"] = list(METHODS)[(start + step) % 3]
-        p["angle"] = METHODS[p["method"]]
-        result = draft_copy(p)
-        if result["title"] != current["title"]:
-            break
-    if (
-        result["title"] == current["title"]
-        and not LOCKED.search(p["original"])
-        and not wenan.spec_line(p)
-        and not (result["offer"] and not result["cta"])
-    ):
-        result["title"] = p["subject"] + "，从这件小事开始"
-    return p, result
 
 
 def recommendations(profile, history):

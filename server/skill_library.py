@@ -166,7 +166,7 @@ def effective_versions(c, tenant):
 
 
 def manage_version(c, actor, data):
-    from .creative import RISK, UNKNOWN, draft_copy, prepare
+    from .creative import RISK, UNKNOWN, prepare
     from .prompt_agent import optimize
     from .store import audit, dump, now
 
@@ -248,8 +248,7 @@ def manage_version(c, actor, data):
                 prompts = trial["promptBrief"]["prompts"]
                 samples.append(prompts)
                 if variant is candidate:
-                    cp = draft_copy(trial)
-                    ok = bool(cp["title"] and cp["body"]) and all(
+                    ok = bool(prompts) and all(
                         instructions[k] in v for k, v in prompts.items()
                     )
             tests.append(

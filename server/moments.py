@@ -6,8 +6,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .copy_choices import write_options
-from .creative import draft_copy
-from .campaign import ROUTES, copy_route
+from .campaign import ROUTES
 from . import wenan
 
 
@@ -51,31 +50,15 @@ def prepare_drafts(spec, tenant):
     """Review candidates once per work. The result page reuses the same reviewed text."""
     plan = spec["plan"]
     moment = plan["moment"]
-    local = [draft_copy(plan, variant) for variant in range(3)]
-    try:
-        reviewed = write_options(spec, tenant)
-    except (ValueError, OSError) as exc:
-        reviewed = []
-        moment["copyFallback"] = str(exc)[:160]
+    reviewed = write_options(spec, tenant)
     note = moment["note"]
-    candidates = []
-    route = copy_route(plan) or {}
-    # A model can return its own prompt as a reply, even after approving the line.
-    # Prefer a grounded local direction over that placeholder.
     if wenan.social_headline(plan):
         reviewed = [d for d in reviewed if concrete_exchange(d.get("sharingReview", {}))]
-        if not note and (scene := route.get("momentDraft")):
-            local.insert(0, {**local[0], "title": scene["title"], "caption": scene["caption"], "motif": scene["motif"],
-                             "posterDeck": scene.get("deck", ""),
-                             "sharingReview": {k: scene[k] for k in ("shareTo", "reply")}})
-    invitation = route.get("meetToday")
-    if (invitation and moment.get("clock") and "今天" in note and wenan.social_headline(plan)
-            and re.search(invitation["match"], note) and not re.search("明天|后天|取消|不要|谢绝|售罄|卖完|休息", note)):
-        candidates.append({**local[0], "title": invitation["title"],
-                           "sharingReview": {k: invitation[k] for k in ("shareTo", "reply")}})
+    if not reviewed:
+        raise ValueError("没有通过复核的朋友圈文案，请重新生成。")
     seen = set()
     options = []
-    for draft in [*candidates, *reviewed, *local]:
+    for draft in reviewed:
         title = draft["title"].strip()
         identity = re.sub(r"[，。！？、,.!?\s]", "", title)
         if not identity or identity in seen:
@@ -84,7 +67,7 @@ def prepare_drafts(spec, tenant):
         # A one-line caption is sufficient for a photo. Model-invented descriptions
         # and sales claims must not displace the actual shopkeeper's message.
         caption = draft.get("caption") or title
-        if draft in reviewed and draft.get("body") and draft["body"] != title:
+        if draft.get("body") and draft["body"] != title:
             caption = title + "\n" + draft["body"]
         if note:
             caption = note if title in note else title + "\n" + note

@@ -2,7 +2,7 @@
 
 import re
 
-from .creative import next_suggestion, RISK, NUMCLAIM
+from .creative import RISK, NUMCLAIM
 from .design import layout_alternative, next_style
 from .formats import RATIOS, output_spec
 from .prompt_agent import optimize
@@ -176,7 +176,6 @@ def prepare(spec, cp, action, ratio=None, option=0, instruction=None, field=None
             raise ValueError("请选择有效的精简文案。")
         cp.update(body=values[option], detailLine=values[option])
     elif action in ("revision", "redesign"):
-        spec["plan"], cp = next_suggestion(spec, cp)
         if action == "redesign" and (design := spec["plan"].get("design")):
             spec["plan"]["design"] = next_style(design)
     else:
