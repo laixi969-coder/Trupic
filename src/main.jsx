@@ -195,6 +195,9 @@ function App() {
   };
   const refresh = async () => {
     const d = await api("/state");
+    if (!Array.isArray(d?.videoDurations) || d.prices?.version == null) {
+      throw new Error("工作台与服务端版本不一致，请重启新版服务后重新连接。");
+    }
     setData(d);
     return d;
   };
