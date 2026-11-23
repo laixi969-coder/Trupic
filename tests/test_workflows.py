@@ -1323,7 +1323,9 @@ class WorkflowTests(unittest.TestCase):
             with patch.object(model, "ask", side_effect=lambda *args: model.response_object("无效格式")):
                 self.assertEqual(generate_copy(plan)["reviewFlag"], "模型回复格式异常")
             with patch.object(model, "ask", side_effect=TimeoutError()):
-                self.assertEqual(generate_copy(plan)["reviewFlag"], "模型调用未完成")
+                failed = generate_copy(plan)
+                self.assertEqual(failed["reviewFlag"], "模型调用未完成")
+                self.assertIn("超时", failed["callError"])
 
     def test_rejected_shared_draft_uses_checked_fallback_and_records_model(self):
         from server import providers

@@ -7,7 +7,9 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 from .store import DATA, db, now
 from . import providers, costs
@@ -181,6 +183,21 @@ class InvalidModelOutput(ValueError):
     """The service responded, but its generated content failed validation."""
 
 
+def copy_failure_message(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code in (401, 403):
+            return f"文案平台拒绝访问（HTTP {exc.code}），请检查密钥及模型权限。"
+        if exc.code == 429:
+            return "文案平台限制了此次调用（HTTP 429），请检查额度或稍后重试。"
+        return f"文案平台返回 HTTP {exc.code}，请检查平台状态和所选模型。"
+    cause = getattr(exc, "reason", exc)
+    if isinstance(cause, TimeoutError):
+        return "等待文案平台回复超时，请稍后重试此项。"
+    if isinstance(exc, OSError):
+        return "无法连接文案平台，请检查网络后重试此项。"
+    return "文案调用未完成，请检查平台调用记录后重试此项。"
+
+
 def response_object(raw):
     if not isinstance(raw, str):
         raise InvalidModelOutput("模型未返回有效对象。")
@@ -208,6 +225,13 @@ def routed_chat(cfg, messages, max_tokens, kind):
 
 def chat_request(cfg, name, messages, max_tokens, kind):
     data = {"model": name, "messages": messages, "max_tokens": max_tokens}
+    # Qwen3.8 Flash enables thinking by default. Our short JSON drafting and
+    # review requests use its direct-answer mode on DashScope.
+    host = urlsplit(cfg["url"]).hostname or ""
+    if kind == "text" and name == "qwen3.8-flash" and host in (
+        "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com",
+    ):
+        data["enable_thinking"] = False
     if schema := cfg.get("responseSchema"):
         data["response_format"] = {"type": "json_schema", "json_schema": {"name": "visual_audit", "schema": schema}}
     headers = {"Content-Type": "application/json", "User-Agent": "Trupic/1.0"}
@@ -220,7 +244,7 @@ def chat_request(cfg, name, messages, max_tokens, kind):
     ok = False
     try:
         with urllib.request.urlopen(
-            req, timeout=90 if kind == "vision" else 24
+            req, timeout=90
         ) as response:
             body = response.read(250_001)
         if len(body) > 250_000:

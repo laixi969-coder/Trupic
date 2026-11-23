@@ -551,9 +551,10 @@ def generate_copy(plan, variant=0):
         }
     except model.InvalidModelOutput:
         return {**base, "reviewFlag": "模型回复格式异常"}
-    except Exception:
+    except Exception as exc:
         return {
             **base,
+            "callError": model.copy_failure_message(exc),
             "reviewFlag": "模型调用未完成",
             "review": "模型未返回可用内容，已使用本地创意规则。",
         }

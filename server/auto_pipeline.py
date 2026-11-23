@@ -27,11 +27,13 @@ def shared_copy(spec):
         if not approved:
             writing = copy.deepcopy(plan)
             writing['kind'] = 'copy'
+            failure_message = "文案制作未完成，请检查文案模型配置后重试此项。"
             try:
                 approved = generate_copy(writing)
                 flag = approved.get("reviewFlag")
                 if flag == "模型调用未完成":
-                    raise ValueError("文案服务未返回有效结果，请检查连接后重试。")
+                    failure_message = approved.get("callError") or failure_message
+                    raise ValueError(failure_message)
                 if flag:
                     # Rebuild from verified merchant inputs; never release the rejected draft.
                     approved = draft_copy(writing)
@@ -46,7 +48,7 @@ def shared_copy(spec):
                     approved['body'] += '；' + '；'.join(missing)
                 summary['sharedCopy'] = approved
             except Exception as exc:
-                summary['copyError'] = '文案制作未完成，请检查文案模型配置后重试此项。'
+                summary['copyError'] = failure_message
                 with db(True) as c:
                     c.execute('UPDATE creative_run SET plan=? WHERE id=?', (dump(summary),run_id))
                 raise ValueError(summary['copyError']) from exc
