@@ -3,6 +3,8 @@
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageStat
 
+from .posters import extend_edges
+
 # Picture, brand, headline, offer/conditions and action, in that order.
 LAYOUTS = {
     "food-motion": {
@@ -101,16 +103,44 @@ def stage(treatment, size, pigment, lighting):
     return Image.fromarray(rgb).resize(size, Image.Resampling.BILINEAR)
 
 
-def picture_layout(treatment, size, photo, lighting, layers):
+def edge_light(photo, size, bounds, flat):
+    """Diffuse the photo edges into the text area, keeping the source on its own layer."""
+    proxy = (240, max(1, round(240 * size[1] / size[0])))
+    l0, t0, r0, b0 = (
+        round(v * proxy[i % 2] / size[i % 2])
+        for i, v in enumerate(bounds)
+    )
+    r0, b0 = max(l0 + 1, r0), max(t0 + 1, b0)
+    glow = extend_edges(photo.convert("RGB"), proxy, (l0, t0, r0, b0))
+    wide = size[0] > size[1]
+    edge = glow.crop((r0 - 1, t0, r0, b0) if wide else (l0, b0 - 1, r0, b0))
+    tone = tuple(ImageStat.Stat(edge).median)
+    if flat:
+        return Image.new("RGB", size, tone)
+    yy, xx = np.ogrid[:proxy[1], :proxy[0]]
+    dx = np.maximum(0, np.maximum(l0 - xx, xx - r0 + 1))
+    dy = np.maximum(0, np.maximum(t0 - yy, yy - b0 + 1))
+    distance = np.hypot(dx, dy) / min(proxy)
+    mask = Image.fromarray(np.uint8(255 * np.clip(distance / 0.08, 0, 1)))
+    glow.paste(glow.filter(ImageFilter.GaussianBlur(8)), mask=mask)
+    mask = Image.fromarray(np.uint8(255 * np.clip(distance / 0.23, 0, 1)))
+    glow.paste(tone, (0, 0, *proxy), mask)
+    plate = glow.resize(size, Image.Resampling.BILINEAR)
+    left, top, right, bottom = bounds
+    ImageDraw.Draw(plate).rectangle((left, top, right - 1, bottom - 1), fill=tone)
+    return plate
+
+
+def picture_layout(treatment, size, photo, lighting, layers, photo_area=None, repair=False):
     """Fit source pixels within a reserved picture zone and keep text areas clear."""
     pigment = mean_color(photo)
     plate = stage(treatment, size, pigment, lighting)
-    if layers is not None:
-        layers.append(("stage", plate.copy(), (0, 0)))
     if photo is None:
+        if layers is not None:
+            layers.append(("stage", plate.copy(), (0, 0)))
         return plate, None
 
-    area = pixel_box(boxes(treatment, size)[0], size)
+    area = photo_area or pixel_box(boxes(treatment, size)[0], size)
     a, b, c, d = area
     alpha = photo.getchannel("A") if photo.mode == "RGBA" else None
     bounds = alpha.getbbox() if alpha is not None else None
@@ -118,7 +148,7 @@ def picture_layout(treatment, size, photo, lighting, layers):
     scale = min((c - a) / (r - l), (d - b) / (bottom - t))
     pw, ph = max(1, round(photo.width * scale)), max(1, round(photo.height * scale))
     x = round((a + c) / 2 - (l + r) * pw / (2 * photo.width))
-    if treatment == "photo-grid":
+    if treatment == "photo-grid" and not photo_area:
         x = round(a - l * pw / photo.width)
     y = round((b + d) / 2 - (t + bottom) * ph / (2 * photo.height))
     visible = (
@@ -136,8 +166,14 @@ def picture_layout(treatment, size, photo, lighting, layers):
             image, position, image.getchannel("A") if image.mode == "RGBA" else None
         )
 
+    px, py, pr, pb = map(round, visible)
+    if photo_area and (not alpha or alpha.getextrema() == (255, 255)):
+        plate = edge_light(photo, size, (px, py, max(px + 1, pr), max(py + 1, pb)), repair)
+    if layers is not None:
+        layers.append(("stage", plate.copy(), (0, 0)))
+
     unit = min(size)
-    if treatment == "photo-grid":
+    if treatment == "photo-grid" and not photo_area:
         rules = Image.new("RGBA", size)
         draw = ImageDraw.Draw(rules)
         gap = unit * 0.012
@@ -147,7 +183,7 @@ def picture_layout(treatment, size, photo, lighting, layers):
         footer = (edge[0], edge[3], min(c + gap, edge[2] + unit * 0.06), edge[3])
         draw.line(footer, fill=ink, width=max(2, round(unit * 0.004)))
         add_layer("picture-frame", rules)
-    elif bounds:
+    elif bounds and not photo_area:
         shadow = Image.new("L", size)
         ImageDraw.Draw(shadow).ellipse(
             (left, ground - unit * 0.014, right, ground + unit * 0.032), fill=122
@@ -155,7 +191,6 @@ def picture_layout(treatment, size, photo, lighting, layers):
         shade = Image.new("RGBA", size, (10, 9, 7))
         shade.putalpha(shadow.filter(ImageFilter.GaussianBlur(unit * 0.015)))
         add_layer("contact-shadow", shade)
-    px, py, pr, pb = map(round, visible)
     fitted = photo.crop((l, t, r, bottom)).resize(
         (max(1, pr - px), max(1, pb - py)), Image.Resampling.LANCZOS
     )

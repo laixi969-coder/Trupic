@@ -1161,13 +1161,13 @@ function App() {
                       </button>
                       {versionData.layoutSuggestion && (
                         <>
-                          <p>{versionData.layoutSuggestion.intent}</p>
+                          <p>{versionData.layoutSuggestion.layoutIntent || versionData.layoutSuggestion.intent}</p>
                           <button
                             className="textbtn rethink"
                             disabled={!!busy || !!job}
                             onClick={() => launch("layout")}
                           >
-                            应用{versionData.layoutSuggestion?.name}版式
+                            {versionData.layoutSuggestion.buttonLabel || `应用${versionData.layoutSuggestion.name}版式`}
                           </button>
                         </>
                       )}

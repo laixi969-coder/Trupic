@@ -169,7 +169,20 @@ def next_style(current):
     return {"id": key, "selection": "auto", **STYLES[key]}
 
 
-def layout_alternative(plan, copy):
+def layout_alternative(plan, copy, kind):
     current = (plan.get("design") or choose_style(plan))["id"]
+    if kind == "poster" and current == "photo-grid":
+        framed = plan.get("design", {}).get("photoLayout") == "bleed"
+        if framed:
+            label, intent = "切回取景框", "沿原片外缘留纸边，标题与照片分区。"
+        elif copy.get("offer"):
+            label = "突出优惠与有效期" if re.search(r"有效期|截至|活动时间|活动日期", copy.get("terms") or "") else "突出优惠"
+            intent = "放大已确认的优惠，有适用条件时紧跟优惠排字。"
+        else:
+            label, intent = "换成满版摄影", "让照片的边缘光色铺满画幅，按标题实际行数留出连续字区。"
+        return {
+            **(plan.get("design") or choose_style(plan)), "photoLayout": "framed" if framed else "bleed",
+            "buttonLabel": label, "layoutIntent": intent,
+        }
     preferred = "swiss" if copy.get("offer") else "editorial"
     return choose_style(plan, "product" if preferred == current else preferred)

@@ -144,7 +144,7 @@ class Typesetter:
             lines.append(line.rstrip())
         return lines
 
-    def _layout(self, text, size, role, width):
+    def measure(self, text, size, role, width):
         lines = self.wrap(text, size, role, width)
         rows = []
         for line in lines:
@@ -178,7 +178,7 @@ class Typesetter:
         high = max(low, int(size))
         while low <= high:
             s = (low + high) // 2
-            rows, asc, desc, step = self._layout(text, s, role, width - 3)
+            rows, asc, desc, step = self.measure(text, s, role, width - 3)
             actual = asc + desc + step * (len(rows) - 1)
             if (
                 (line_limit is None or len(rows) <= line_limit)

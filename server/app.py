@@ -239,7 +239,7 @@ def pack(c, w, all_versions=False):
                 n=n,
                 created=r["created"],
                 suggestion=suggestion,
-                layoutSuggestion=layout_alternative(spec["plan"], copy)
+                layoutSuggestion=layout_alternative(spec["plan"], copy, w["kind"])
                 if all_versions and w["kind"] != "copy"
                 else None,
                 **copy,
@@ -693,7 +693,8 @@ def enqueue(t, v, work=None):
             if action == "layout":
                 if s["kind"] == "copy":
                     raise ValueError("纯文案作品无需调整画面版式。")
-                s["plan"]["design"] = layout_alternative(s["plan"], current_copy)
+                design = layout_alternative(s["plan"], current_copy, s["kind"])
+                s["plan"]["design"] = {k: v for k, v in design.items() if k not in ("buttonLabel", "layoutIntent")}
                 s["plan"]["layoutOverride"] = True
                 s["replacement"] = current_copy
             else:

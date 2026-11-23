@@ -49,6 +49,10 @@ def direct(plan, style, product, focus):
         mechanism, feature, detail = "原片取景与编辑线", "原图边缘、视线或运动方向", ""
         concept = "完整保留原片，用真实的取景框边缘对齐标题与边注。选择一处结构线延伸阅读，边角让信息区与照片保持联系。"
         reference = "本地 24→25、32→33、34→35 分别借实物边、建筑边和道路方向组织图文。"
+        if plan.get("design", {}).get("photoLayout") == "bleed":
+            methods.append("layout-grid")
+            mechanism = "原片延色与关系网格"
+            concept = "原片贴近画幅边缘，延续边缘光色。按实际标题行数给字区留量，横幅从照片读向文字，有优惠时把数字与适用条件成组。"
     elif style == "riso":
         methods += ["mono-color", "photo-riso-poster"]
         brief = positive

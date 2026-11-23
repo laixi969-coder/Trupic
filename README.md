@@ -166,6 +166,8 @@ npm run build
 
 新增「食欲定格」「留白光影」「照片编排」。例如「日式美食，居酒屋暗调」「留白光影，突出瓶身反光」「照片编排，保留完整骑行原片」可直接写进需求，也可在网页手选。「灵感广场 → 海报版式」提供对应实排样张。PNG 完成原图和交易信息检查后交付，SVG 保留照片、图框、底色和排字图层。[35 张样本与 Pinterest 拆解](.agents/skills/trupic-commercial-poster/references/poster-reference-review.md)
 
+「照片编排」海报可在作品页的「专业建议」中切换取景框与满版摄影。满版稿按实际字体和文案长度安排原片，横幅在照片侧边排字，有优惠时把数字和有效期排在一起。改稿复用原片与已确认文案，保留原版本，可继续下载可编辑 SVG。[排版方法](.agents/skills/layout-grid/SKILL.md)
+
 短片将摄影画面与字幕分开渲染，按开场、细节与收束调整取景。交付前解码导出的 MP4，再检查各镜实际商品及所选标识。运营后台可分别选择文本和视觉平台，查看调用次数、耗时、错误及供应商返回的 token 用量。供应商报价及真实账单另行核对。设计来源及具体取舍见[商业海报视觉研究](.agents/skills/trupic-commercial-poster/references/visual-study.md)。
 
 商品主视觉会结合已确认资料与实物剪影选择构图。摄影器材可用取景投影，原色机身与其型号文字叠放。食材海报可从原图取色，按食材名称和主体轮廓安排前后景。短片作品页的「下载剪辑素材包」包含净画面、逐镜透明字层、可修改字幕 SRT、音轨、CMX 剪点表和镜头说明。三个镜头分别借鉴分层视差、细节慢推和片尾定版。[video-shotcraft 镜头库](https://github.com/Vincentwei1021/video-shotcraft/tree/59f3e9b9e936ff2bce0e18446226d770a3f2f61f/references/shots)

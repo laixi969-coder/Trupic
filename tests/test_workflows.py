@@ -957,6 +957,22 @@ class WorkflowTests(unittest.TestCase):
                     self.assertIn(b'id="typography"', svg.data)
                     if style == "photo-grid":
                         self.assertIn(b'id="picture-frame"', svg.data)
+                if style == "photo-grid":
+                    url = "works/" + job["work"]
+                    for base, mode in ((1, "bleed"), (2, "framed")):
+                        j = post(self.c, url + "/revise", base=base, action="layout", requestKey=uuid.uuid4().hex).json
+                        done = self.finish(j["id"])
+                        self.assertEqual(done["state"], "complete", done)
+                        versions = self.c.get("/api/" + url).json["versions"]
+                        latest = versions[0]
+                        self.assertEqual(len(versions), base + 1)
+                        self.assertEqual(latest["plan"]["design"]["id"], style)
+                        self.assertEqual(latest["plan"]["design"]["photoLayout"], mode)
+                        for field in ("title", "offer", "terms", "body", "cta", "asset", "ratio"):
+                            self.assertEqual(latest[field], version[field])
+                        with self.c.get(latest["designSource"]) as svg:
+                            self.assertIn(b'id="source-photo"', svg.data)
+                            self.assertEqual(b'id="picture-frame"' in svg.data, mode == "framed")
 
     def test_weekly_local_and_free(self):
         self.admin()

@@ -8,6 +8,7 @@ from .posters import SCENES, backdrop, extend_edges, luminance
 from .design import DIRECTIONS
 from .poster_composition import LAYOUTS, boxes as reference_boxes, picture_layout
 from .shot_detail import textured_patch
+from .photo_grid import bleed_layout
 
 
 def video_stage(image):
@@ -74,7 +75,7 @@ def print_plate(photo, size, palette, layers=None):
     return paper
 
 
-def photograph(plan, asset, background, size, index, image_layers, repair, ts, detail=None):
+def photograph(plan, asset, background, size, index, image_layers, repair, ts, detail=None, photo_area=None):
     w, h = size
     wide = w > h
     if index == 2 and not detail and plan.get("identityRegion"):
@@ -91,7 +92,9 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts, d
         if source:
             with Image.open(source) as opened:
                 photo = opened.convert("RGBA" if "A" in opened.getbands() else "RGB")
-        return picture_layout(treatment, size, photo, art.get("lighting"), image_layers)
+        return picture_layout(
+            treatment, size, photo, art.get("lighting"), image_layers, photo_area, repair
+        )
     if not asset:
         sector = DIRECTIONS.get(plan.get("sector"), DIRECTIONS["general"])
         stage = backdrop(plan, None, size, "product", 0, index, background, sector)
@@ -287,9 +290,15 @@ def campaign_frame(
         art = {k:v for k,v in art.items() if k not in ("print","composition","story")}
     treatment = art.get("composition") if not shot else None
     reference_layout = LAYOUTS.get(treatment)
+    photo_area = entries = None
+    if treatment == "photo-grid" and plan.get("design", {}).get("photoLayout") == "bleed":
+        brand = plan["profile"].get("name", "")
+        if not asset and (background or plan.get("scenePhoto")):
+            brand = (brand + "  创意场景示意").strip()
+        photo_area, entries = bleed_layout(size, ts, brand, copy, art.get("detail"))
     scene, box = photograph(
         plan, asset, background, size, index, image_layers, repair, ts,
-        (shot or {}).get("evidence") if index == 2 else None,
+        (shot or {}).get("evidence") if index == 2 else None, photo_area,
     )
     layer = Image.new("RGBA", size)
     draw = ImageDraw.Draw(layer)
@@ -342,6 +351,12 @@ def campaign_frame(
                 )
                 image_layers.append(("letterforms", patch, bounds[:2]))
         scene = marked
+    if entries is not None:
+        for value, role, points, area in entries:
+            tone = scene.crop(area).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+            ink = "#181417" if luminance(tone) > 0.22 else "#fffaf1"
+            ts.draw(draw, value, area, points, role, ink)
+        return scene, layer, box
     if wide:
         brand = (0.05, 0.085, 0.43, 0.15)
         headline = (0.05, 0.19, 0.45, 0.60)
