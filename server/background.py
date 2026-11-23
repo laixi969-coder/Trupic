@@ -16,12 +16,24 @@ from . import qwen_image
 
 
 def make_scene(folder, plan, asset, kind, fresh, strict=False):
+    primary = route("image")
+    backup = primary.get("backup")
+    try:
+        return generate_scene(primary, folder, plan, asset, kind, fresh, strict or bool(backup))
+    except ValueError as exc:
+        if not backup or not isinstance(exc.__cause__, OSError):
+            if backup and not strict and exc.__cause__ is not None:
+                return None, "本地排版（图像服务未返回可用画面）"
+            raise
+        return generate_scene(backup, folder, plan, asset, kind, fresh, strict)
+
+
+def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
     art_direction = plan.get("posterArt", {})
     if kind != "copy" and art_direction.get("print"):
         return None, "实拍照片孔版分色"
     if asset and asset.name == "subject.png" and art_direction.get("composition") == "material":
         return None, "商品原片纹理取景"
-    selected = route("image")
     cfg = dict(imageUrl=selected["url"], imageModel=selected["model"], imageKey=selected["key"])
     if kind == "copy" or not (cfg["imageUrl"] and cfg["imageModel"]):
         return None, "本地排版"
@@ -115,4 +127,4 @@ def make_scene(folder, plan, asset, kind, fresh, strict=False):
         return None, "本地排版（图像服务未返回可用画面）"
     finally:
         with db(True) as c:
-            c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms) VALUES(?,?,?,?,?,?)',(now()[:10],'image',selected.get('provider','default'),cfg['imageModel'],ok,round((time.monotonic()-started)*1000)))
+            c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms,job) VALUES(?,?,?,?,?,?,current_model_job())',(now()[:10],'image',selected.get('provider','default'),cfg['imageModel'],ok,round((time.monotonic()-started)*1000)))

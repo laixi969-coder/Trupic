@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 from pathlib import Path
 
 from .design import visual_requests
@@ -14,10 +15,85 @@ CATALOG = json.loads(CATALOG_PATH.read_text())["skills"]
 BY_ID = {item["id"]: item for item in CATALOG}
 
 
+def packages(c):
+    return {
+        r["id"]: json.loads(r["definition"])
+        for r in c.execute("SELECT * FROM skill_package")
+    }
+
+
+def import_package(c, actor, package):
+    from .store import dump, now
+
+    keys = {"id", "name", "kind", "match", "requires", "instructions", "reason"}
+    if not isinstance(package, dict) or set(package) != keys:
+        raise ValueError(
+            "文件应包含技能标识、名称、媒介、匹配词、依赖、四项指导与修订原因。"
+        )
+    skill, name, kind = (package[k] for k in ("id", "name", "kind"))
+    if not isinstance(skill, str) or not re.fullmatch(r"custom_[a-z0-9_]{1,48}", skill):
+        raise ValueError("技能标识须以 custom_ 开头，使用小写字母、数字和下划线。")
+    if (
+        not isinstance(name, str)
+        or not 1 <= len(name.strip()) <= 60
+        or kind not in ("copy", "poster", "video")
+    ):
+        raise ValueError("请核对技能名称与适用媒介。")
+    match, deps = package["match"], package["requires"]
+    if (
+        not isinstance(match, list)
+        or not 1 <= len(match) <= 12
+        or any(not isinstance(w, str) or not 1 <= len(w.strip()) <= 40 for w in match)
+    ):
+        raise ValueError("请提供 1–12 个匹配商家需求的关键词。")
+    if (
+        not isinstance(deps, list)
+        or len(deps) > 8
+        or any(
+            not isinstance(d, str) or d not in BY_ID or BY_ID[d]["status"] == "reserve"
+            for d in deps
+        )
+    ):
+        raise ValueError("依赖须为已接入的内置技能。")
+    existing = packages(c).get(skill)
+    definition = dict(
+        id=skill,
+        name=name.strip(),
+        media=kind,
+        match=[w.strip() for w in match],
+        requires=list(dict.fromkeys(deps)),
+        status="integrated",
+        version="1",
+        category="上传技能",
+        inputs=["商家需求"],
+        output={"copy": "推广文案", "poster": "营销海报", "video": "宣传短片"}[kind],
+        instructions=dict.fromkeys(("copy", "image", "video", "qa"), ""),
+        limits="按关键词匹配已启用版本。",
+        source=dict(
+            title=name.strip(),
+            kind="运营上传",
+            observed=now()[:10],
+            definitionAvailable=True,
+        ),
+    )
+    if existing and any(
+        existing[k] != definition[k] for k in ("name", "media", "match", "requires")
+    ):
+        raise ValueError("同一技能的适用范围和依赖须一致，变更时请使用新的技能标识。")
+    if not existing:
+        c.execute("INSERT INTO skill_package VALUES(?,?)", (skill, dump(definition)))
+    manage_version(c, actor, {**package, "action": "test"})
+
+
 def catalog(c=None):
     items = copy.deepcopy(CATALOG)
     if c is not None:
+        items.extend(packages(c).values())
+        disabled = {
+            r[0] for r in c.execute("SELECT skill FROM skill_switch WHERE enabled=0")
+        }
         for item in items:
+            item["enabled"] = item["id"] not in disabled
             versions = c.execute(
                 "SELECT * FROM skill_version WHERE skill=? ORDER BY n DESC",
                 (item["id"],),
@@ -39,10 +115,11 @@ def catalog(c=None):
 
 
 def snapshot(ids, overrides=None):
-    selected = [BY_ID[key] for key in dict.fromkeys(ids)]
+    library = BY_ID | (overrides or {})
+    selected = [library[key] for key in dict.fromkeys(ids)]
+    selected = [item for item in selected if item.get("enabled", True)]
     if any(item["status"] == "reserve" for item in selected):
         raise ValueError("该技能目前只储备方法，尚未接入成品生成。")
-    selected = [(overrides or {}).get(item["id"], item) for item in selected]
     return {
         "version": 1,
         "skills": [
@@ -69,17 +146,22 @@ def effective_versions(c, tenant):
 
     pilot = uidnum(tenant) % 100 < 10
     result = {}
+    library = BY_ID | packages(c)
     for row in c.execute(
         "SELECT * FROM skill_version WHERE status IN ('live','pilot') ORDER BY (status='pilot')"
     ):
         if row["status"] == "pilot" and not pilot:
             continue
-        base = BY_ID[row["skill"]]
+        base = library[row["skill"]]
         result[base["id"]] = dict(
             base,
             version=f"{base['version']}+{row['n']}",
             instructions=json.loads(row["instructions"]),
         )
+    for row in c.execute("SELECT skill FROM skill_switch WHERE enabled=0"):
+        key = row["skill"]
+        if key in library:
+            result[key] = {**result.get(key, library[key]), "enabled": False}
     return result
 
 
@@ -89,14 +171,22 @@ def manage_version(c, actor, data):
     from .store import audit, dump, now
 
     skill = data.get("id")
+    library = BY_ID | packages(c)
     if (
         not isinstance(skill, str)
-        or skill not in BY_ID
-        or BY_ID[skill]["status"] == "reserve"
+        or skill not in library
+        or library[skill]["status"] == "reserve"
     ):
         raise ValueError("请选择已接入的技能。")
-    base = BY_ID[skill]
+    base = library[skill]
     action = data.get("action")
+    if action in ("enable", "disable"):
+        c.execute(
+            "INSERT OR REPLACE INTO skill_switch VALUES(?,?)",
+            (skill, int(action == "enable")),
+        )
+        audit(c, actor, "启用技能" if action == "enable" else "停用技能", skill)
+        return
     if action == "test":
         reason, instructions = data.get("reason"), data.get("instructions")
         stages = base["instructions"]
@@ -116,6 +206,13 @@ def manage_version(c, actor, data):
         ):
             raise ValueError("已接入阶段的方法不能为空，每项最多 900 字。")
         instructions = {k: v.strip() for k, v in instructions.items()}
+        if (
+            "media" in base
+            and not instructions[
+                {"poster": "image", "copy": "copy", "video": "video"}[base["media"]]
+            ]
+        ):
+            raise ValueError("请填写与适用媒介对应的创作指导。")
         live = c.execute(
             "SELECT instructions FROM skill_version WHERE skill=? AND status='live'",
             (skill,),
@@ -243,5 +340,17 @@ def attach(plan, kind, workflow=None, overrides=None):
                 if item["status"] == "integrated"
                 and any(word.lower() in brief for word in item["match"])
             )
+    brief = visual_requests(plan.get("original", "")).lower()
+    for item in (overrides or {}).values():
+        if (
+            item.get("enabled", True)
+            and item.get("media") == kind
+            and all(
+                (overrides or {}).get(dep, {}).get("enabled", True)
+                for dep in item["requires"]
+            )
+            and any(word.lower() in brief for word in item["match"])
+        ):
+            ids.extend([*item["requires"], item["id"]])
     plan["skillPlan"] = snapshot(ids, overrides)
     return plan["skillPlan"]

@@ -96,6 +96,8 @@ def route(kind):
 
 
 def default_connection(kind):
+    if kind == "edit":
+        return dict(provider="local-rules",url="",model="",key="",protocol="image-edits")
     cfg = settings()
     if kind in ("image", "video"):
         prefix = kind
@@ -140,16 +142,15 @@ def ask(instructions, payload, max_tokens=650):
     cfg = route("text")
     text = json.dumps(payload, ensure_ascii=False)
     if cfg["url"] and cfg["model"]:
-        return chat_request(
+        return routed_chat(
             cfg,
-            cfg["model"],
             [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": text},
             ],
             max_tokens,
             "text",
-        ), cfg["model"]
+        )
     elif cfg.get("provider") != "local-rules" and apple_available():
         r = subprocess.run(
             [
@@ -192,6 +193,19 @@ def response_object(raw):
     return obj
 
 
+def routed_chat(cfg, messages, max_tokens, kind):
+    try:
+        result = chat_request(cfg, cfg["model"], messages, max_tokens, kind)
+        return result, cfg["model"]
+    except (OSError, InvalidModelOutput):
+        backup = cfg.get("backup")
+        if not backup:
+            raise
+        if "responseSchema" in cfg:
+            backup = {**backup, "responseSchema": cfg["responseSchema"]}
+        return chat_request(backup, backup["model"], messages, max_tokens, kind), backup["model"]
+
+
 def chat_request(cfg, name, messages, max_tokens, kind):
     data = {"model": name, "messages": messages, "max_tokens": max_tokens}
     if schema := cfg.get("responseSchema"):
@@ -221,8 +235,8 @@ def chat_request(cfg, name, messages, max_tokens, kind):
         counts = [usage.get(k) for k in ("prompt_tokens", "completion_tokens")]
         with db(True) as c:
             c.execute(
-                """INSERT INTO model_call(day,kind,platform,model,ok,ms,input_tokens,output_tokens)
-                      VALUES(?,?,?,?,?,?,?,?)""",
+                """INSERT INTO model_call(day,kind,platform,model,ok,ms,input_tokens,output_tokens,job)
+                      VALUES(?,?,?,?,?,?,?,?,current_model_job())""",
                 (
                     now()[:10],
                     kind,

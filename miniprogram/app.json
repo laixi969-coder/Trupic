@@ -4,7 +4,8 @@
     "pages/inspiration/inspiration",
     "pages/mine/mine",
     "pages/confirm/confirm",
-    "pages/result/result"
+    "pages/result/result",
+    "pages/promotion/promotion"
   ],
   "window": {
     "navigationBarTitleText": "响指出片 Trupic",

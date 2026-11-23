@@ -1,6 +1,7 @@
 <view class="page"><view class="title">我的作品</view><view wx:if="{{error}}" class="error">{{error}}<button class="link" bindtap="load">重新加载</button></view>
 <view wx:if="{{!loaded && !error}}" class="note">正在加载作品…</view>
 <block wx:if="{{loaded}}"><view class="panel"><view class="between"><view class="heading">{{profile.name || '商家档案'}}</view><button class="link" bindtap="edit">编辑档案</button></view><view class="sub">可用积分　{{credits}}</view></view>
+<navigator url="/pages/promotion/promotion" class="work">邀请与推广 ›</navigator>
 <button wx:for="{{jobs}}" wx:key="id" class="work" bindtap="open" data-key="job" data-id="{{item.id}}">{{item.state==='failed'?'制作未完成 · 查看并重试':'制作中 · 查看进度'}}</button>
 <button wx:for="{{works}}" wx:key="id" class="work" bindtap="open" data-key="id" data-id="{{item.id}}"><view class="sub">{{item.label}}</view><view class="name">{{item.title}}</view></button>
 <block wx:if="{{!works.length && !jobs.length}}"><view class="note">第一份作品，从一句推广需求开始。</view><button class="primary" bindtap="create">去创作</button></block></block></view>

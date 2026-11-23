@@ -1,6 +1,13 @@
 import React, { useState } from "react";
 
-export default function ProductRegion({ asset, region, change, detail = false, children }) {
+export default function ProductRegion({
+  asset,
+  region,
+  change,
+  detail = false,
+  background = false,
+  children,
+}) {
   const [editing, setEditing] = useState(false);
   const [corner, setCorner] = useState(null);
   function point(e) {
@@ -34,9 +41,15 @@ export default function ProductRegion({ asset, region, change, detail = false, c
       >
         {editing
           ? "关闭标注"
-          : region
-            ? (detail ? "重新框选中镜细节" : "重新标注原图区域")
-            : (detail ? "指定短片中镜的细节（选填）" : "标注需保真的标识或包装文字")}
+          : background
+            ? "框选要修改的海报背景"
+            : region
+              ? detail
+                ? "重新框选中镜细节"
+                : "重新标注原图区域"
+              : detail
+                ? "指定短片中镜的细节（选填）"
+                : "标注需保真的标识或包装文字"}
       </button>
       {region && (
         <button
@@ -56,8 +69,16 @@ export default function ProductRegion({ asset, region, change, detail = false, c
             {editing
               ? corner
                 ? "再点选区的对角。"
-                : (detail ? "在原图上框住一个能看清的商品细节。" : "在原图上点选标识的一角。")
-              : (detail ? "第 3–6 秒会推近框内的细节。" : "请确认框内文字或标识清晰、无遮挡。")}
+                : background
+                  ? "点选背景区域的两个对角。"
+                  : detail
+                    ? "在原图上框住一个能看清的商品细节。"
+                    : "在原图上点选标识的一角。"
+              : background
+                ? "已选中背景区域。"
+                : detail
+                  ? "第 3–6 秒会推近框内的细节。"
+                  : "请确认框内文字或标识清晰、无遮挡。"}
           </p>
           <div className="region-stage" onClick={editing ? point : undefined}>
             <img src={asset.original} draggable="false" alt="商品原图标注" />

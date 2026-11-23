@@ -7,6 +7,7 @@ from .store import now
 
 def initialize(c):
     c.executescript("""
+    CREATE TABLE IF NOT EXISTS carry_policy(tenant TEXT NOT NULL,ref TEXT NOT NULL,remaining INTEGER NOT NULL,until_at TEXT NOT NULL,order_id TEXT NOT NULL,PRIMARY KEY(tenant,ref));
     CREATE TABLE IF NOT EXISTS credit_lot(id INTEGER PRIMARY KEY,tenant TEXT NOT NULL,source TEXT NOT NULL,
         ref TEXT NOT NULL,remaining INTEGER NOT NULL CHECK(remaining>=0),expires TEXT, UNIQUE(tenant,ref));
     CREATE INDEX IF NOT EXISTS credit_expiry ON credit_lot(tenant,expires);
@@ -69,6 +70,26 @@ def expire(c, t):
             "INSERT INTO ledger(tenant,delta,note,created) VALUES(?,?,?,?)",
             (t, -amount, "积分到期 · " + lot["ref"], now()),
         )
+        policy = c.execute(
+            """SELECT cp.remaining,cp.until_at FROM carry_policy cp
+            JOIN purchase p ON p.id=cp.order_id WHERE cp.tenant=? AND cp.ref=? AND p.state='paid'
+            AND cp.remaining>0 AND cp.until_at>?""",
+            (t, lot["ref"], now()),
+        ).fetchone()
+        if policy:
+            carry = min(policy["remaining"], amount)
+            grant(
+                c,
+                t,
+                "套餐积分结转",
+                lot["ref"] + f":carry:{policy['remaining']}",
+                carry,
+                policy["until_at"],
+            )
+            c.execute(
+                "UPDATE carry_policy SET remaining=remaining-? WHERE tenant=? AND ref=?",
+                (carry, t, lot["ref"]),
+            )
 
 
 def event(c, t, job, lot, action, amount):

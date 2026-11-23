@@ -220,6 +220,640 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(agent.get("/api/admin/pricing").status_code,403)
         post(self.c,"admin/growth",action="rules",**rule)
 
+    def test_growth_joint_source_rules_history_and_settlement(self):
+        from server import commerce, growth
+
+        self.admin()
+        original = self.c.get("/api/admin/growth").json["rules"]
+
+        def admin(action, **values):
+            response = post(self.c, "admin/growth", action=action, **values)
+            self.assertEqual(response.status_code, 200, response.json)
+            return response.json
+
+        def merchant(**params):
+            client = studio.app.test_client()
+            login = uuid.uuid4().hex
+            response = post(
+                client,
+                "account/register",
+                login=login,
+                password="test-merchant",
+                **params,
+            )
+            self.assertEqual(response.status_code, 200, response.json)
+            admin("verify", login=login, identity=login)
+            return client, login
+
+        def promo(client):
+            return client.get("/api/promotion").json
+
+        team, team_login = merchant()
+        other, other_login = merchant()
+        agent, agent_login = merchant()
+        for name in (team_login, other_login):
+            admin("agent", login=name, role="团队负责人")
+        admin("agent", login=agent_login, parent=team_login, role="个人推广员")
+        self.assertEqual(promo(team)["team"][0]["login"], agent_login)
+        rep = promo(agent)["codes"]["agent"]
+        inviter, owner_login = merchant(invite=rep)
+        invite = promo(inviter)["codes"]["merchant"]
+        self.assertEqual(promo(inviter)["channel"], rep)
+        self.assertEqual(
+            inviter.get(f"/api/promotion/{invite}/qr?channel={rep}").mimetype,
+            "image/png",
+        )
+        offer = post(
+            self.c,
+            "admin/offers",
+            name="联合推广验收",
+            cycle="month",
+            cents=1000,
+            credits=10,
+            bonus=0,
+        ).json[0]
+
+        def order(client, **kwargs):
+            result = post(
+                client,
+                "orders",
+                offer=offer["id"],
+                credits=10,
+                bonus=0,
+                cents=1000,
+                requestKey=uuid.uuid4().hex,
+                **kwargs,
+            )
+            self.assertEqual(result.status_code, 200, result.json)
+            return result.json["id"]
+
+        def pay(oid, **kwargs):
+            with studio.db(True) as c:
+                row = c.execute("SELECT * FROM purchase WHERE id=?", (oid,)).fetchone()
+                commerce.fulfill(c, row, "r-" + oid, **kwargs)
+
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "TRUPIC_CHECKOUT_URL": "https://checkout.invalid",
+                    "TRUPIC_PAYMENT_SECRET": "fixture",
+                },
+            ):
+                for policy, reward, amount in [
+                    ("both", 7, 100),
+                    ("agent", 0, 100),
+                    ("merchant", 7, 0),
+                ]:
+                    config = {
+                        **original,
+                        "overlap": policy,
+                        "firstBps": 1000,
+                        "paidOwner": 7,
+                        "paidGuest": 5,
+                    }
+                    admin("rules", **config)
+                    guest, login = merchant(invite=invite, channel=rep)
+                    before = inviter.get("/api/state").json["credits"]
+                    oid = order(guest)
+                    admin("rules", **{**config, "paidOwner": 99, "firstBps": 8000})
+                    pay(oid)
+                    pay(oid)
+                    self.assertEqual(
+                        inviter.get("/api/state").json["credits"], before + reward
+                    )
+                    self.assertEqual(
+                        guest.get("/api/state").json["credits"],
+                        130 + (5 if reward else 0),
+                    )
+                    commissions = [
+                        r for r in promo(team)["commissions"] if r["order_id"] == oid
+                    ]
+                    self.assertEqual(sum(r["amount"] for r in commissions), amount)
+                    self.assertEqual(bool(commissions), bool(amount))
+                admin("rules", **{**config, "overlap": "both", "settleDays": 2})
+                first, _ = merchant(invite=invite, channel=rep)
+                first_order = order(first)
+                pay(first_order, payer="gateway-shared-test")
+                self.assertEqual(
+                    post(
+                        self.c, "admin/growth", action="settle", order=first_order
+                    ).status_code,
+                    400,
+                )
+                second, _ = merchant(invite=invite, channel=rep)
+                second_order = order(second)
+                before = inviter.get("/api/state").json["credits"]
+                pay(second_order, payer="gateway-shared-test")
+                self.assertEqual(inviter.get("/api/state").json["credits"], before)
+                admin("reject-payer", order=second_order, reference="重复付款身份复核")
+                self.assertEqual(inviter.get("/api/state").json["credits"], before)
+                self.assertEqual(
+                    next(
+                        r["status"]
+                        for r in promo(agent)["commissions"]
+                        if r["order_id"] == second_order
+                    ),
+                    "disqualified",
+                )
+                admin("rules", **{**config, "ends": "2000-01-01"})
+                guest, login = merchant(invite=invite, channel=rep)
+                before = inviter.get("/api/state").json["credits"]
+                oid = order(agent, merchant=login)
+                self.assertEqual(
+                    post(
+                        other, "orders/price", merchant=login, offer=offer["id"]
+                    ).status_code,
+                    403,
+                )
+                admin("agent", login=agent_login, parent=other_login, role="个人推广员")
+                pay(oid, payer="verified-gateway-id", payer_login=agent_login)
+                self.assertEqual(inviter.get("/api/state").json["credits"], before)
+                self.assertIn(oid, [r["id"] for r in promo(team)["orders"]])
+                self.assertNotIn(oid, [r["id"] for r in promo(other)["orders"]])
+                self.assertIn(login, [r["login"] for r in promo(other)["clients"]])
+                self.assertNotIn(login, [r["login"] for r in promo(team)["clients"]])
+                self.assertEqual(
+                    post(
+                        self.c, "admin/growth", action="settle", order=oid
+                    ).status_code,
+                    400,
+                )
+                admin("verify-payer", order=oid, reference="线下核对凭据")
+                admin("settle", order=oid)
+                with studio.db(True) as c:
+                    commerce.refund(
+                        c,
+                        c.execute(
+                            "SELECT * FROM purchase WHERE id=?", (oid,)
+                        ).fetchone(),
+                        "r-" + oid,
+                    )
+                admin("recover", order=oid, reference="到账凭据")
+                self.assertEqual(
+                    next(r for r in promo(team)["commissions"] if r["order_id"] == oid)[
+                        "status"
+                    ],
+                    "recovered",
+                )
+                # Approving a channel claim must also check the invitation ancestry.
+                admin("agent", login=login, role="个人推广员")
+                code = promo(guest)["codes"]["agent"]
+                post(inviter, "promotion/claim", code=code)
+                pending = next(
+                    r
+                    for r in self.c.get("/api/admin/growth").json["reviews"]
+                    if r["guest"] == owner_login
+                )
+                self.assertEqual(
+                    post(
+                        self.c,
+                        "admin/growth",
+                        action="approve-transfer",
+                        id=pending["id"],
+                    ).status_code,
+                    400,
+                )
+        finally:
+            admin("rules", **original)
+
+    def test_growth_legacy_schema_migration(self):
+        import sqlite3
+        from server import growth
+
+        with sqlite3.connect(":memory:") as c:
+            c.row_factory = sqlite3.Row
+            c.execute(
+                "CREATE TABLE attribution(guest TEXT PRIMARY KEY,owner TEXT,kind TEXT,code TEXT,created TEXT)"
+            )
+            c.execute(
+                "INSERT INTO attribution VALUES('g','m','merchant','legacy','2026-01-01')"
+            )
+            c.commit()
+            growth.initialize(c)
+            c.commit()
+            growth.initialize(c)
+            self.assertEqual(growth.attribution(c, "g"), {"merchant": "m"})
+            c.execute("INSERT INTO channel_agent(tenant,kind) VALUES('a','个人推广员')")
+            c.execute(
+                "INSERT INTO attribution VALUES('g','a','agent','new','2026-11-23')"
+            )
+            self.assertEqual(growth.attribution(c, "g")["agent"], "a")
+
+    def test_v3_imported_skill_and_model_fallback(self):
+        from server import model, skill_library
+
+        self.admin()
+        rules = dict(
+            id="custom_weekend_test",
+            name="周末邀约",
+            kind="poster",
+            match=["周末邀约"],
+            requires=["poster_design"],
+            instructions=dict(
+                copy="逐条核对条件。",
+                image="在活动标题四周留白。",
+                video="",
+                qa="复核海报。",
+            ),
+            reason="首次验收",
+        )
+        self.assertEqual(
+            post(
+                self.c, "admin/skill-import", **{**rules, "requires": ["unknown"]}
+            ).status_code,
+            400,
+        )
+        self.assertEqual(post(self.c, "admin/skill-import", **rules).status_code, 200)
+
+        def planned():
+            with studio.db() as c:
+                return skill_library.attach(
+                    {"original": "夏季周末邀约"},
+                    "poster",
+                    overrides=skill_library.effective_versions(c, "trial"),
+                )["skills"]
+
+        self.assertNotIn(rules["id"], [r["id"] for r in planned()])
+        self.assertEqual(
+            post(
+                self.c, "admin/skill-version", id=rules["id"], action="release", n=1
+            ).status_code,
+            200,
+        )
+        self.assertEqual(planned()[-1]["id"], rules["id"])
+        for action, active in [("disable", False), ("enable", True)]:
+            self.assertEqual(
+                post(
+                    self.c, "admin/skill-version", id="poster_design", action=action
+                ).status_code,
+                200,
+            )
+            self.assertEqual(rules["id"] in [r["id"] for r in planned()], active)
+        self.assertEqual(
+            post(
+                self.c, "admin/skill-version", id=rules["id"], action="rollback", n=0
+            ).status_code,
+            200,
+        )
+        self.assertNotIn(rules["id"], [r["id"] for r in planned()])
+        ids = ["custom-" + uuid.uuid4().hex for _ in range(2)]
+        try:
+            for i, platform in enumerate(ids):
+                res = post(
+                    self.c,
+                    "admin/model-platform",
+                    id=platform,
+                    label="验收连接",
+                    capability="text",
+                    model="model-" + str(i),
+                    url="https://fixture.invalid/chat",
+                )
+                self.assertEqual(res.status_code, 200)
+            self.assertEqual(
+                post(
+                    self.c, "admin/model-routes", text=ids[0], backups={"text": ids[0]}
+                ).status_code,
+                400,
+            )
+            self.assertEqual(
+                post(
+                    self.c, "admin/model-routes", text=ids[0], backups={"text": ids[1]}
+                ).status_code,
+                200,
+            )
+            version = self.c.get("/api/admin").json["modelPlatforms"]["routeVersion"]
+            self.assertEqual(
+                post(
+                    self.c, "admin/model-routes", text="", expectedVersion=version - 1
+                ).status_code,
+                400,
+            )
+            with studio.db() as c:
+                saved = c.execute(
+                    "SELECT after_json FROM model_route_version WHERE n=?", (version,)
+                ).fetchone()
+                self.assertEqual(
+                    json.loads(saved[0])["text"]["backup"],
+                    {"platform": ids[1], "model": "model-1"},
+                )
+            with patch.object(
+                model, "chat_request", side_effect=[OSError(), {"ok": True}]
+            ) as ask:
+                self.assertEqual(model.ask("任务", {}), ({"ok": True}, "model-1"))
+                self.assertEqual(
+                    [r.args[0]["provider"] for r in ask.call_args_list], ids
+                )
+            with patch.dict(os.environ, {"TRUPIC_MODEL_STAGE": "production"}):
+                self.assertFalse(model.route("text")["model"])
+        finally:
+            post(self.c, "admin/model-routes", text="", backups={"text": ""})
+
+    def test_v3_video_reference_cuts_and_private_access(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "reference.mp4")
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=red:s=64x64:d=2",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=blue:s=64x64:d=2",
+                    "-filter_complex",
+                    "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                    "-map",
+                    "[v]",
+                    "-c:v",
+                    "libx264",
+                    path,
+                ],
+                check=True,
+            )
+            with open(path, "rb") as stream:
+                res = self.c.post(
+                    "/api/video-references",
+                    data={"video": (stream, "参考.mp4"), "authorized": "true"},
+                )
+        self.assertEqual(res.status_code, 200, res.json)
+        self.assertEqual(res.json["cuts"], [2])
+        payload = dict(
+            brief="周末台球组局",
+            deliveryMode="video",
+            ratio="story",
+            videoReference=res.json["id"],
+        )
+        self.assertEqual(
+            post(studio.app.test_client(), "creations/plan", **payload).status_code, 404
+        )
+        q = post(self.c, "creations/plan", **payload).json
+        spec = next(
+            i["spec"]
+            for i in studio.quotes.loads(q["quote"])["items"]
+            if i["spec"]["kind"] == "video"
+        )
+        self.assertTrue(spec["plan"]["videoReference"]["authorized"])
+        self.assertEqual(spec["replacement"]["storyboard"][1]["end"], 8)
+
+    def test_v3_poster_region_preserves_pixels_and_task_margin(self):
+        from PIL import ImageChops
+
+        self.admin()
+        q = post(
+            self.c,
+            "creations/plan",
+            brief="周末台球组局",
+            deliveryMode="image",
+            ratio="square",
+            imageCount=1,
+        ).json
+        with patch.object(studio.pool, "submit"):
+            run = post(
+                self.c,
+                "creations",
+                quote=q["quote"],
+                confirmedCost=q["cost"],
+                requestKey="base",
+            ).json
+            item = run["items"][-1]
+            studio.produce(item["job"])
+            work = "works/" + item["work"]
+            v = self.c.get("/api/" + work).json["versions"][0]
+            region = None
+            for y in (0.02, 0.94, 0.2, 0.7):
+                for x in (0.02, 0.94, 0.2, 0.7):
+                    box = [x, y, x + 0.035, y + 0.035]
+                    if not any(
+                        x < b[2] and box[2] > b[0] and y < b[3] and box[3] > b[1]
+                        for b in v["protectedAreas"]
+                    ):
+                        region = box
+                        break
+                if region:
+                    break
+            self.assertIsNotNone(region)
+            quote = post(
+                self.c,
+                work + "/revision-quote",
+                base=1,
+                action="region",
+                instruction="压暗",
+                region=region,
+            )
+            self.assertEqual(quote.status_code, 200, quote.json)
+            job = post(
+                self.c,
+                work + "/revise",
+                quote=quote.json["quote"],
+                confirmed=True,
+                confirmedCost=1,
+                requestKey="patch",
+            ).json
+            studio.produce(job["id"])
+            state = self.c.get("/api/jobs/" + job["id"]).json
+            self.assertEqual(state["state"], "complete", state)
+        versions = self.c.get("/api/" + work).json["versions"]
+        self.assertEqual(len(versions), 2)
+        with (
+            self.c.get(versions[1]["poster"]) as first,
+            self.c.get(versions[0]["poster"]) as second,
+        ):
+            before = Image.open(io.BytesIO(first.data)).convert("RGB")
+            after = Image.open(io.BytesIO(second.data)).convert("RGB")
+        bounds = ImageChops.difference(before, after).getbbox()
+        self.assertIsNotNone(bounds)
+        selected = tuple(round(n * before.size[i % 2]) for i, n in enumerate(region))
+        self.assertTrue(
+            bounds[0] >= selected[0]
+            and bounds[1] >= selected[1]
+            and bounds[2] <= selected[2]
+            and bounds[3] <= selected[3]
+        )
+        row = self.c.get("/api/admin/task-costs?job=" + job["id"]).json[0]
+        self.assertIsNone(row["margin"])
+        response = post(
+            self.c, "admin/task-costs", job=job["id"], amount="0.12", source="测试账单"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.c.get("/api/admin/task-costs?job=" + job["id"]).json[0]["margin"],
+            "-0.120000",
+        )
+
+    def test_v3_region_edit_protocol_uses_only_selected_patch(self):
+        import base64
+        from email import policy
+        from email.parser import BytesParser
+        from unittest.mock import Mock
+        from server import region_edit
+
+        crop = Image.new("RGB", (36, 24), "red")
+        output = io.BytesIO()
+        Image.new("RGB", crop.size, "blue").save(output, "PNG")
+        response = json.dumps(
+            {"data": [{"b64_json": base64.b64encode(output.getvalue()).decode()}]}
+        ).encode()
+        transport = Mock()
+        transport.open.return_value = io.BytesIO(response)
+        cfg = {
+            "model": "fixture-edit",
+            "provider": "fixture",
+            "url": "https://model.invalid/edits",
+        }
+        with patch.object(
+            region_edit.urllib.request, "build_opener", return_value=transport
+        ):
+            result = region_edit.cloud_patch(cfg, crop, "换成蓝色")
+        self.assertEqual(result.getpixel((2, 2)), (0, 0, 255))
+        request = transport.open.call_args.args[0]
+        body = BytesParser(policy=policy.default).parsebytes(
+            (
+                "Content-Type: " + request.get_header("Content-type") + "\r\n\r\n"
+            ).encode()
+            + request.data
+        )
+        parts = {
+            p.get_param("name", header="content-disposition"): p
+            for p in body.iter_parts()
+        }
+        self.assertEqual(parts["prompt"].get_payload(decode=True).decode(), "换成蓝色")
+        with Image.open(io.BytesIO(parts["image"].get_payload(decode=True))) as sent:
+            self.assertEqual(sent.size, crop.size)
+            self.assertEqual(sent.getpixel((2, 2)), (255, 0, 0))
+
+    def test_v3_storage_outbox_and_download_scope(self):
+        from server import object_storage
+        from unittest.mock import Mock
+
+        self.admin()
+        run = submit_with_copy(self.c, "jobs", **self.plan())
+        self.assertEqual(self.finish(run.json["id"])["state"], "complete")
+        work = run.json["work"]
+        path = f"/api/works/{work}/v/1/download"
+        config = {
+            "TRUPIC_COS_BUCKET": "test-000",
+            "TRUPIC_COS_REGION": "test-region",
+            "COS_SECRET_ID": "fixture",
+            "COS_SECRET_KEY": "fixture",
+        }
+        fake = Mock()
+        fake.get_presigned_download_url.return_value = "https://object.invalid/test"
+        with (
+            patch.dict(os.environ, config),
+            patch.object(object_storage, "client", return_value=fake),
+        ):
+            with self.c.get(path) as local:
+                self.assertEqual(local.status_code, 200)
+            self.assertEqual(object_storage.drain(), 1)
+            self.assertEqual(object_storage.drain(), 0)
+            self.assertEqual(fake.upload_file.call_args.kwargs["ACL"], "private")
+            self.assertEqual(self.c.get(path).location, "https://object.invalid/test")
+            self.assertEqual(studio.app.test_client().get(path).status_code, 404)
+            self.assertEqual(fake.get_presigned_download_url.call_count, 1)
+            with self.c.get(path, headers={"X-Trupic-Native": "1"}) as local:
+                self.assertEqual(local.mimetype, "image/png")
+
+    def test_v3_private_work_feedback_and_support_reply(self):
+        run = submit_with_copy(self.c, "jobs", **self.plan())
+        self.assertEqual(self.finish(run.json["id"])["state"], "complete")
+        work = run.json["work"]
+        for _ in range(2):
+            result = post(self.c, "complaints", work=work, message="请核对标题字号")
+            self.assertEqual(result.status_code, 200, result.json)
+            self.assertEqual(len(result.json), 1)
+        complaint = result.json[0]["id"]
+        support = studio.app.test_client()
+        login = uuid.uuid4().hex
+        post(support, "account/register", login=login, password="test-support")
+        self.assertEqual(
+            support.get("/api/complaints", query_string={"work": work}).status_code, 404
+        )
+        self.assertEqual(support.get("/api/admin/complaints").status_code, 403)
+        self.admin()
+        post(self.c, "admin/staff", login=login, role="support")
+        self.assertEqual(support.get("/api/admin/complaints").status_code, 200)
+        self.assertEqual(support.get("/api/admin/task-costs").status_code, 403)
+        self.assertEqual(
+            post(
+                support, "admin/complaints", id=complaint, reply="字号已核对"
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            post(support, "admin/complaints", id=complaint, reply="覆盖").status_code,
+            400,
+        )
+        self.assertEqual(
+            self.c.get("/api/complaints", query_string={"work": work}).json[0]["reply"],
+            "字号已核对",
+        )
+
+    def test_v3_capped_rollover_refund_and_quarter_visibility(self):
+        from server import commerce, wallet
+
+        self.admin()
+        post(
+            self.c,
+            "account/register",
+            login=uuid.uuid4().hex,
+            password="merchant-fixture",
+        )
+        quarter = post(
+            self.c,
+            "admin/offers",
+            cycle="quarter",
+            name="季付储备",
+            cents=3000,
+            credits=12,
+            bonus=0,
+        ).json[0]
+        self.assertNotIn(
+            quarter["id"], [o["id"] for o in self.c.get("/api/shop").json["offers"]]
+        )
+        offer = post(
+            self.c,
+            "admin/offers",
+            cycle="month",
+            name="结转验收",
+            cents=1000,
+            credits=12,
+            bonus=0,
+            carry_cap=5,
+        ).json[0]
+        with patch.dict(
+            os.environ,
+            {
+                "TRUPIC_CHECKOUT_URL": "https://pay.invalid",
+                "TRUPIC_PAYMENT_SECRET": "test",
+            },
+        ):
+            oid = post(
+                self.c,
+                "orders",
+                offer=offer["id"],
+                credits=12,
+                bonus=0,
+                cents=1000,
+                requestKey="carry",
+            ).json["id"]
+        with studio.db(True) as c:
+            row=c.execute("SELECT * FROM purchase WHERE id=?",(oid,)).fetchone()
+            tenant=row["tenant"]
+            commerce.fulfill(c,row,"receipt-"+oid)
+            end=c.execute("SELECT ends FROM subscription WHERE order_id=?",(oid,)).fetchone()[0]
+            with patch.object(wallet,"now",return_value=end):
+                wallet.expire(c,tenant)
+                wallet.expire(c,tenant)
+            lots=c.execute("SELECT remaining FROM credit_lot WHERE tenant=? AND source='套餐积分结转'",(tenant,)).fetchall()
+            self.assertEqual([r[0] for r in lots],[5])
+            commerce.refund(c,c.execute("SELECT * FROM purchase WHERE id=?",(oid,)).fetchone(),"receipt-"+oid)
+            self.assertEqual(c.execute("SELECT SUM(remaining) FROM credit_lot WHERE tenant=? AND ref LIKE ?",(tenant,oid+"%")).fetchone()[0],0)
+
     def test_v3_formal_model_release_gate(self):
         from server import model_tools as mt, providers
         self.admin()
@@ -282,6 +916,10 @@ class WorkflowTests(unittest.TestCase):
                 stream=io.BytesIO(); image.convert("RGB").save(stream,"PNG"); stream.seek(0)
                 with patch.dict(os.environ,{"TRUPIC_CUTOUT":"/missing"}):
                     ids.append(self.c.post("/api/assets",data={"image":(stream,name+".png")}).json["id"])
+        proposal=post(self.c,"assets/suggest-sources",ids=ids,brief="周末上新",authorized=True)
+        self.assertEqual(proposal.status_code,200,proposal.json)
+        self.assertEqual({proposal.json["asset"],*(r["id"] for r in proposal.json["references"])},set(ids))
+        self.assertEqual(post(studio.app.test_client(),"assets/suggest-sources",ids=ids,authorized=True).status_code,404)
         refs=[dict(id=ids[1],role="color",authorized=True),dict(id=ids[2],role="layout",authorized=True)]
         payload=dict(brief="抹茶饮品周末到店尝鲜",facts="抹茶拿铁48元；仅限周末",deliveryMode="image",ratio="portrait",imageCount=1,
                      asset=ids[0],assetConfirmed=True,assetMode="original",references=refs)

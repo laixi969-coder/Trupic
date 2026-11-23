@@ -39,7 +39,7 @@ def models_endpoint(cfg):
             path = '/api/v1/models'
         else:
             path = parts.path
-            for suffix in ('/chat/completions','/images/generations','/contents/generations/tasks'):
+            for suffix in ('/chat/completions','/images/generations','/images/edits','/contents/generations/tasks'):
                 if path.endswith(suffix):
                     path = path[:-len(suffix)] + '/models'
                     break
@@ -69,6 +69,8 @@ def model_row(row):
         kinds.append('vision')
     if 'image' in outputs or 'IG' in caps or domain == 'ImageGeneration':
         kinds.append('image')
+    if ('image' in inputs and 'image' in outputs) or 'ImageEditing' in caps:
+        kinds.append('edit')
     if 'video' in outputs or 'VG' in caps or domain == 'VideoGeneration':
         kinds.append('video')
     return dict(id=name,kinds=kinds,known=bool(inputs or outputs or caps or domain),created=row.get('published_time') or row.get('created'))
@@ -141,6 +143,14 @@ def execute_probe(folder,kind,cfg):
             if reply.get('color')!=color:
                 raise ValueError('模型已响应，但未正确识别测试图片。')
             detail = dict(message='已正确识别实际测试图片。')
+        elif kind == 'edit':
+            from .region_edit import cloud_patch
+            image = cloud_patch(cfg, Image.new("RGB",(512,512),"red"), "将红色背景改为蓝色。")
+            r, g, b = image.resize((1,1)).getpixel((0,0))
+            if b <= r or b <= g:
+                raise ValueError("模型返回了图片，但未按要求修改背景。")
+            image.save(folder/"image.png")
+            detail = dict(message="已验证图片输入与局部改色。",preview="image.png")
         elif kind == 'image':
             detail = probe_image(cfg,folder)
         else:

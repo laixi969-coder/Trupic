@@ -1,6 +1,6 @@
 """Explicit staff permissions on ordinary authenticated accounts. Superuser stays separate."""
 
-from flask import jsonify, session
+from flask import jsonify, request, session
 from . import wallet
 from .store import audit, db, dump, now
 
@@ -31,16 +31,24 @@ def permitted(group, path, method):
             path
             in (
                 "/api/admin/pricing",
+                "/api/admin/task-costs",
                 "/api/admin/offers",
                 "/api/admin/coupons",
                 "/api/admin/merchants",
                 "/api/admin/credits",
             )
+            or method == "GET"
+            and path.startswith("/api/admin/coupons/")
+            and path.endswith("/redemptions")
             or path.startswith("/api/admin/offers/")
             and path.endswith("/disable")
         )
     if group == "support":
-        return path == "/api/admin/merchants" and method == "GET"
+        return (
+            path == "/api/admin/complaints"
+            or path == "/api/admin/merchants"
+            and method == "GET"
+        )
     if group == "operations":
         return (
             path.startswith("/api/admin/preview/")
@@ -57,10 +65,65 @@ def permitted(group, path, method):
 def register(app, services):
     with db() as c:
         c.executescript("""
+        CREATE TABLE IF NOT EXISTS complaint(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,work TEXT NOT NULL,message TEXT NOT NULL,
+            reply TEXT,created TEXT NOT NULL,closed TEXT);
+        CREATE UNIQUE INDEX IF NOT EXISTS complaint_pending ON complaint(tenant,work,message) WHERE reply IS NULL;
         CREATE TABLE IF NOT EXISTS staff_role(tenant TEXT PRIMARY KEY,role TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS credit_adjustment(tenant TEXT,ref TEXT,actor TEXT NOT NULL,amount INTEGER NOT NULL,
             reason TEXT NOT NULL,created TEXT NOT NULL,PRIMARY KEY(tenant,ref));
         """)
+
+    @app.route("/api/complaints", methods=["GET", "POST"])
+    def work_complaints():
+        tenant = services["reqtenant"]()
+        values = services["body"]() if request.method == "POST" else request.args
+        work = services["string"](values.get("work"), 64)
+        with db(request.method == "POST") as c:
+            services["owner"](c, "work", work, tenant)
+            if request.method == "POST":
+                message = services["string"](values.get("message"), 500)
+                if not message:
+                    raise ValueError("请填写需要处理的问题。")
+                from .store import ident
+
+                c.execute(
+                    "INSERT OR IGNORE INTO complaint(id,tenant,work,message,created) VALUES(?,?,?,?,?)",
+                    (ident(), tenant, work, message, now()),
+                )
+            return jsonify(
+                [
+                    dict(r)
+                    for r in c.execute(
+                        "SELECT id,message,reply,created FROM complaint WHERE tenant=? AND work=? ORDER BY rowid DESC",
+                        (tenant, work),
+                    )
+                ]
+            )
+
+    @app.route("/api/admin/complaints", methods=["GET", "POST"])
+    def complaints():
+        services["require_admin"]()
+        actor = services["reqtenant"]()
+        with db(request.method == "POST") as c:
+            if request.method == "POST":
+                values = services["body"]()
+                reply = services["string"](values.get("reply"), 500)
+                if (
+                    not reply
+                    or not c.execute(
+                        "UPDATE complaint SET reply=?,closed=? WHERE id=? AND reply IS NULL",
+                        (reply, now(), values.get("id")),
+                    ).rowcount
+                ):
+                    raise ValueError("请填写处理结果并选择尚未处理的反馈。")
+                audit(c, actor, "处理商家反馈", values["id"])
+            return jsonify(
+                [
+                    dict(r)
+                    for r in c.execute("""SELECT c.id,c.work,c.message,c.reply,c.created,m.login
+                FROM complaint c JOIN merchant m ON m.id=c.tenant ORDER BY (c.reply IS NULL) DESC,c.rowid DESC""")
+                ]
+            )
 
     @app.get("/api/admin/merchants")
     def merchants():

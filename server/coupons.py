@@ -19,7 +19,7 @@ def calculate(c, t, offer, code):
     if (
         row["agent"]
         and not c.execute(
-            "SELECT 1 FROM attribution WHERE guest=? AND owner=? AND kind='agent'",
+            "SELECT 1 FROM attribution a JOIN channel_agent rep ON rep.tenant=a.owner WHERE a.guest=? AND a.owner=? AND a.kind='agent' AND rep.enabled=1",
             (t, row["agent"]),
         ).fetchone()
     ):
@@ -63,6 +63,14 @@ def register(app, services):
                 cents=calculate(c, t, offer, services["string"](v.get("coupon"), 64))
             )
 
+    @app.get("/api/admin/coupons/<code>/redemptions")
+    def redemptions(code):
+        services["require_admin"]()
+        with db() as c:
+            return jsonify([dict(r) for r in c.execute("""SELECT r.order_id,r.status,m.login,p.created,p.cents
+                FROM redemption r JOIN purchase p ON p.id=r.order_id JOIN merchant m ON m.id=r.tenant
+                WHERE r.code=? ORDER BY p.created DESC,p.rowid DESC""",(code,))])
+
     @app.route("/api/admin/coupons", methods=["GET", "POST"])
     def coupons():
         services["require_admin"]()
@@ -95,7 +103,7 @@ def register(app, services):
                 agent = None
                 if v.get("agent"):
                     a = c.execute(
-                        "SELECT a.tenant FROM channel_agent a JOIN merchant m ON a.tenant=m.id WHERE m.login=?",
+                        "SELECT a.tenant FROM channel_agent a JOIN merchant m ON a.tenant=m.id WHERE m.login=? AND a.enabled=1",
                         (v["agent"],),
                     ).fetchone()
                     if not a:

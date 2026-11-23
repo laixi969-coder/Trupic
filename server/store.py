@@ -5,12 +5,16 @@ import secrets
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from .media import ROOT
 
 DATA = Path(os.getenv("TRUPIC_DATA", ROOT / ".trupic")).resolve()
 DATA.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+
+model_job = ContextVar("model_job", default=None)
 
 
 def secret(name):
@@ -28,6 +32,7 @@ def secret(name):
 def db(write=False):
     c = sqlite3.connect(DATA / "studio.sqlite3", timeout=15)
     c.row_factory = sqlite3.Row
+    c.create_function("current_model_job", 0, model_job.get)
     try:
         if write:
             c.execute("BEGIN IMMEDIATE")
@@ -66,6 +71,8 @@ def init():
         CREATE TABLE IF NOT EXISTS merchant(id TEXT PRIMARY KEY,login TEXT UNIQUE,password TEXT,profile TEXT NOT NULL,credits INTEGER NOT NULL DEFAULT 120,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS brand_font(id TEXT PRIMARY KEY, tenant TEXT NOT NULL, digest TEXT NOT NULL, info TEXT NOT NULL, created TEXT NOT NULL, UNIQUE(tenant,digest));
         CREATE TABLE IF NOT EXISTS asset(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,name TEXT NOT NULL,info TEXT NOT NULL,created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS cos_object(bucket TEXT,region TEXT,key TEXT,action TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due REAL NOT NULL DEFAULT 0,error TEXT,PRIMARY KEY(bucket,region,key));
+        CREATE TABLE IF NOT EXISTS video_reference(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,name TEXT NOT NULL,analysis TEXT NOT NULL,created TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS asset_tenant ON asset(tenant);
         CREATE TABLE IF NOT EXISTS job(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,request_key TEXT NOT NULL,spec TEXT NOT NULL,state TEXT NOT NULL,cost INTEGER NOT NULL,work TEXT NOT NULL,version INTEGER NOT NULL,error TEXT,created TEXT NOT NULL,UNIQUE(tenant,request_key));
         CREATE TABLE IF NOT EXISTS work(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,kind TEXT NOT NULL,current INTEGER DEFAULT 1,created TEXT NOT NULL);
@@ -77,6 +84,9 @@ def init():
         CREATE TABLE IF NOT EXISTS provider_bill(day TEXT,platform TEXT,model TEXT,kind TEXT,currency TEXT,amount INTEGER NOT NULL,source TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(day,platform,model,kind,currency));
         CREATE TABLE IF NOT EXISTS provider_usage(day TEXT,kind TEXT,calls INTEGER NOT NULL,PRIMARY KEY(day,kind));
         CREATE TABLE IF NOT EXISTS model_provider(id TEXT PRIMARY KEY,url TEXT NOT NULL,key TEXT NOT NULL,text TEXT NOT NULL,vision TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS job_bill(job TEXT PRIMARY KEY,amount INTEGER NOT NULL,source TEXT NOT NULL,updated TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS model_route_version(n INTEGER PRIMARY KEY,actor TEXT NOT NULL,created TEXT NOT NULL,before_json TEXT NOT NULL,after_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS model_backup(kind TEXT PRIMARY KEY,platform TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS model_route(kind TEXT PRIMARY KEY,platform TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS model_catalog(platform TEXT,kind TEXT,signature TEXT NOT NULL,data TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(platform,kind));
         CREATE TABLE IF NOT EXISTS model_call(id INTEGER PRIMARY KEY,day TEXT NOT NULL,kind TEXT NOT NULL,platform TEXT NOT NULL,model TEXT NOT NULL,ok INTEGER NOT NULL,ms INTEGER NOT NULL,input_tokens INTEGER,output_tokens INTEGER);
@@ -87,11 +97,14 @@ def init():
         CREATE TABLE IF NOT EXISTS review(work TEXT NOT NULL,n INTEGER NOT NULL,rating TEXT,tags TEXT,metrics TEXT,created TEXT,PRIMARY KEY(work,n));
         CREATE TABLE IF NOT EXISTS cases(id TEXT PRIMARY KEY,title TEXT,source TEXT UNIQUE,license TEXT,kind TEXT,category TEXT,lesson TEXT,issue TEXT,status TEXT,created TEXT);
         CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,name TEXT,method TEXT,reason TEXT,tests TEXT,status TEXT,percent INTEGER,created TEXT);
+        CREATE TABLE IF NOT EXISTS skill_switch(skill TEXT PRIMARY KEY,enabled INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS skill_package(id TEXT PRIMARY KEY, definition TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS skill_version(skill TEXT NOT NULL,n INTEGER NOT NULL,instructions TEXT NOT NULL,reason TEXT NOT NULL,tests TEXT NOT NULL,status TEXT NOT NULL,created TEXT NOT NULL,published TEXT,PRIMARY KEY(skill,n));
         CREATE UNIQUE INDEX IF NOT EXISTS skill_active_version ON skill_version(skill,status) WHERE status IN ('pilot','live');
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor TEXT,action TEXT,target TEXT,created TEXT);
         """)
         for table, column, datatype in (
+            ("model_call", "job", "TEXT"),
             ("model_provider", "label", "TEXT NOT NULL DEFAULT ''"),
             ("model_provider", "connections", "TEXT NOT NULL DEFAULT '{}'"),
             ("cases", "tags", "TEXT DEFAULT ''"),
@@ -110,6 +123,7 @@ def init():
                 r["name"] for r in c.execute(f"PRAGMA table_info({table})")
             ]:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}")
+        c.execute("CREATE INDEX IF NOT EXISTS model_call_job ON model_call(job)")
         from .pricing import initialize
         initialize(c)
         from . import wallet

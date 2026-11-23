@@ -10,6 +10,7 @@ export default function Coupons({ offers, tip }) {
     }),
     [err, setErr] = useState(""),
     [busy, setBusy] = useState(false);
+  const [records, setRecords] = useState({});
   useEffect(() => {
     api("/admin/coupons")
       .then(setList)
@@ -82,9 +83,38 @@ export default function Coupons({ offers, tip }) {
       </form>
       {err && <p role="alert">{err}</p>}
       {list.map((c) => (
-        <p key={c.code}>
-          {c.name} · 券码 {c.code} · 已核销 {c.redeemed}/{c.quantity}
-        </p>
+        <details
+          key={c.code}
+          onToggle={async (e) => {
+            if (!e.currentTarget.open) return;
+            try {
+              const entries = await api(
+                "/admin/coupons/" + c.code + "/redemptions",
+              );
+              setRecords((prev) => ({ ...prev, [c.code]: entries }));
+            } catch (e) {
+              setErr(e.message);
+            }
+          }}
+        >
+          <summary>
+            {c.name} · 券码 {c.code} · 已核销 {c.redeemed}/{c.quantity}
+          </summary>
+          {records[c.code]?.map((r) => (
+            <p key={r.order_id}>
+              {r.login} · {r.order_id} · ¥{(r.cents / 100).toFixed(2)} ·
+              {
+                {
+                  paid: "已核销",
+                  reserved: "已预留",
+                  cancelled: "已取消",
+                  refunded: "已退款",
+                }[r.status]
+              }
+            </p>
+          ))}
+          {records[c.code]?.length === 0 && <p>暂无使用记录</p>}
+        </details>
       ))}
     </details>
   );

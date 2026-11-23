@@ -74,7 +74,31 @@ def poll_task(cfg, task_id):
 
 
 def prepare_background(folder, plan, copy, cfg=None):
-    cfg = cfg or model.route('video')
+    primary = cfg or model.route('video')
+    backup = primary.get("backup")
+    checkpoint = folder / 'video-task.json'
+    task = json.loads(checkpoint.read_text()) if checkpoint.exists() else {}
+    if backup and task.get("signature") == connection_signature(backup) and task.get("state") != "failed":
+        primary, backup = backup, None
+    try:
+        result = render_background(folder, plan, copy, primary)
+        plan["videoModel"] = primary["model"]
+        return result
+    except (OSError, ValueError):
+        # Only fail over after a confirmed rejection or terminal failure.
+        if not backup or not checkpoint.exists() or json.loads(checkpoint.read_text()).get("state") != "failed":
+            raise
+        result = render_background(folder, plan, copy, backup)
+        plan["videoModel"] = backup["model"]
+        return result
+
+
+def connection_signature(cfg):
+    signature = hashlib.sha256((cfg['url']+'\n'+cfg['model']).encode()).hexdigest()
+    return signature if cfg["protocol"] == "ark-video" else hashlib.sha256((signature + cfg["protocol"]).encode()).hexdigest()
+
+
+def render_background(folder, plan, copy, cfg):
     if cfg.get('protocol') not in ('ark-video','dashscope-video','atlas-video') or not cfg['url'] or not cfg['model']:
         raise ValueError('请配置受支持的异步文生视频连接。')
     folder.mkdir(parents=True, exist_ok=True)
@@ -84,9 +108,7 @@ def prepare_background(folder, plan, copy, cfg=None):
     if final_frame.is_file():
         return frames
     checkpoint = folder / 'video-task.json'
-    signature = hashlib.sha256((cfg['url']+'\n'+cfg['model']).encode()).hexdigest()
-    if cfg["protocol"] != "ark-video":
-        signature = hashlib.sha256((signature + cfg["protocol"]).encode()).hexdigest()
+    signature = connection_signature(cfg)
     task = json.loads(checkpoint.read_text()) if checkpoint.exists() else {}
     if task.get('state') in ('failed','cancelled','expired'):
         task = {}
@@ -97,6 +119,8 @@ def prepare_background(folder, plan, copy, cfg=None):
     prompt = ('制作商品广告的动态空环境，不能出现商品、包装、人物、文字或商标。中心和标题区域保持低细节，轻微环境运动。'
               '商品原图、标题和字幕将随后精确合成。主题：'+plan['coordination']['product']+'。创意：'+plan['coordination']['concept']+
               '。分镜信息：'+json.dumps(copy['storyboard'],ensure_ascii=False))
+    if method := plan.get("videoReference",{}).get("method"):
+        prompt += "。仅参考以下镜头衔接方法，保留商家商品与事实：" + method
     if not task:
         # A lost POST response must not cause a second paid submission on retry.
         model.reserve_provider_call('video')
@@ -117,7 +141,7 @@ def prepare_background(folder, plan, copy, cfg=None):
             raise
         finally:
             with db(True) as c:
-                c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms) VALUES(?,?,?,?,?,?)',(now()[:10],'video',cfg.get('provider','default'),cfg['model'],ok,round((time.monotonic()-started)*1000)))
+                c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms,job) VALUES(?,?,?,?,?,?,current_model_job())',(now()[:10],'video',cfg.get('provider','default'),cfg['model'],ok,round((time.monotonic()-started)*1000)))
     if not task.get('id'):
         raise ValueError('视频提交结果未知，请先在视频平台确认任务；不会自动重复提交。')
     try:

@@ -9,6 +9,7 @@ const statusText = { queued: "等待制作", running: "正在制作", failed: "�
 export default function AutoCreate({ assets, draft, patch, refresh, textRef, checkAsset, options, prices, profile, durations }) {
   const facts = draft.extraFacts || "";
   const setFacts = (extraFacts) => patch({ extraFacts });
+  const [multiAuthorized,setMultiAuthorized] = useState(false);
   const [manualCopy,setManualCopy] = useState(false);
   const [chosen, setChosen] = useState(null);
   const [plan, setPlan] = useState(null);
@@ -73,6 +74,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
     duration: durations.includes(draft.duration) ? draft.duration : 15,
     imageCount: draft.imageCount || 1, promotedItem: draft.promotedItem, businessGoal: draft.businessGoal,
     references: draft.kind === "video" ? [] : draft.references || [],
+    videoReference: draft.kind === "video" ? draft.videoReference?.id : undefined,
     profile, pricingVersion: prices.version,
     brief: draft.brief, asset: draft.asset, facts, assetConfirmed: draft.assetConfirmed,
     assetMode: draft.assetMode, identityRegion: draft.identityRegion, topicId: draft.topicId,
@@ -164,6 +166,19 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
         </div>
         {Speech && <button className="textbtn" type="button" disabled={!!busy} onClick={dictate}>{listening?"结束听写":"语音输入"}</button>}
         {draft.kind !== "video" && <details className="brief-facts"><summary>添加配色或构图参考图</summary>
+          <label><input type="checkbox" checked={multiAuthorized} onChange={e=>setMultiAuthorized(e.target.checked)}/> 我有权使用所选图片</label>
+          <label className="field">同时上传 2–3 张，自动分配用途<input type="file" multiple accept="image/jpeg,image/png,image/webp" disabled={!!busy||!multiAuthorized}
+            onChange={e=>{
+              const files=Array.from(e.target.files || []);e.target.value="";if(!files.length)return;
+              perform("upload",async()=>{
+                if (files.length<2||files.length>3) throw new Error("请同时选择两到三张图片。");
+                const ids=[];
+                for(const file of files){const body=new FormData();body.append("image",file);ids.push((await api("/assets","POST",body)).id);}
+                await refreshRef.current();
+                const selection=await api("/assets/suggest-sources","POST",{ids,brief:draft.brief,authorized:true});
+                patch({...selection,assetMode:"processed",assetConfirmed:false,identityRegion:null,visualDetail:null});
+              });
+            }}/></label>
           {[["color","配色参考"],["layout","构图参考"]].map(([role,label]) => {
             const refs = draft.references || [];
             const current = refs.find(r=>r.role===role);
@@ -175,6 +190,18 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
               }}/></label>
               {current && <label><input type="checkbox" checked={current.authorized} onChange={e=>change({...current,authorized:e.target.checked})}/> 我有权使用这张参考图</label>}</div>;
           })}</details>}
+        {draft.kind === "video" && <details className="brief-facts"><summary>参考视频节奏</summary>
+          <label><input type="checkbox" checked={!!draft.clipAuthorized} onChange={e=>patch({clipAuthorized:e.target.checked,videoReference:null})}/> 我有权使用这段参考视频</label>
+          <label className="field">上传 MP4 或 MOV（最大 12 MB）<input type="file" accept="video/mp4,video/quicktime" disabled={!!busy || !draft.clipAuthorized} onChange={e=>{
+            const file=e.target.files?.[0]; e.target.value=""; if (!file) return;
+            perform("upload",async()=>{
+              const body=new FormData(); body.append("video",file); body.append("authorized","true");
+              const clip=await api("/video-references","POST",body); patch({videoReference:clip});
+            });
+          }}/></label>
+          {draft.videoReference && <p>{draft.videoReference.name} · {draft.videoReference.duration} 秒 · 识别到 {draft.videoReference.cuts.length} 处画面变化 {draft.videoReference.method || ""}
+            <button className="textbtn" type="button" onClick={()=>patch({videoReference:null})}>移除参考</button></p>}
+        </details>}
         {options}
         {draft.kind !== "video" && <label className="checkline"><input type="checkbox" checked={manualCopy} onChange={e=>setManualCopy(e.target.checked)}/> 制作前自选文案</label>}
         {(plan?.questions?.length > 0 || facts || (draft.kind === "video" && draft.duration > 15)) && <div className="auto-questions"><p>{plan?.message || "补充商品信息"}</p>{plan?.questions?.map((question) => <p key={question}>{question}</p>)}<label>补充信息<textarea value={facts} maxLength={400} disabled={!!busy} onChange={(e) => setFacts(e.target.value)} placeholder="把实际价格、日期或适用条件写在这里" /></label></div>}

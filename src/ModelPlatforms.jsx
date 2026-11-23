@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api, Field } from "./ui.jsx";
 
-const kinds = [["text", "策划与文案"], ["image", "图片生成"], ["video", "视频生成"], ["vision", "商品与成品视觉审核"]];
-const descriptions = {text: "写标题、卖点和短片脚本，只需要文本模型。", image: "生成图片环境，商品原图与准确文案在本地合成。", video: "生成动态环境，再合成商品原图、三镜字幕和配乐。", vision: "接收图片，检查商品与成品；不是图片生成模型。"};
-const protocols = {chat: "Chat Completions", images: "Images Generations（同步图片）", "ark-video": "方舟视频任务", "dashscope-video": "百炼异步文生视频", "atlas-video": "Atlas 视频预测任务"};
-const localLabels = {text:"本地文案规则",image:"本地商品排版",video:"本地镜头运动",vision:"本地像素与文字检查"};
+const kinds = [["text", "策划与文案"], ["image", "图片生成"], ["video", "视频生成"], ["edit","图片编辑"], ["vision", "商品与成品视觉审核"]];
+const descriptions = {edit:"按商家要求编辑框选区域。",text: "写标题、卖点和短片脚本，只需要文本模型。", image: "生成图片环境，商品原图与准确文案在本地合成。", video: "生成动态环境，再合成商品原图、三镜字幕和配乐。", vision: "接收图片，检查商品与成品；不是图片生成模型。"};
+const protocols = {"image-edits":"Images Edits（同步编辑）",chat: "Chat Completions", images: "Images Generations（同步图片）", "ark-video": "方舟视频任务", "dashscope-video": "百炼异步文生视频", "atlas-video": "Atlas 视频预测任务"};
+const localLabels = {edit:"本地明暗调整",text:"本地文案规则",image:"本地商品排版",video:"本地镜头运动",vision:"本地像素与文字检查"};
 
 function Connection({ kind, platform, busy, act }) {
   const configured = platform.connections[kind];
@@ -93,21 +93,35 @@ function ProviderCosts({ costs, act, busy }) {
 export default function ModelPlatforms({config,usage,costs,busy,act}) {
   const {platforms,routes} = config;
   const [selection,select] = useState(Object.fromEntries(kinds.map(([k])=>[k,routes[k]||""])));
+  const [backups,setBackups] = useState(config.backups || {});
   const [kind,chooseKind] = useState("text");
   const [ids,chooseId] = useState({});
   const [draft,setDraft] = useState(null);
   const available = [...platforms,...(draft&&!platforms.some(p=>p.id===draft.id)?[draft]:[])].filter(p=>p.supported.includes(kind));
   const selected = available.find(p=>p.id===ids[kind])||available.find(p=>p.id===routes[kind])||available[0];
   return <>
-    <form className="formpanel integration" onSubmit={e=>{e.preventDefault();act("model-routes",selection);}}>
+    <form className="formpanel integration" onSubmit={e=>{e.preventDefault();act("model-routes",{...selection,backups,expectedVersion:config.routeVersion});}}>
       <h2>按能力选择调用平台</h2>
-      <p>所有创作模型统一在这里配置。四项能力可以来自不同平台，各自使用独立的 API 地址、模型和密钥。</p>
-      <div className="capability-grid">{kinds.map(([k,label])=><label className="field capability-card" key={k}><strong>{label}</strong><small>{descriptions[k]}</small><select aria-label={label+"调用连接"} value={selection[k]} onChange={e=>select({...selection,[k]:e.target.value})}>
+      {config.routeVersion > 0 && <small>当前路由版本 V{config.routeVersion}</small>}
+      <p>所有创作模型统一在这里配置。每项能力可以来自不同平台，各自使用独立的 API 地址、模型和密钥。</p>
+      <div className="capability-grid">{kinds.map(([k,label])=><label className="field capability-card" key={k}><strong>{label}</strong><small>{descriptions[k]}</small><select aria-label={label+"调用连接"} value={selection[k]} onChange={e=>{
+        const value=e.target.value;
+        select({...selection,[k]:value});
+        if (!value || value==="local-rules" || value===backups[k]) setBackups({...backups,[k]:""});
+      }}>
         <option value="">{!config.formal&&config.defaults?.[k]?.model ? "已有配置 · "+config.defaults[k].model : localLabels[k]+"（默认）"}</option>
         {(config.defaults?.[k]?.model || selection[k]==="local-rules") && <option value="local-rules">{localLabels[k]}</option>}
         {platforms.filter(p=>p.supported.includes(k)&&p.connections[k]?.model&&(!config.formal||p.connections[k].approved)).map(p=><option value={p.id} key={p.id}>{p.label} · {p.connections[k].model}</option>)}
       </select><small>已生效：{config.effective?.[k]?.model || localLabels[k]}{config.effective?.[k]?.url && <><br />{config.effective[k].url}</>}</small></label>)}</div>
       <p className="fineprint">一键创作会实际使用已保存的调用设置。白底图、透明贴片与样机保留本地制作；云端失败时提示重试。配置模型不代表已完成连接验证。</p>
+      <details><summary>备用模型</summary>
+        {kinds.map(([k,label])=><label key={k} className="field">{label}备用连接
+          <select value={backups[k]||""} disabled={!selection[k] || selection[k]==="local-rules"} onChange={e=>setBackups({...backups,[k]:e.target.value})}>
+            <option value="">无备用连接</option>
+            {platforms.filter(p=>p.id!==selection[k] && p.connections[k]?.model && (!config.formal||p.connections[k].approved))
+              .map(p=><option key={p.id} value={p.id}>{p.label} · {p.connections[k].model}</option>)}
+          </select></label>)}
+      </details>
       {kinds.some(([k])=>!routes[k]&&config.defaults?.[k]?.model)&&<p className="fineprint">「已有配置」沿用之前保存或部署注入的连接。要调整它，请在下方保存独立连接，再在上方选用。</p>}
       <button className="primary" disabled={busy}>保存调用设置</button>
       <div className="model-tests"><button type="button" className="secondary" disabled={busy} onClick={()=>act("test-model",{})}>验证已保存的文案连接</button><button type="button" className="secondary" disabled={busy} onClick={()=>act("test-vision",{})}>验证已保存的视觉连接</button></div>
@@ -118,7 +132,7 @@ export default function ModelPlatforms({config,usage,costs,busy,act}) {
     <label className="field">{kinds.find(k=>k[0]===kind)[1]}平台<select aria-label="配置平台" value={selected.id} onChange={e=>chooseId({...ids,[kind]:e.target.value})}>{available.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
     {kind!=="text"&&<p className="fineprint">仅列出 Trupic 当前已接入此能力的连接类型。DeepSeek 的文案连接不用于生图、视频或图片审核。</p>}
     {kind==="video"&&<p className="fineprint">选择已开通的文生视频模型。方舟、百炼与 Atlas 分别使用各自的异步任务接口。</p>}
-    <button type="button" className="secondary" disabled={busy} onClick={()=>{const p={id:"custom-"+crypto.randomUUID().replaceAll("-",""),label:"新增兼容连接",supported:[kind],connections:{[kind]:{url:"",model:"",hasKey:false,protocol:kind==="video"?"ark-video":kind==="image"?"images":"chat"}}};setDraft(p);chooseId({...ids,[kind]:p.id});}}>新增兼容连接</button>
+    <button type="button" className="secondary" disabled={busy} onClick={()=>{const p={id:"custom-"+crypto.randomUUID().replaceAll("-",""),label:"新增兼容连接",supported:[kind],connections:{[kind]:{url:"",model:"",hasKey:false,protocol:kind==="video"?"ark-video":kind==="image"?"images":kind==="edit"?"image-edits":"chat"}}};setDraft(p);chooseId({...ids,[kind]:p.id});}}>新增兼容连接</button>
     <Connection key={selected.id+kind} kind={kind} platform={selected} busy={busy} act={act} />
     {costs && <ProviderCosts costs={costs} act={act} busy={busy} />}
     <h2>今日模型调用</h2><small>UTC · 未配置的能力使用本地处理</small>

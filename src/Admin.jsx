@@ -116,7 +116,7 @@ export default function Admin({ tip }) {
       ) : (
         <>
           {tab === "dashboard" && <section className="formpanel"><h2>经营概览</h2><div className="datarows">
-            {[["今日注册商家", d.metrics.registrations],["今日发起创作的商家",d.metrics.active],["付费商家",d.metrics.payers],["累计实收（扣除全额退款）","¥"+(d.metrics.revenueCents/100).toFixed(2)],["任务交付成功率",d.metrics.finished?(100*d.metrics.delivered/d.metrics.finished).toFixed(1)+"%":"暂无完成任务"],["注册后第七天创作留存",d.metrics.cohort?d.metrics.retained+" / "+d.metrics.cohort:"暂无到期商家"]].map(([k,v])=><div key={k}><span>{k}</span><b>{v}</b></div>)}
+            {[["已核对模型账单（人民币）",d.costSummary.billed===null?"待对账":"¥"+(d.costSummary.billed/1000000).toFixed(2)],["已核对成本的任务",d.costSummary.reconciled],["云文件同步异常",d.costSummary.storageErrors],["今日注册商家", d.metrics.registrations],["今日发起创作的商家",d.metrics.active],["付费商家",d.metrics.payers],["累计实收（扣除全额退款）","¥"+(d.metrics.revenueCents/100).toFixed(2)],["任务交付成功率",d.metrics.finished?(100*d.metrics.delivered/d.metrics.finished).toFixed(1)+"%":"暂无完成任务"],["注册后第七天创作留存",d.metrics.cohort?d.metrics.retained+" / "+d.metrics.cohort:"暂无到期商家"]].map(([k,v])=><div key={k}><span>{k}</span><b>{v}</b></div>)}
           </div></section>}
           {tab === "merchants" && <Merchants role={d.role} tip={tip}/>}
           {tab === "growth" && <GrowthAdmin tip={tip} />}

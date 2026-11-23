@@ -33,10 +33,21 @@ def initialize(c):
     CREATE TABLE IF NOT EXISTS purchase(id TEXT PRIMARY KEY,tenant TEXT NOT NULL,request_key TEXT NOT NULL,
         offer TEXT NOT NULL,snapshot TEXT NOT NULL,cents INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'pending',
         created TEXT NOT NULL,paid TEXT,receipt TEXT UNIQUE,UNIQUE(tenant,request_key));
+    CREATE TABLE IF NOT EXISTS payment_review(order_id TEXT PRIMARY KEY,reason TEXT NOT NULL,state TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS subscription_cursor(order_id TEXT PRIMARY KEY,months_issued INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS subscription(order_id TEXT PRIMARY KEY,tenant TEXT NOT NULL,starts TEXT NOT NULL,
         ends TEXT NOT NULL,months INTEGER NOT NULL,credits INTEGER NOT NULL);
     """)
+    c.execute("BEGIN IMMEDIATE")
+    if "carry_cap" not in {
+        r["name"] for r in c.execute("PRAGMA table_info(plan_offer)")
+    }:
+        c.execute(
+            "ALTER TABLE plan_offer ADD COLUMN carry_cap INTEGER NOT NULL DEFAULT 0"
+        )
+    if "payer" not in {r["name"] for r in c.execute("PRAGMA table_info(purchase)")}:
+        c.execute("ALTER TABLE purchase ADD COLUMN payer TEXT")
+        c.execute("ALTER TABLE purchase ADD COLUMN payer_login TEXT")
 
 
 def subscription(c, t):
@@ -49,7 +60,8 @@ def subscription(c, t):
 def issue_due(c, t):
     at = now()
     rows = c.execute(
-        """SELECT s.*,COALESCE(p.months_issued,0) issued FROM subscription s
+        """SELECT s.*,COALESCE(p.months_issued,0) issued,
+            COALESCE(json_extract(o.snapshot,'$.carry_cap'),0) carry_cap FROM subscription s JOIN purchase o ON o.id=s.order_id
         LEFT JOIN subscription_cursor p ON p.order_id=s.order_id
         WHERE s.tenant=? AND s.starts<=? AND COALESCE(p.months_issued,0)<s.months""",
         (t, at),
@@ -63,6 +75,18 @@ def issue_due(c, t):
             wallet.grant(
                 c, t, "套餐月度积分", s["order_id"] + f":month:{i}", s["credits"], ends
             )
+            if s["carry_cap"]:
+                c.execute(
+                    """INSERT OR IGNORE INTO carry_policy(tenant,ref,remaining,until_at,order_id)
+                    VALUES(?,?,?,?,?)""",
+                    (
+                        t,
+                        s["order_id"] + f":month:{i}",
+                        s["carry_cap"],
+                        month_after(s["starts"], i + 2),
+                        s["order_id"],
+                    ),
+                )
             issued = i + 1
         if issued != s["issued"]:
             c.execute(
@@ -102,7 +126,7 @@ def verify_bridge(message):
         abort(403)
 
 
-def fulfill(c, row, receipt):
+def fulfill(c, row, receipt, payer=None, payer_login=None):
     t, oid = row["tenant"], row["id"]
     offer = json.loads(row["snapshot"])
     previous = c.execute(
@@ -110,7 +134,25 @@ def fulfill(c, row, receipt):
     ).fetchone()
     if previous and previous["id"] != oid:
         raise ValueError("支付凭证已关联其他订单。")
+    if payer is not None and (
+        not isinstance(payer, str) or not 1 <= len(payer.strip()) <= 180
+    ):
+        raise ValueError("付款人凭据无效。")
+    if payer_login is not None and (
+        not payer
+        or not isinstance(payer_login, str)
+        or not 1 <= len(payer_login.strip()) <= 64
+    ):
+        raise ValueError("付款人账号须关联支付渠道的付款凭据。")
+    if payer:
+        payer = payer.strip()
+    if payer_login:
+        payer_login = payer_login.strip().lower()
     if row["state"] == "paid":
+        if (payer and payer != row["payer"]) or (
+            payer_login and payer_login != row["payer_login"]
+        ):
+            raise ValueError("付款人凭据与已支付订单不符。")
         if row["receipt"] != receipt:
             raise ValueError("支付凭证与已结算订单不同。")
         return
@@ -134,10 +176,34 @@ def fulfill(c, row, receipt):
     if offer["bonus"]:
         wallet.grant(c, t, "订单赠送积分", oid + ":bonus", offer["bonus"], expiry)
     c.execute(
-        "UPDATE purchase SET state='paid',paid=?,receipt=? WHERE id=?",
-        (now(), receipt, oid),
+        "UPDATE purchase SET state='paid',paid=?,receipt=?,payer=?,payer_login=? WHERE id=?",
+        (now(), receipt, payer, payer_login, oid),
     )
     c.execute("UPDATE redemption SET status='paid' WHERE order_id=?", (oid,))
+    reasons = []
+    initiator = offer.get("initiator", t)
+    if initiator != t and (not payer or not payer_login):
+        reasons.append("代付订单待核实付款人")
+    if payer_login:
+        payer_account = c.execute(
+            "SELECT id FROM merchant WHERE login=?", (payer_login,)
+        ).fetchone()
+        attribution = offer.get("attribution") or {}
+        if payer_account and payer_account[0] in attribution.values():
+            reasons.append("推广方代付")
+    if (
+        payer
+        and c.execute(
+            "SELECT 1 FROM purchase WHERE payer=? AND tenant<>? AND paid IS NOT NULL LIMIT 1",
+            (payer, t),
+        ).fetchone()
+    ):
+        reasons.append("同一付款凭据用于多个商户")
+    if reasons:
+        c.execute(
+            "INSERT INTO payment_review VALUES(?,?,'pending')",
+            (oid, "、".join(reasons)),
+        )
     growth.milestone(
         c,
         t,
@@ -147,6 +213,10 @@ def fulfill(c, row, receipt):
         offer.get("attribution"),
         offer.get("growthRules"),
     )
+    if reasons:
+        c.execute(
+            "UPDATE commission SET status='payer_review' WHERE order_id=?", (oid,)
+        )
     audit(c, "payment-bridge", "收款核对并发放权益", oid)
 
 
@@ -158,6 +228,7 @@ def refund(c, row, receipt):
         return
     c.execute("UPDATE purchase SET state='refunded' WHERE id=?", (oid,))
     c.execute("DELETE FROM subscription WHERE order_id=?", (oid,))
+    c.execute("UPDATE payment_review SET state='refunded' WHERE order_id=?", (oid,))
     # Revoke only this order's remaining lots. Held credits expire if their job releases them.
     c.execute(
         "UPDATE credit_lot SET expires=? WHERE tenant=? AND substr(ref,1,?)=?",
@@ -208,7 +279,7 @@ def register(app, services):
             offers = [
                 dict(r)
                 for r in c.execute(
-                    "SELECT * FROM plan_offer WHERE enabled=1 ORDER BY cents"
+                    "SELECT * FROM plan_offer WHERE enabled=1 AND cycle!='quarter' ORDER BY cents"
                 )
                 if active or r["cycle"] != "pack"
             ]
@@ -268,7 +339,12 @@ def register(app, services):
             offer = c.execute(
                 "SELECT * FROM plan_offer WHERE id=? AND enabled=1", (v.get("offer"),)
             ).fetchone()
-            if not offer or offer["cycle"] == "pack" and not subscription(c, t):
+            if (
+                not offer
+                or offer["cycle"] == "quarter"
+                or offer["cycle"] == "pack"
+                and not subscription(c, t)
+            ):
                 raise ValueError("此商品当前不可购买。")
             code = services["string"](v.get("coupon"), 64)
             total = coupons.calculate(c, t, offer, code)
@@ -355,7 +431,9 @@ def register(app, services):
             elif v["status"] == "refunded":
                 refund(c, row, v["receipt"])
             else:
-                fulfill(c, row, v["receipt"])
+                fulfill(
+                    c, row, v["receipt"], v.get("payerReference"), v.get("payerLogin")
+                )
         return jsonify(ok=True)
 
     @app.route("/api/admin/offers", methods=["POST", "GET"])
@@ -365,20 +443,23 @@ def register(app, services):
         with db(request.method == "POST") as c:
             if request.method == "POST":
                 v = services["body"]()
+                v.setdefault("carry_cap", 0)
                 if (
                     not isinstance(v.get("name"), str)
                     or not v["name"].strip()
-                    or v.get("cycle") not in ("month", "year", "pack")
+                    or v.get("cycle") not in ("month", "year", "quarter", "pack")
                     or any(
                         type(v.get(k)) is not int or not 0 <= v[k] <= 10_000_000
-                        for k in ("cents", "credits", "bonus")
+                        for k in ("cents", "credits", "bonus", "carry_cap")
                     )
                     or min(v["cents"], v["credits"]) < 1
+                    or v["carry_cap"] > v["credits"]
+                    or (v["cycle"] == "pack" and v["carry_cap"])
                 ):
                     raise ValueError("请填写套餐名称、周期、正整数价格（分）和积分。")
                 oid = ident()
                 c.execute(
-                    "INSERT INTO plan_offer VALUES(?,?,?,?,?,?,1)",
+                    "INSERT INTO plan_offer(id,name,cycle,cents,credits,bonus,enabled,carry_cap) VALUES(?,?,?,?,?,?,?,?)",
                     (
                         oid,
                         v["name"].strip()[:60],
@@ -386,6 +467,8 @@ def register(app, services):
                         v["cents"],
                         v["credits"],
                         v["bonus"],
+                        int(v["cycle"] != "quarter"),
+                        v["carry_cap"],
                     ),
                 )
                 audit(c, t, "上架套餐或积分包", oid)

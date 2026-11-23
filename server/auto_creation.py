@@ -158,6 +158,12 @@ def coordinate(services, c, tenant, v):
     if refs:
         common_request["posterStyle"] = "photo-grid"
     base = services["plan_spec"](c, tenant, common_request)
+    if v.get("videoReference"):
+        if mode != "video":
+            raise ValueError("视频节奏参考用于短片创作。")
+        row = services["owner"](c, "video_reference", v["videoReference"], tenant)
+        base["plan"]["videoReference"] = dict(id=row["id"], name=row["name"], authorized=True,
+                                              **json.loads(row["analysis"]))
     if refs:
         base["plan"]["references"] = refs
         base["plan"]["design"]["photoLayout"] = next((r["layout"] for r in refs if r["role"]=="layout"), "framed")

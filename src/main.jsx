@@ -64,6 +64,7 @@ import { Promotion } from "./Growth.jsx";
 import { MerchantShop } from "./Commerce.jsx";
 import WorkHistory from "./WorkHistory.jsx";
 import AutoCreate from "./AutoCreate.jsx";
+import {Support} from "./Support.jsx";
 import ProductRegion from "./ProductRegion.jsx";
 import {
   FontPicker,
@@ -140,6 +141,16 @@ function OptimizedBrief({ plan, fullPosterPrompt }) {
     </details>
   );
 }
+function promotionSource() {
+  const query = new URLSearchParams(location.search);
+  return { invite: query.get("invite") || "", channel: query.get("channel") || "" };
+}
+function clearPromotionSource() {
+  const url = new URL(location.href);
+  url.searchParams.delete("invite");
+  url.searchParams.delete("channel");
+  history.replaceState(history.state, "", url);
+}
 function App() {
   const [data, setData] = useState(null),
     [page, setPage] = useState(route),
@@ -163,6 +174,7 @@ function App() {
     [search, setSearch] = useState(""),
     [job, setJob] = useState(null);
   const [revisionQuote, setRevisionQuote] = useState(null);
+  const [editBox,setEditBox] = useState(null);
   const [editText,setEditText] = useState("");
   const [editField,setEditField] = useState("");
   const [duplicate,setDuplicate] = useState(false);
@@ -204,9 +216,9 @@ function App() {
     refresh()
       .then((d) => {
         setProfile(d.profile);
-        const invite = new URLSearchParams(location.search).get("invite");
+        const { invite, channel } = promotionSource();
         if (invite && !d.login) setModal("account");
-        if (invite && d.login) api("/promotion/claim","POST",{code:invite}).catch(e=>tip(e.message));
+        if (invite && d.login) api("/promotion/claim","POST",{code:invite, channel}).then(clearPromotionSource).catch(e=>tip(e.message));
         setBootError("");
         const j = d.jobs.find((j) => !j.autoCreation && ["queued", "running"].includes(j.state));
         if (j) {
@@ -244,7 +256,7 @@ function App() {
         if (active) {
           setWork(w);
           setVersion(w.current);
-          setDetailTab("copy");setPickRegion(false);setEditText("");setEditField("");setDuplicate(false);
+          setDetailTab("copy");setPickRegion(false);setEditBox(null);setEditText("");setEditField("");setDuplicate(false);
         }
       })
       .catch((e) => {
@@ -400,7 +412,7 @@ function App() {
   }
   async function quoteRevision(action, ratio) {
     await run("quote", async () => {
-      const q = await api("/works/" + work.id + "/revision-quote", "POST", {base:version,action,ratio,...(action==="edit"?{instruction:editText,field:editField,duplicate}:{})});
+      const q = await api("/works/" + work.id + "/revision-quote", "POST", {base:version,action,ratio,...(action==="region"?{instruction:editText,region:editBox,duplicate}:action==="edit"?{instruction:editText,field:editField,duplicate}:{})});
       token.current = crypto.randomUUID();
       setRevisionQuote(q); setShortChoice(0); open("revisionQuote");
     });
@@ -793,7 +805,7 @@ function App() {
               )}
             </>
           )}
-          {page === "promotion" && <Promotion onLogin={showAccount}/>}
+          {page === "promotion" && <Promotion key={data.login || "guest"} onLogin={showAccount}/>}
           {page === "assets" && (
             <>
               <PageHead
@@ -1135,14 +1147,16 @@ function App() {
                         </div>
                       )}
                     </div>
+                    <Support key={work.id} work={work.id}/>
                     <section className="formpanel"><h3>修改作品</h3>
                       {!!versionData.editRegions?.length && <button className="secondary" onClick={()=>{setPickRegion(!pickRegion);document.querySelector(".interactive-poster")?.scrollIntoView({block:"center"});}}>{pickRegion?"退出选区":"点选海报文字修改"}</button>}
                       <label className="field">修改位置<select value={editField} onChange={e=>setEditField(e.target.value)}>
-                        <option value="">按一句话要求修改</option><option value="title">标题</option><option value="body">正文</option><option value="cta">行动句</option>
+                        <option value="">按一句话要求修改</option><option value="title">标题</option><option value="body">正文</option><option value="cta">行动句</option>{work.kind==="poster" && <option value="background">背景选区</option>}
                       </select></label>
-                      <label className="field">{editField?"替换文字":"修改要求"}<textarea id="revision-text" maxLength={400} value={editText} onChange={e=>setEditText(e.target.value)} placeholder={editField?"写下新的文字":"例如：48元改成38元；换一张"}/></label>
+                      {editField==="background" && <ProductRegion background asset={{original:versionData.poster}} region={editBox} change={setEditBox}/>}
+                      <label className="field">{editField==="background"?"选区修改要求":editField?"替换文字":"修改要求"}<textarea id="revision-text" maxLength={400} value={editText} onChange={e=>setEditText(e.target.value)} placeholder={editField==="background"?"提亮、压暗，或描述要重绘的背景":editField?"写下新的文字":"例如：48元改成38元；换一张"}/></label>
                       <label><input type="checkbox" checked={duplicate} onChange={e=>setDuplicate(e.target.checked)}/> 照这个再做，另存作品</label>
-                      <button className="secondary" disabled={!editText.trim()||!!busy} onClick={()=>quoteRevision("edit")}>查看修改与积分</button>
+                      <button className="secondary" disabled={!editText.trim()||!!busy||(editField==="background"&&!editBox)} onClick={()=>quoteRevision(editField==="background"?"region":"edit")}>查看修改与积分</button>
                     </section>
                     <div className="advice">
                       <span>
@@ -1662,7 +1676,8 @@ function App() {
                 onSubmit={(e) => {
                   e.preventDefault();
                   run("account", async () => {
-                    await api("/account/" + accountMode, "POST", {...auth, invite:new URLSearchParams(location.search).get("invite") || ""});
+                    await api("/account/" + accountMode, "POST", {...auth, ...promotionSource()});
+                    clearPromotionSource();
                     const d = await refresh();
                     setProfile(d.profile);
                     if (accountMode === "login") {

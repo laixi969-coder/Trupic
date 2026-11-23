@@ -584,6 +584,16 @@ def content_review(dest, original, spec, copy, layout=None):
     from . import model
 
     cfg = model.route("vision")
+    try:
+        return review_with(cfg, dest, original, spec, copy, layout)
+    except (OSError, model.InvalidModelOutput):
+        if not cfg.get("backup"):
+            raise
+        return review_with(cfg["backup"], dest, original, spec, copy, layout)
+
+
+def review_with(cfg, dest, original, spec, copy, layout):
+    from . import model
     name = cfg["model"]
     if not name:
         return None
@@ -682,10 +692,20 @@ def source_images(path, region):
 
 def preflight(spec, folder):
     from . import model
-    from .campaign import UNSUPPORTED, evidence_clauses
-    from .creative import NUMCLAIM, RISK
 
     cfg = model.route("vision")
+    try:
+        return preflight_with(cfg, spec, folder)
+    except (OSError, model.InvalidModelOutput):
+        if not cfg.get("backup"):
+            raise ValueError("商品原图复核暂时不可用，请稍后重试。")
+        return preflight_with(cfg["backup"], spec, folder)
+
+
+def preflight_with(cfg, spec, folder):
+    from . import model
+    from .campaign import UNSUPPORTED, evidence_clauses
+    from .creative import NUMCLAIM, RISK
     name = cfg["model"]
     if not spec["asset"] or spec["kind"] == "copy" or not name:
         return
@@ -745,7 +765,9 @@ def preflight(spec, folder):
             or not result["reason"].strip()
         ):
             raise ValueError()
-    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+    except (OSError, model.InvalidModelOutput):
+        raise
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise ValueError("商品原图复核暂时不可用，请稍后重试。") from exc
     if not result["ok"]:
         raise ValueError("请补充商品原图：" + result["reason"][:200])

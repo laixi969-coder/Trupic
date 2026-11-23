@@ -2,7 +2,7 @@
 
 import re
 
-from .creative import next_suggestion, RISK
+from .creative import next_suggestion, RISK, NUMCLAIM
 from .design import layout_alternative, next_style
 from .formats import RATIOS, output_spec
 from .prompt_agent import optimize
@@ -98,9 +98,48 @@ def edit_request(spec, cp, instruction, field):
     plan["revisionInstruction"] = instruction
 
 
-def prepare(spec, cp, action, ratio=None, option=0, instruction=None, field=None):
+def resolve_instruction(spec, cp, instruction, field):
+    """Resolve a free-form copy request once, before the merchant confirms the quote."""
+    import copy
+    from . import model
+    try:
+        edit_request(copy.deepcopy(spec), copy.deepcopy(cp), instruction, field)
+        return instruction
+    except ValueError as exc:
+        if not str(exc).startswith("请写明要改的部分") or not model.route("text")["model"]:
+            raise
+    result, _ = model.ask("你修改已有商家文案。仅返回需要替换的字段，可用字段为 title/body/cta。"
+        "保留未要求修改的内容及全部交易事实，禁止新增优惠、价格、疗效或承诺。",
+        {"instruction":instruction, "existing":{k:cp.get(k,"") for k in ("title","body","cta","offer","terms")},
+         "facts":spec["plan"].get("facts","")})
+    names={"title":"标题","body":"正文","cta":"行动句"}
+    known=" ".join(str(s) for s in [instruction,spec["plan"].get("facts",""),*cp.values()])
+    if not result or set(result)-names.keys():
+        raise ValueError("无法明确所需的文案修改，请指出要改的文字。")
+    clauses=[]
+    for key,text in result.items():
+        if not isinstance(text,str) or not text.strip() or any(mark in text for mark in ("；",";","\n")):
+            raise ValueError("修改稿需要重新整理，请换个说法。")
+        if RISK.search(text) or any(claim not in known for claim in NUMCLAIM.findall(text)):
+            raise ValueError("修改稿含有未经确认的经营声明。")
+        if text != cp.get(key):
+            clauses.append(names[key]+"改为"+text)
+    resolved="；".join(clauses)
+    if not resolved or len(resolved)>400:
+        raise ValueError("没有可确认的简短修改，请写明要改的部分。")
+    return resolved
+
+
+def prepare(spec, cp, action, ratio=None, option=0, instruction=None, field=None, region=None):
     plan = spec["plan"]
-    if action in ("layout", "image"):
+    if action in ("layout","image","ratio","redesign"):
+        plan.pop("backgroundPatches", None)
+    if action == "region":
+        from .region_edit import validate
+        if spec["kind"] != "poster":
+            raise ValueError("请选择海报作品。")
+        validate(region, instruction, cp.get("protectedAreas",[]))
+    elif action in ("layout", "image"):
         if spec["kind"] == "copy":
             raise ValueError("纯文案作品无需换图。")
         design = layout_alternative(plan, cp, spec["kind"])

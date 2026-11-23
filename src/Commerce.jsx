@@ -2,7 +2,12 @@ import React, { useEffect, useState, useRef } from "react";
 import Coupons from "./Coupons.jsx";
 import { api } from "./ui.jsx";
 
-const cycles = { month: "月付", year: "年付", pack: "积分包" };
+const cycles = {
+  month: "月付",
+  year: "年付",
+  quarter: "季付（后台储备）",
+  pack: "积分包",
+};
 const labels = {
   copy: "文案",
   poster: "每张图片",
@@ -20,7 +25,106 @@ const initialOffer = {
   cents: "",
   credits: "",
   bonus: 0,
+  carry_cap: 0,
 };
+
+function TaskCosts() {
+  const [rows, setRows] = useState([]),
+    [filter, setFilter] = useState(""),
+    [err, setErr] = useState(""),
+    [busy, setBusy] = useState(false);
+  async function load() {
+    setErr("");
+    try {
+      setRows(await api("/admin/task-costs?job=" + encodeURIComponent(filter)));
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+  return (
+    <details
+      className="formpanel"
+      onToggle={(e) => {
+        if (e.target === e.currentTarget && e.currentTarget.open) load();
+      }}
+    >
+      <summary>逐任务成本与毛利</summary>
+      <p>
+        收入按该任务消耗的积分占原单全部权益的比例分摊。模型毛利为分摊收入减已核对的模型成本，单位为人民币元。
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          load();
+        }}
+      >
+        <label className="field">
+          任务编号
+          <input value={filter} onChange={(e) => setFilter(e.target.value)} />
+        </label>
+        <button className="secondary">查询</button>
+      </form>
+      {err && <p role="alert">{err}</p>}
+      {rows.map((r) => (
+        <details key={r.id}>
+          <summary>
+            {r.brief} · 模型毛利 {r.margin ?? "待核对"}
+          </summary>
+          <p>
+            {r.id} · 已关联模型调用 {r.calls} 次 · 分摊收入{" "}
+            {r.revenue ?? "待核对"} · 模型成本 {r.modelCost ?? "待核对"}
+          </p>
+          {["complete", "failed"].includes(r.state) && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const f = new FormData(e.currentTarget);
+                setBusy(true);
+                setErr("");
+                try {
+                  await api("/admin/task-costs", "POST", {
+                    job: r.id,
+                    amount: f.get("amount"),
+                    source: f.get("source"),
+                  });
+                  await load();
+                } catch (error) {
+                  setErr(error.message);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              <label className="field">
+                该任务实际模型成本（元）
+                <input
+                  type="number"
+                  name="amount"
+                  min="0"
+                  step="0.000001"
+                  defaultValue={r.modelCost}
+                  required
+                />
+              </label>
+              <label className="field">
+                账单编号与核对依据
+                <input
+                  name="source"
+                  maxLength={220}
+                  defaultValue={r.source}
+                  required
+                />
+              </label>
+              <button className="secondary" disabled={busy}>
+                保存任务对账
+              </button>
+            </form>
+          )}
+        </details>
+      ))}
+    </details>
+  );
+}
 
 export function FinanceAdmin({ tip }) {
   const [rates, setRates] = useState(null),
@@ -117,7 +221,13 @@ export function FinanceAdmin({ tip }) {
             周期
             <select
               value={form.cycle}
-              onChange={(e) => setForm({ ...form, cycle: e.target.value })}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  cycle: e.target.value,
+                  carry_cap: e.target.value === "pack" ? 0 : form.carry_cap,
+                })
+              }
             >
               {Object.entries(cycles).map(([k, v]) => (
                 <option value={k} key={k}>
@@ -130,13 +240,16 @@ export function FinanceAdmin({ tip }) {
             ["cents", "售价（分）"],
             ["credits", form.cycle === "pack" ? "积分包额度" : "每月积分"],
             ["bonus", "订单赠分"],
+            ...(form.cycle === "pack"
+              ? []
+              : [["carry_cap", "每月可结转至下月的积分上限"]]),
           ].map(([k, v]) => (
             <label key={k} className="field">
               {v}
               <input
                 required
                 type="number"
-                min={k === "bonus" ? 0 : 1}
+                min={["bonus", "carry_cap"].includes(k) ? 0 : 1}
                 value={form[k]}
                 onChange={(e) =>
                   setForm({
@@ -149,10 +262,11 @@ export function FinanceAdmin({ tip }) {
           ))}
         </div>
         <button className="primary" disabled={busy}>
-          上架
+          {form.cycle === "quarter" ? "保存后台方案" : "上架"}
         </button>
       </form>
       <Coupons offers={offers} tip={tip} />
+      <TaskCosts />
       {offers.map((o) => (
         <div className="adminrow" key={o.id}>
           <span>
@@ -276,6 +390,8 @@ export function MerchantShop({ merchant = "" }) {
             </b>
             <p>
               {o.credits} 积分{o.cycle === "pack" ? "" : "/月"}
+              {o.carry_cap > 0 &&
+                " · 当月余额最多可结转 " + o.carry_cap + " 积分至下月"}
               {o.bonus > 0 && " · 另赠 " + o.bonus + " 积分"}
             </p>
           </div>

@@ -163,9 +163,7 @@ def write_options(spec, tenant, previous=()):
                 "content": json.dumps(payload, ensure_ascii=False) + "\n" + task,
             },
         ]
-        return model.chat_request(
-            {**cfg, "responseSchema": schema}, cfg["model"], messages, tokens, "text"
-        ), cfg["model"]
+        return model.routed_chat({**cfg, "responseSchema": schema}, messages, tokens, "text")
 
     base = draft_copy(plan)
     for key in ("offer", "terms"):

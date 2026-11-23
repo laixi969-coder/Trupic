@@ -42,7 +42,7 @@ from .creative import (
 from .governance import active_rule, discover, run_tests, retrieve_method
 from .media import ROOT, SIZES, inspect_upload, photo_layout_features, render
 from .store import DATA, audit, db, dump, ident, init, now, secret, tenant_new
-from . import event_sources, costs, pricing, work_history, revisions, wallet, commerce, model_admission, growth, coupons, staff
+from . import object_storage, region_edit, reference_assets, event_sources, costs, pricing, work_history, revisions, wallet, commerce, model_admission, growth, coupons, staff
 from .topics import weekly, check_topic
 from .formats import output_spec
 from .design import (
@@ -61,7 +61,7 @@ from .product_bundle import register as register_bundles
 from .auto_creation import register as register_creations
 from .auto_pipeline import shared_copy
 from .model_tools import register as register_model_tools
-from .skill_library import attach as attach_skills, catalog as skill_library_catalog, effective_versions, manage_version
+from .skill_library import attach as attach_skills, catalog as skill_library_catalog, effective_versions, manage_version, import_package
 from .visual_review import (
     FIDELITY,
     LayoutOverflow,
@@ -458,13 +458,13 @@ def account(action):
                 "UPDATE merchant SET login=?,password=? WHERE id=?",
                 (login, generate_password_hash(pw), t),
             )
-            growth.bind(c,t,string(v.get("invite"),64),new=True)
+            growth.bind_link(c,t,string(v.get("invite"),64),string(v.get("channel"),64),new=True)
         elif action == "login":
             r = c.execute("SELECT * FROM merchant WHERE login=?", (login,)).fetchone()
             if not r or not check_password_hash(r["password"], pw):
                 abort(401, description="账号或密码不正确。")
             session.clear()
-            growth.bind(c,r["id"],string(v.get("invite"),64))
+            growth.bind_link(c,r["id"],string(v.get("invite"),64),string(v.get("channel"),64))
             session["tenant"] = r["id"]
             session.permanent = True
         else:
@@ -493,6 +493,7 @@ def upload():
                     now(),
                 ),
             )
+            object_storage.enqueue(c,folder,{"original.png",info["file"]})
             return jsonify(
                 asset_json(
                     c.execute("SELECT * FROM asset WHERE id=?", (id,)).fetchone()
@@ -522,6 +523,7 @@ def delete_asset(id):
             (t,id,id),
         ).fetchone():
             raise ValueError("已有任务引用此素材，需保留以供版本回看。")
+        object_storage.forget(c,DATA / t / "assets" / id)
         c.execute("DELETE FROM asset WHERE id=?", (id,))
     shutil.rmtree(DATA / t / "assets" / id, ignore_errors=True)
     return jsonify(ok=True)
@@ -728,7 +730,10 @@ def enqueue(t, v, work=None):
             s["pricingSnapshot"] = q["pricingSnapshot"]
             nxt = c.execute("SELECT MAX(n)+1 FROM version WHERE work=?", (work,)).fetchone()[0]
             s["variant"] = nxt - 1
-            revisions.prepare(s, json.loads(r["copy"]), q["action"], q.get("ratio"), v.get("option", 0),q.get("instruction"),q.get("field"))
+            revisions.prepare(s, json.loads(r["copy"]), q["action"], q.get("ratio"), v.get("option", 0),q.get("instruction"),q.get("field"),q.get("region"))
+            if q["action"] == "region":
+                s["variant"] = json.loads(r["spec"])["variant"]
+                s["regionEdit"] = dict(work=work,version=q["base"],box=q["region"],instruction=q["instruction"])
             if q["action"] == "ratio" or q.get("duplicate"):
                 s["plan"]["sourceVersion"] = {"work": work, "version": q["base"]}
                 work, nxt = ident(), 1
@@ -783,10 +788,13 @@ def revision_quote(id):
         spec, cp = json.loads(r["spec"]), json.loads(r["copy"])
         action = v.get("action", "revision")
         options = revisions.short_options(cp) if action == "shorten" else []
-        revisions.prepare(spec, cp, action, v.get("ratio"),instruction=v.get("instruction"),field=v.get("field"))
+        instruction = v.get("instruction")
+        if action == "edit":
+            instruction = revisions.resolve_instruction(spec,cp,instruction,v.get("field"))
+        revisions.prepare(spec, cp, action, v.get("ratio"),instruction=instruction,field=v.get("field"),region=v.get("region"))
         cost = pricing.snapshot(spec, pricing.current(c), "revision")
         quote = quotes.dumps(dict(tenant=t, work=id, base=base, action=action, ratio=v.get("ratio"),
-                                  pricingSnapshot=spec["pricingSnapshot"], cost=cost, instruction=v.get("instruction"),field=v.get("field"),duplicate=v.get("duplicate") is True), salt="revision")
+                                  pricingSnapshot=spec["pricingSnapshot"], cost=cost, instruction=instruction,field=v.get("field"),region=v.get("region"),duplicate=v.get("duplicate") is True), salt="revision")
         return jsonify(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta")} if action=="edit" else None)
 
 
@@ -796,6 +804,15 @@ def revise(id):
 
 
 def produce(id):
+    from .store import model_job
+    token = model_job.set(id)
+    try:
+        return produce_job(id)
+    finally:
+        model_job.reset(token)
+
+
+def produce_job(id):
     with db(True) as c:
         j = c.execute(
             "SELECT * FROM job WHERE id=? AND state='queued'", (id,)
@@ -853,12 +870,14 @@ def produce(id):
         if not cached_copy:
             with db(True) as c:
                 c.execute("UPDATE job SET copy_checkpoint=? WHERE id=?", (dump(cp), id))
-        if p.get("autoCreation") and s["kind"] != "copy" and p.get("bundleRole") not in ("white","overlay","box","bag","card"):
+        if s.get("regionEdit"):
+            background, visual_engine = None, "海报局部修图"
+        elif p.get("autoCreation") and s["kind"] != "copy" and p.get("bundleRole") not in ("white","overlay","box","bag","card"):
             background, visual_engine = None, "本地商品素材排版"
             if s["kind"] == "video" and model.route("video")["model"]:
                 from .video_api import prepare_background
                 p["videoBackground"] = str(prepare_background(dest, p, cp))
-                visual_engine = model.route("video")["model"]
+                visual_engine = p.get("videoModel") or model.route("video")["model"]
             else:
                 background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1, strict=True)
         elif p.get("bundleRole") or p.get("autoCreation"):
@@ -901,18 +920,25 @@ def produce(id):
                     chosen = ap if intact_mask else original
                 visual.pop("content", None)
                 try:
-                    layout = render(
-                        dest,
-                        p,
-                        cp,
-                        s["kind"],
-                        chosen,
-                        s["ratio"],
-                        s["variant"],
-                        background,
-                        custom_font,
-                        repair=repair,
-                    )
+                    layout = None
+                    if local_edit := s.get("regionEdit"):
+                        source = DATA / t / "works" / local_edit["work"] / str(local_edit["version"])
+                        layout = region_edit.original_layout(source, dest, cp)
+                    if layout is None:
+                        layout = render(
+                            dest,
+                            p,
+                            cp,
+                            s["kind"],
+                            chosen,
+                            s["ratio"],
+                            s["variant"],
+                            background,
+                            custom_font,
+                            repair=repair,
+                        )
+                    if s["kind"] == "poster":
+                        region_edit.apply(dest,DATA / t / "works",layout,s,id)
                     try:
                         issues = inspect_export(
                             dest,
@@ -1034,6 +1060,10 @@ def produce(id):
                 if field:
                     positions.append(dict(field=field,box=[max(0,min(1,round(v/dims[i%2],5))) for i,v in enumerate(bounds)]))
             cp["editRegions"]=positions
+            region_edit.save_layout(dest,layout)
+            cp["protectedAreas"] = region_edit.protected(layout["frames"][0])
+            if edit := s.pop("regionEdit",None):
+                p.setdefault("backgroundPatches",[]).append(dict(work=work,version=n,job=id,box=edit["box"]))
         if renderer := layout.get("videoRenderer"):
             checks.append({"label": "短片渲染引擎", "detail": renderer})
         if visual:
@@ -1148,6 +1178,7 @@ def produce(id):
                 }
             )
         with db(True) as c:
+            object_storage.enqueue(c,dest,["poster.png","copy.txt","poster.svg","video.mp4","edit.zip","open-design.zip"])
             if n == 1:
                 c.execute(
                     "INSERT INTO work VALUES(?,?,?,?,?)", (work, t, s["kind"], 1, now())
@@ -1270,7 +1301,15 @@ def output(id, n, mode):
         ],
     }.get(mode)
     path = DATA / t / "works" / id / str(n) / str(file)
-    if not file or not path.exists():
+    if not file:
+        abort(404)
+    suffix = "-OpenDesign.zip" if mode == "open-design-source" else path.suffix
+    filename = "响指出片-" + json.loads(r["copy"])["title"] + suffix
+    signed = None
+    if mode in ("download","design-source","edit-source","open-design-source") and request.headers.get("X-Trupic-Native") != "1":
+        with db() as c:
+            signed = object_storage.download_url(c,path,filename)
+    if not signed and not path.exists():
         abort(404)
     if mode == "download":
         with db(True) as c:
@@ -1278,11 +1317,15 @@ def output(id, n, mode):
                 "INSERT INTO downloads VALUES(?,?,1) ON CONFLICT(work,n) DO UPDATE SET count=count+1",
                 (id, n),
             )
-    suffix = "-OpenDesign.zip" if mode == "open-design-source" else path.suffix
+    if signed:
+        from flask import redirect
+        response = redirect(signed)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
     return send_file(
         path,
         as_attachment=mode in ("download", "design-source", "edit-source", "open-design-source"),
-        download_name="响指出片-" + json.loads(r["copy"])["title"] + suffix,
+        download_name=filename,
         conditional=True,
     )
 
@@ -1342,6 +1385,8 @@ def admin_state():
                 (SELECT COUNT(*) FROM merchant WHERE login IS NOT NULL AND date(created)=date('now','-7 days')) cohort,
                 (SELECT COUNT(*) FROM merchant m WHERE login IS NOT NULL AND date(created)=date('now','-7 days') AND EXISTS
                     (SELECT 1 FROM job j WHERE j.tenant=m.id AND date(j.created)=date('now'))) retained""").fetchone()),
+            costSummary=dict(c.execute("""SELECT (SELECT SUM(amount) FROM provider_bill WHERE currency='CNY') billed,
+                (SELECT COUNT(*) FROM job_bill) reconciled,(SELECT COUNT(*) FROM cos_object WHERE error IS NOT NULL) storageErrors""").fetchone()),
             adminAuth={"environmentManaged": bool(os.getenv("TRUPIC_ADMIN_KEY")), "customPassword": admin_credential(c)[1]},
             modelPlatforms={**providers.overview(c), "defaults": {kind:{k:v for k,v in model.default_connection(kind).items() if k in ("url","model")} for kind in providers.KINDS}, "effective": {kind:{k:v for k,v in model.route(kind).items() if k in ("provider","url","model","protocol")} for kind in providers.KINDS}},
             modelCosts=costs.overview(c),
@@ -1485,6 +1530,10 @@ def admin_action(action):
     if action == "provider-bill":
         with db(True) as c:
             costs.reconcile(c, t, v)
+        return jsonify(ok=True)
+    if action == "skill-import":
+        with db(True) as c:
+            import_package(c, t, v)
         return jsonify(ok=True)
     if action == "skill-version":
         with db(True) as c:
@@ -1862,6 +1911,8 @@ def site(path=""):
     return send_from_directory(dist, "index.html")
 
 
+costs.register(app, globals())
+reference_assets.register(app, globals())
 staff.register(app, globals())
 growth.register(app, globals())
 commerce.register(app, globals())
@@ -1889,6 +1940,14 @@ def start():
         ]
     for id in pending:
         pool.submit(produce, id)
+
+    if object_storage.destination():
+        def mirror_files():
+            import time
+            while True:
+                if not object_storage.drain():
+                    time.sleep(5)
+        threading.Thread(target=mirror_files,daemon=True,name="cos-mirror").start()
 
     def sync():
         import time

@@ -307,4 +307,16 @@ def storyboard(plan, copy, asset=None):
         cuts = [0,3,10,18,25,30] if duration == 30 else [0,3,10,17,24,31,39,45]
         for shot, start, end in zip(shots, cuts, cuts[1:]):
             shot.update(start=start, end=end)
+    reference = plan.get("videoReference")
+    if reference and reference["cuts"]:
+        # Keep titles readable. Move each inner cut to a nearby measured scene transition.
+        scale = duration / reference["duration"]
+        candidates = [round(t * scale) for t in reference["cuts"]]
+        for index in range(len(shots)-1):
+            end = shots[index]["end"]
+            lower = max(shots[index]["start"] + 2, end - 2)
+            upper = min(shots[index+1]["end"] - 2, end + 2, 3 if index == 0 else duration)
+            nearby = [t for t in candidates if lower <= t <= upper]
+            if nearby:
+                shots[index]["end"] = shots[index+1]["start"] = min(nearby,key=lambda t: abs(t-end))
     return shots

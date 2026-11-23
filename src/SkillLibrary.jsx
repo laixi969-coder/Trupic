@@ -19,6 +19,7 @@ function Versions({ skill, busy, act }) {
   const change = (action, n) => act("skill-version", { id: skill.id, action, n });
   const labels = { tested: "测试通过", failed: "未通过", pilot: "10% 灰度", live: "已发布", archived: "历史版本" };
   return <section>
+    <button className="secondary" disabled={busy} onClick={()=>change(skill.enabled ? "disable" : "enable")}>{skill.enabled ? "暂停使用此方法" : "恢复使用此方法"}</button>
     <button className="secondary" onClick={() => {
       setInstructions(skill.instructions); setReason(""); setEditing(!editing);
     }}>{editing ? "收起编辑" : "修改并测试技能"}</button>
@@ -40,11 +41,14 @@ function Versions({ skill, busy, act }) {
       {["tested","archived"].includes(v.status) && <button className="secondary" disabled={busy} onClick={() => change("pilot",v.n)}>10% 灰度</button>}
       {["tested","pilot","archived"].includes(v.status) && <button className="secondary" disabled={busy} onClick={() => change(v.status === "archived" ? "rollback" : "release",v.n)}>{v.status === "archived" ? "回退到此修订" : "全量启用"}</button>}
     </details>)}
-    {skill.versions?.some(v => ["live","pilot"].includes(v.status)) && <button className="textbtn" disabled={busy} onClick={() => change("rollback",0)}>恢复内置版本</button>}
+    {skill.versions?.some(v => ["live","pilot"].includes(v.status)) && <button className="textbtn" disabled={busy} onClick={() => change("rollback",0)}>{skill.media ? "停用上传技能" : "恢复内置版本"}</button>}
   </section>;
 }
 
 export default function SkillLibrary({ skills = [], busy, act }) {
+  const [fileError, setFileError] = useState("");
+  const template = {id:"custom_weekend",name:"周末邀约",kind:"poster",match:["周末邀约"],requires:["poster_design"],
+    instructions:{copy:"围绕商家确认的活动写一句邀请。",image:"给商品与邀约标题分别留出位置。",video:"",qa:"逐字核对活动条件。"},reason:"首次导入"};
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const rows = skills.filter(
@@ -65,6 +69,20 @@ export default function SkillLibrary({ skills = [], busy, act }) {
         Lovart 相关条目是根据公开展示编写的本地适配，未取得原始技能定义，不调用
         Lovart API。执行能力和限制分别记录。
       </p>
+      <details className="formpanel">
+        <summary>上传技能并测试</summary>
+        <a download="skill.json" href={"data:application/json;charset=utf-8,"+encodeURIComponent(JSON.stringify(template,null,2))}>下载 JSON 示例</a>
+        <label className="field">技能文件<input type="file" accept="application/json,.json" disabled={busy} onChange={async e => {
+          const file=e.target.files?.[0]; e.target.value=""; if (!file) return;
+          setFileError("");
+          try {
+            if (file.size > 32768) throw new Error("技能文件最大 32 KB。");
+            const pack=JSON.parse(await file.text());
+            await act("skill-import",pack);
+          } catch (err) { setFileError(err.message); }
+        }}/></label>
+        {fileError && <p role="alert">{fileError}</p>}
+      </details>
       <div className="skill-library-filters">
         <label>
           搜索方法

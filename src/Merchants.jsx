@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { Support } from "./Support.jsx";
 import { api } from "./ui.jsx";
 export default function Merchants({ role, tip }) {
   const [list, setList] = useState([]),
@@ -115,6 +116,7 @@ export default function Merchants({ role, tip }) {
           </button>
         </form>
       )}
+      {(!role || role === "support") && <Support admin />}
       {err && <p role="alert">{err}</p>}
     </section>
   );

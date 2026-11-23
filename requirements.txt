@@ -4,3 +4,4 @@ numpy>=2,<3
 waitress>=3,<4
 fonttools>=4.59,<5
 qrcode>=8,<9
+cos-python-sdk-v5>=1.9,<2

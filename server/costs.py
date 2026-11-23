@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from .store import audit, now
 
-KINDS = ("text", "image", "video", "vision")
+KINDS = ("text", "image", "video", "vision", "edit")
 SCALE = 1_000_000
 
 
@@ -94,3 +94,92 @@ def overview(c):
             )
         ],
     }
+
+
+def job_margin(c, job):
+    """Allocate the order's net cash across its full credit entitlement, including gifts."""
+    import json
+
+    revenue = Decimal(0)
+    for row in c.execute(
+        """SELECT l.ref,l.source,e.amount,p.snapshot,p.cents,p.state
+        FROM credit_event e JOIN credit_lot l ON l.id=e.lot
+        LEFT JOIN purchase p ON p.id=substr(l.ref,1,32) AND p.tenant=e.tenant
+        WHERE e.job=? AND e.action='consume'""",
+        (job,),
+    ):
+        if row["source"] == "历史余额":
+            revenue = None
+            break
+        if row["snapshot"] and row["state"] == "paid":
+            offer = json.loads(row["snapshot"])
+            credits = (
+                offer["credits"] * (12 if offer["cycle"] == "year" else 1)
+                + offer["bonus"]
+            )
+            revenue += Decimal(row["cents"]) * row["amount"] / (credits * 100)
+    bill = c.execute(
+        "SELECT amount,source FROM job_bill WHERE job=?", (job,)
+    ).fetchone()
+    cost = Decimal(bill["amount"]) / SCALE if bill else None
+    money = lambda value: (
+        str(value.quantize(Decimal(".000001"))) if value is not None else None
+    )
+    return dict(
+        revenue=money(revenue),
+        modelCost=money(cost),
+        source=bill["source"] if bill else "",
+        margin=money(revenue - cost)
+        if cost is not None and revenue is not None
+        else None,
+    )
+
+
+def register(app, services):
+    from flask import jsonify, request
+    from .store import db, dump
+
+    @app.route("/api/admin/task-costs", methods=["GET", "POST"])
+    def task_costs():
+        services["require_admin"]()
+        actor = services["reqtenant"]()
+        with db(request.method == "POST") as c:
+            if request.method == "POST":
+                data = services["body"]()
+                job = data.get("job")
+                row = c.execute("SELECT state FROM job WHERE id=?", (job,)).fetchone()
+                if not row or row["state"] not in ("complete", "failed"):
+                    raise ValueError("请选择已结束的任务。")
+                source = services["string"](data.get("source"), 220)
+                amount = units(data.get("amount"))
+                if not source:
+                    raise ValueError("请填写账单编号与核对依据。")
+                before = c.execute(
+                    "SELECT * FROM job_bill WHERE job=?", (job,)
+                ).fetchone()
+                c.execute(
+                    """INSERT INTO job_bill VALUES(?,?,?,?) ON CONFLICT(job) DO UPDATE SET
+                    amount=excluded.amount,source=excluded.source,updated=excluded.updated""",
+                    (job, amount, source, now()),
+                )
+                audit(
+                    c,
+                    actor,
+                    "核对任务模型成本",
+                    dump(
+                        {
+                            "job": job,
+                            "before": dict(before) if before else None,
+                            "amount": amount,
+                            "source": source,
+                        }
+                    ),
+                )
+            job = request.args.get("job", "").strip()
+            rows = c.execute(
+                """SELECT j.id,j.created,j.state,json_extract(j.spec,'$.plan.original') brief,
+                (SELECT COUNT(*) FROM model_call mc WHERE mc.job=j.id) calls FROM job j
+                WHERE (?='' OR j.id=?) ORDER BY j.created DESC,j.rowid DESC LIMIT 50""",
+                (job, job),
+            )
+            return jsonify([dict(r, **job_margin(c, r["id"])) for r in rows])

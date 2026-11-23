@@ -1,0 +1,22 @@
+<view class="page">
+  <view class="title">邀请与推广</view>
+  <view wx:if="{{error}}" class="error">{{error}}<button class="link" bindtap="load">重新加载</button></view>
+  <view wx:if="{{!registered}}" class="panel">
+    <view wx:if="{{invited}}" class="note">绑定账号后将记录本次邀请。</view>
+    <view class="between"><button class="link" data-mode="register" bindtap="mode">绑定当前工作室</button><button class="link" data-mode="login" bindtap="mode">登录已有账号</button></view>
+    <input class="field" placeholder="账号" value="{{login}}" maxlength="64" data-key="login" bindinput="field"/>
+    <input class="field" placeholder="密码（至少 8 位）" password value="{{password}}" maxlength="160" data-key="password" bindinput="field"/>
+    <button class="primary" loading="{{busy}}" disabled="{{busy}}" bindtap="bind">{{mode==='register'?'绑定账号':'登录工作室'}}</button>
+  </view>
+  <block wx:else>
+    <view class="panel"><view class="between"><view class="heading">{{account}}</view><button class="link" bindtap="logout" disabled="{{busy}}">退出账号</button></view><button wx:for="{{links}}" wx:key="query" class="secondary spaced" open-type="share" data-query="{{item.query}}">分享{{item.label}}</button></view>
+    <view wx:if="{{invites.length}}" class="panel"><view class="heading">已邀请 {{invites.length}} 家</view>
+      <view class="line" wx:for="{{invites}}" wx:key="login">{{item.login}} · 已结算 {{item.rewardedStages}} 个阶段</view></view>
+    <view wx:if="{{role}}" class="panel"><view class="heading">{{role}}工作台</view>
+      <view wx:for="{{team}}" wx:key="login" class="line">下属成员 · {{item.login}}</view>
+      <view wx:for="{{clients}}" wx:key="login" class="line">归属商家 · {{item.login}}</view>
+      <button wx:for="{{coupons}}" wx:key="code" class="link" bindtap="copy" data-code="{{item.code}}">复制{{item.name}}券码</button>
+      <view wx:for="{{commissions}}" wx:key="order_id" class="line">{{item.login}} · 佣金 ¥{{item.money}} · {{item.stage}}</view>
+    </view>
+  </block>
+</view>

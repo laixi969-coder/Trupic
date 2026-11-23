@@ -5,7 +5,7 @@ import json
 import re
 from urllib.parse import urlsplit
 from . import model_admission
-from .store import audit, db
+from .store import audit, db, dump, now
 
 PRESETS = {
     "atlas": ("Atlas Cloud", "https://api.atlascloud.ai/v1/chat/completions"),
@@ -21,11 +21,11 @@ PRESETS = {
     "local": ("本机视觉模型", "http://127.0.0.1:7395/v1/chat/completions"),
     "custom": ("其他兼容平台", ""),
 }
-KINDS = ("text", "vision", "image", "video")
+KINDS = ("text", "vision", "image", "video", "edit")
 # This is the capability scope of our adapters, not a promise about every model
 # hosted by a vendor. Custom connections still require an explicit capability.
-SUPPORTED = {"deepseek": ("text",), "local": ("text", "vision"), "bailian": KINDS, "atlas": KINDS, "ark": KINDS, "custom": KINDS}
-PROTOCOLS = {"text": ("chat",), "vision": ("chat",), "image": ("images",), "video": ("ark-video","dashscope-video","atlas-video")}
+SUPPORTED = {"deepseek": ("text",), "local": ("text", "vision"), "bailian": KINDS[:-1], "atlas": KINDS[:-1], "ark": KINDS[:-1], "custom": KINDS}
+PROTOCOLS = {"edit": ("image-edits",), "text": ("chat",), "vision": ("chat",), "image": ("images",), "video": ("ark-video","dashscope-video","atlas-video")}
 DEFAULT_VIDEO = {"ark":"ark-video", "bailian":"dashscope-video", "atlas":"atlas-video"}
 DEFAULT_URLS = {("atlas","video"): "https://api.atlascloud.ai/api/v1/model/generateVideo", ("bailian","video"): "https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis", ("ark", "image"): "https://ark.cn-beijing.volces.com/api/v3/images/generations", ("ark", "video"): "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"}
 
@@ -114,8 +114,33 @@ def safe_url(url):
         raise ValueError("请填写完整的 HTTPS 接口地址，本机可使用 HTTP。")
 
 
+def route_snapshot(c):
+    snapshot = {}
+    for kind in KINDS:
+        picks = {}
+        for key, table in (("primary", "model_route"), ("backup", "model_backup")):
+            row = c.execute(
+                f"SELECT platform FROM {table} WHERE kind=?", (kind,)
+            ).fetchone()
+            platform = row[0] if row else ""
+            provider = c.execute(
+                "SELECT * FROM model_provider WHERE id=?", (platform,)
+            ).fetchone()
+            cfg = capability(dict(provider), kind) if provider else {}
+            picks[key] = {"platform": platform, "model": (cfg or {}).get("model", "")}
+        snapshot[kind] = picks
+    return snapshot
+
+
+def route_version(c):
+    return c.execute("SELECT COALESCE(MAX(n),0) FROM model_route_version").fetchone()[0]
+
+
 def overview(c):
-    records = {r["id"]: dict(r) for r in c.execute("SELECT * FROM model_provider ORDER BY rowid")}
+    records = {
+        r["id"]: dict(r)
+        for r in c.execute("SELECT * FROM model_provider ORDER BY rowid")
+    }
     platforms = []
     for platform in list(PRESETS) + [key for key in records if key not in PRESETS]:
         label, url = PRESETS.get(platform, (records.get(platform, {}).get("label", ""), ""))
@@ -130,7 +155,7 @@ def overview(c):
             if cached:
                 connections[kind]["catalog"] = dict(models=json.loads(cached["data"]),updated=cached["updated"])
         platforms.append(dict(id=platform,label=label,url=record["url"],text=record.get("text",""),vision=record.get("vision",""),hasKey=bool(record.get("key")),connections=connections,supported=list(supported(platform))))
-    return {"formal": model_admission.formal(), "platforms": platforms, "routes": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_route")}, "protocols": PROTOCOLS}
+    return {"routeVersion": route_version(c), "formal": model_admission.formal(), "platforms": platforms, "backups": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_backup")}, "routes": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_route")}, "protocols": PROTOCOLS}
 
 
 def save(c, actor, payload):
@@ -185,6 +210,10 @@ def save(c, actor, payload):
 
 
 def select(c, actor, payload):
+    version = route_version(c)
+    if "expectedVersion" in payload and payload["expectedVersion"] != version:
+        raise ValueError("模型路由已变更，请刷新并核对后再保存。")
+    before = route_snapshot(c)
     labels = []
     for kind in KINDS:
         if kind not in payload:
@@ -206,6 +235,30 @@ def select(c, actor, payload):
             "INSERT INTO model_route VALUES(?,?) ON CONFLICT(kind) DO UPDATE SET platform=excluded.platform",
             (kind, platform),
         )
+    backups = payload.get("backups", {})
+    if not isinstance(backups, dict) or set(backups) - set(KINDS):
+        raise ValueError("备用连接配置无效。")
+    for kind in KINDS:
+        primary = c.execute("SELECT platform FROM model_route WHERE kind=?", (kind,)).fetchone()
+        if kind not in backups and kind in payload:
+            c.execute("DELETE FROM model_backup WHERE kind=? AND (platform=? OR ? IN ('','local-rules'))",
+                      (kind,payload[kind],payload[kind]))
+        if kind not in backups:
+            continue
+        platform = backups[kind]
+        if platform:
+            if not isinstance(platform,str) or not primary or primary[0] in ("","local-rules",platform):
+                raise ValueError("备用连接须与已保存的主连接不同。")
+            if not checked_connection(c, kind, platform):
+                raise ValueError("备用连接缺少可用模型或正式核验。")
+            c.execute("INSERT OR REPLACE INTO model_backup VALUES(?,?)", (kind,platform))
+        else:
+            c.execute("DELETE FROM model_backup WHERE kind=?", (kind,))
+    after = route_snapshot(c)
+    if before != after:
+        c.execute("INSERT INTO model_route_version VALUES(?,?,?,?,?)",
+                  (version + 1, actor, now(), dump(before), dump(after)))
+    labels.append(json.dumps(backups,ensure_ascii=False))
     audit(
         c,
         actor,
@@ -214,24 +267,33 @@ def select(c, actor, payload):
     )
 
 
+def checked_connection(c, kind, platform):
+    row = c.execute("SELECT * FROM model_provider WHERE id=?", (platform,)).fetchone()
+    cfg = capability(dict(row),kind) if row and kind in supported(platform) else None
+    if cfg:
+        cfg = dict(provider=platform, **cfg)
+        if not model_admission.formal() or model_admission.eligible(c,kind,cfg):
+            return cfg
+
+
 def connection(kind):
     if kind not in KINDS:
         raise ValueError("未知的创作能力。")
     with db() as c:
         route = c.execute("SELECT platform FROM model_route WHERE kind=?", (kind,)).fetchone()
-        if route and route[0] == "local-rules":
-            return dict(provider="local-rules",url="",key="",model="",protocol=PROTOCOLS[kind][0])
-        row = c.execute("""SELECT p.* FROM model_route r JOIN model_provider p ON r.platform=p.id WHERE r.kind=?""", (kind,)).fetchone()
-    if row:
-        cfg = capability(dict(row),kind)
-        if kind not in supported(row["id"]) or not cfg:
-            raise ValueError("已选平台不支持此用途，请重新保存调用设置。")
-        cfg = dict(provider=row["id"], **cfg)
-        if model_admission.formal():
-            with db() as c:
-                if not model_admission.eligible(c,kind,cfg):
-                    return dict(provider="local-rules",url="",key="",model="",protocol=PROTOCOLS[kind][0])
-        return cfg
+        if not route or not route[0]:
+            return None
+        if route[0] != "local-rules":
+            primary = checked_connection(c, kind, route[0])
+            backup_id = c.execute("SELECT platform FROM model_backup WHERE kind=?", (kind,)).fetchone()
+            backup = checked_connection(c, kind, backup_id[0]) if backup_id else None
+            if primary:
+                if backup:
+                    primary["backup"] = backup
+                return primary
+            if backup:
+                return backup
+        return dict(provider="local-rules",url="",key="",model="",protocol=PROTOCOLS[kind][0])
 
 
 def catalog_signature(cfg):

@@ -12,7 +12,7 @@ function base() {
 const cookieKey = () => "trupic.session:" + base();
 function header() {
   const cookie = wx.getStorageSync(cookieKey());
-  return cookie ? { Cookie: cookie } : {};
+  return cookie ? { Cookie: cookie, "X-Trupic-Native": "1" } : { "X-Trupic-Native": "1" };
 }
 function persist(response) {
   const headers = response.header || {};
@@ -22,8 +22,8 @@ function persist(response) {
   const value = []
     .concat(response.cookies || [], field ? headers[field] : [])
     .join(", ");
-  const match = value.match(/(?:^|,\s*)(trupic_workspace=[^;,\s]+)/);
-  if (match) wx.setStorageSync(cookieKey(), match[1]);
+  const match = value.match(/(?:^|,\s*)(trupic_workspace=([^;,\s]*))/);
+  if (match) wx.setStorageSync(cookieKey(), match[2] ? match[1] : "");
 }
 function network(method, options) {
   return new Promise((resolve, reject) =>
