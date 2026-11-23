@@ -104,26 +104,24 @@ function Connection({ kind, platform, busy, act, routeVersion, formal }) {
     {catalog && base.startsWith("https://api.atlascloud.ai/") && <small>已同步 Atlas 公开模型目录。选择模型后，测试连接可验证 API Key 和调用权限。</small>}
     <label className="field">模型<select aria-label="模型" value={selected ? form.model : ""} disabled={locked || !options.length}
       onChange={e => {set({...form, model: e.target.value}); setError("");}}>
-      <option value="">{!catalog ? "请先同步最新模型" : options.length ? "请选择模型" : "暂无已核实发布日期的可用模型"}</option>
+      <option value="">{!catalog ? "请先同步最新模型" : options.length ? "请选择模型" : "暂无支持当前用途的模型"}</option>
       {options.map(option => <option key={option.id} value={option.id}>{option.id} · {option.priceLabel || "平台未提供价格"}</option>)}
     </select></label>
-    {configured.model && configured.selectable === false && <p className="fineprint">当前已保存模型尚未通过发布日期筛选，请选择已核实的模型。</p>}
-    <small>仅显示已核实于 2026-01-01 及以后发布的模型。
-      {catalog?.hiddenUnknown > 0 && ` 已隐藏 ${catalog.hiddenUnknown} 个发布日期待核实的模型。`}
-      {catalog?.hiddenOlder > 0 && ` 已排除 ${catalog.hiddenOlder} 个早期模型。`}</small>
+    {configured.model && configured.selectable === false && <p className="fineprint">当前已保存模型不在此用途的目录中，请同步后重新选择。</p>}
+    <small>按平台目录和用途显示模型，不限制发布日期。</small>
     {selectedModel && <div className="connection-result">
-      <p>发布日期 {selectedModel.released}</p>
+      {selectedModel.released && <p>发布日期 {selectedModel.released}</p>}
       <p>{selectedModel.priceLabel || "平台未提供价格"}</p>
       {selectedModel.priceNote && <small>{selectedModel.priceNote}</small>}
-      <p><a href={selectedModel.releaseSource} target="_blank" rel="noreferrer">发布依据</a>
-        {selectedModel.priceSource && <> · <a href={selectedModel.priceSource} target="_blank" rel="noreferrer">平台价格</a></>}</p>
+      {selectedModel.releaseSource && <p><a href={selectedModel.releaseSource} target="_blank" rel="noreferrer">发布依据</a></p>}
+      {selectedModel.priceSource && <p><a href={selectedModel.priceSource} target="_blank" rel="noreferrer">平台价格</a></p>}
     </div>}
     <div className="model-tests"><button type="button" className="secondary" disabled={locked || !selected}
       onClick={test}>{probeBusy ? "正在测试…" : "测试连接"}</button>
       <button className="primary" disabled={locked || !selected}>保存并启用</button></div>
     {["image", "edit", "video"].includes(kind) && <small>测试将实际生成素材，并计入平台用量。</small>}
     {(formal || probe?.state === "complete") && <details><summary>正式模型核验 · {(configured.approved && configured.model===form.model && sameBase && !form.key) || reviewed===fingerprint ? "已核验" : "待核验"}</summary>
-      {[["released","发布日期","date"],["source","官方发布依据","url"],["family","模型系列","text"],["version","核实版本","text"],["minimum","系列最低版本","text"],["review","实际输出质量与成本核验记录","text"]].map(([k,l,type])=>
+      {[["released","发布日期（选填）","date"],["source","官方发布依据（选填）","url"],["family","模型系列","text"],["version","核实版本","text"],["minimum","系列最低版本","text"],["review","实际输出质量与成本核验记录","text"]].map(([k,l,type])=>
         <label className="field" key={k}>{l}<input type={type} value={metadata[k]||""} onChange={e=>setMetadata({...metadata,[k]:e.target.value})}/></label>)}
       <button type="button" className="secondary" disabled={probe?.state!=="complete"||tested.current!==fingerprint} onClick={async()=>{
         try {await api("/admin/model-admission","POST",{...form,...metadata,probe:probe.id});setReviewed(fingerprint);setError("");} catch(e){setError(e.message);}

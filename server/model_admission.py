@@ -1,4 +1,4 @@
-"""Formal routing uses reviewed release metadata and a successful matching probe."""
+"""Formal routing uses a reviewed model version and a successful matching probe."""
 
 import datetime as dt
 import json
@@ -51,12 +51,12 @@ def register(app, services):
         services["require_admin"]()
         t, v = services["reqtenant"](), services["body"]()
         kind, cfg = candidate(v)
-        try:
-            released = dt.date.fromisoformat(v.get("released", ""))
-        except (ValueError, TypeError):
-            raise ValueError("请核实并填写官方发布日期。")
-        if not dt.date(2026, 1, 1) <= released <= dt.datetime.now(dt.UTC).date():
-            raise ValueError("正式模型须已发布，且发布日期在 2026 年及以后。")
+        released = services["string"](v.get("released"), 10)
+        if released:
+            try:
+                dt.date.fromisoformat(released)
+            except ValueError:
+                raise ValueError("发布日期格式应为 YYYY-MM-DD，也可留空。")
         family, number, minimum = (
             services["string"](v.get(k), 100) for k in ("family", "version", "minimum")
         )
@@ -66,11 +66,10 @@ def register(app, services):
         )
         if (
             not family
-            or urlsplit(source).scheme != "https"
-            or not urlsplit(source).hostname
+            or (source and (urlsplit(source).scheme != "https" or not urlsplit(source).hostname))
             or not review
         ):
-            raise ValueError("请提供模型系列、发布依据网址和质量及成本核验记录。")
+            raise ValueError("请提供模型系列和质量及成本核验记录；发布依据选填。")
         if version(number) < version(minimum):
             raise ValueError("模型低于系列最低版本。")
         probe = services["string"](v.get("probe"), 32)
@@ -98,7 +97,7 @@ def register(app, services):
                     signature,
                     family,
                     number,
-                    released.isoformat(),
+                    released,
                     source,
                     probe,
                     review,

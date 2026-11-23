@@ -335,7 +335,7 @@ def select(c, actor, payload, before=None):
             if cfg.get("baseUrl"):
                 require_catalog_model(c, platform, kind, cfg)
             if model_admission.formal() and not model_admission.eligible(c,kind,{"provider":platform, **cfg}):
-                raise ValueError("正式调用需要核验发布日期、系列版本和测试记录。")
+                raise ValueError("正式调用需要核验系列版本和测试记录。")
         labels.append(
             (row["label"] or PRESETS.get(platform,(platform,))[0]) if row else "本地处理" if platform else "默认连接"
         )
@@ -412,7 +412,7 @@ def require_catalog_model(c, platform, kind, cfg):
     row = cached_catalog(c, platform, kind, cfg)
     if not row or not any(m["id"] == cfg["model"] and (not m["known"] or kind in m["kinds"])
                           for m in model_catalog.catalog_view(json.loads(row["data"]))["models"]):
-        raise ValueError("请同步并选择已核实于 2026 年 1 月 1 日及以后发布的模型。")
+        raise ValueError("请同步模型目录，并选择支持当前用途的模型。")
 
 
 def candidate(payload, require_model=True):

@@ -161,6 +161,44 @@ class WorkflowTests(unittest.TestCase):
         q = response.json
         return q, dict(quote=q["quote"], confirmed=True, confirmedCost=q["cost"], requestKey=uuid.uuid4().hex)
 
+    def test_auto_creation_original_photo_and_actionable_cutout_review(self):
+        photo = io.BytesIO()
+        Image.new("RGB", (400, 400), "green").save(photo, format="PNG")
+        photo.seek(0)
+        with patch.dict(os.environ, {"TRUPIC_CUTOUT": "/missing"}):
+            asset = self.c.post("/api/assets", data={"image": (photo, "firstLook.png")}).json
+        with studio.db(True) as c:
+            info = json.loads(c.execute("SELECT info FROM asset WHERE id=?", (asset["id"],)).fetchone()[0])
+            info.update(action="主体抠图", suppliedTransparency=False, risk=False)
+            c.execute("UPDATE asset SET info=? WHERE id=?", (json.dumps(info), asset["id"]))
+        for mode in ("image", "video"):
+            with self.subTest(mode=mode):
+                payload = dict(brief="电影：猫和老鼠 电影票 9.9元", asset=asset["id"], assetConfirmed=False,
+                               deliveryMode=mode, ratio="portrait", imageCount=1, duration=15)
+                blocked = post(self.c, "creations/plan", **payload, assetMode="processed")
+                self.assertEqual(blocked.status_code, 200, blocked.json)
+                self.assertFalse(blocked.json["ready"])
+                self.assertEqual(blocked.json["action"], "review-asset")
+                self.assertTrue(blocked.json["allowOriginal"])
+                ready = post(self.c, "creations/plan", **payload, assetMode="original")
+                self.assertEqual(ready.status_code, 200, ready.json)
+                self.assertTrue(ready.json["ready"], ready.json)
+                with patch.object(studio.pool, "submit"):
+                    result = post(self.c, "creations", quote=ready.json["quote"], confirmedCost=ready.json["cost"],
+                                  requestKey=uuid.uuid4().hex)
+                self.assertEqual(result.status_code, 200, result.json)
+                with studio.db() as c:
+                    specs = [json.loads(c.execute("SELECT spec FROM job WHERE id=?", (item["job"],)).fetchone()[0])
+                             for item in result.json["items"]]
+                self.assertTrue(all(spec["assetMode"] == "original" for spec in specs))
+                self.assertIn("video" if mode == "video" else "poster", [spec["kind"] for spec in specs])
+                region = dict(x=.1, y=.1, w=.5, h=.5)
+                blocked = post(self.c, "creations/plan", **payload, assetMode="original", identityRegion=region)
+                self.assertEqual(blocked.json["action"], "review-asset")
+                self.assertNotIn("allowOriginal", blocked.json)
+                confirmed = post(self.c, "creations/plan", **{**payload, "assetConfirmed":True}, assetMode="processed")
+                self.assertTrue(confirmed.json["ready"], confirmed.json)
+
     def test_v3_signed_specs_balance_reservations_and_trash(self):
         self.admin()
         self.assertEqual(post(self.c,"profile",industryTags=["台球","休闲"],name="").status_code,200)
@@ -917,7 +955,7 @@ class WorkflowTests(unittest.TestCase):
             commerce.refund(c,c.execute("SELECT * FROM purchase WHERE id=?",(oid,)).fetchone(),"receipt-"+oid)
             self.assertEqual(c.execute("SELECT SUM(remaining) FROM credit_lot WHERE tenant=? AND ref LIKE ?",(tenant,oid+"%")).fetchone()[0],0)
 
-    def test_v3_formal_model_release_gate(self):
+    def test_v3_formal_model_review_without_release_date_gate(self):
         from server import model_tools as mt, providers
         self.admin()
         cfg=dict(id="custom-"+uuid.uuid4().hex,capability="text",label="fixture",url="https://model.invalid/v1/chat/completions",model="opaque-id",protocol="chat")
@@ -927,9 +965,10 @@ class WorkflowTests(unittest.TestCase):
         meta=dict(**cfg,probe=probe,family="v3-test",version="2.10",minimum="2.2",released="2026-01-01",source="https://model.invalid/release",review="隔离测试记录")
         with patch.dict(os.environ,{"TRUPIC_MODEL_STAGE":"production"}):
             self.assertEqual(post(self.c,"admin/model-routes",text=cfg["id"]).status_code,400)
-            for changes in (dict(released="2025-01-01"),dict(released=""),dict(minimum="2.11"),dict(probe="0"*32)):
+            for changes in (dict(released="invalid"),dict(minimum="2.11"),dict(probe="0"*32)):
                 self.assertEqual(post(self.c,"admin/model-admission",**{**meta,**changes}).status_code,400)
-            self.assertEqual(post(self.c,"admin/model-admission",**meta).status_code,200)
+            for metadata in (meta, {**meta,"released":"2025-01-01"}, {**meta,"released":"","source":""}):
+                self.assertEqual(post(self.c,"admin/model-admission",**metadata).status_code,200)
             self.assertEqual(post(self.c,"admin/model-routes",text=cfg["id"]).status_code,200)
             self.assertEqual(studio.model.route("text")["model"],"opaque-id")
             post(self.c,"admin/model-routes",text="local-rules")
@@ -1357,7 +1396,7 @@ class WorkflowTests(unittest.TestCase):
                 c.execute('DELETE FROM model_route')
                 c.execute('DELETE FROM model_provider WHERE id=?',(platform,))
 
-    def test_catalog_release_cutoff_prices_and_cached_enforcement(self):
+    def test_catalog_optional_release_dates_prices_and_cached_enforcement(self):
         from server import model_tools as mt, model_catalog as catalog, providers
         self.admin()
         platform = "custom-" + uuid.uuid4().hex
@@ -1373,28 +1412,33 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(mt, "request_json", return_value=dict(data=rows)):
             result = post(self.c, "admin/sync-models", **payload)
         self.assertEqual(result.status_code, 200, result.json)
-        self.assertEqual([m["id"] for m in result.json["models"]], ["boundary"])
-        self.assertEqual((result.json["hiddenUnknown"], result.json["hiddenOlder"], result.json["hiddenFuture"]), (3,1,1))
-        for name in ("old", "unknown", "created-only", "future", "invalid"):
-            self.assertEqual(post(self.c, "admin/probes", **payload, model=name).status_code, 400)
-            self.assertEqual(post(self.c, "admin/model-platform", **payload, model=name).status_code, 400)
+        self.assertEqual({m["id"] for m in result.json["models"]}, {r["id"] for r in rows})
+        self.assertNotIn("releaseCutoff", result.json)
+        with patch.object(mt.PROBES, "submit"):
+            for name in ("old", "unknown", "created-only", "future", "invalid"):
+                self.assertEqual(post(self.c, "admin/probes", **payload, model=name).status_code, 200)
+        self.assertEqual(post(self.c, "admin/model-platform", **payload, model="not-in-catalog").status_code, 400)
         try:
             self.assertEqual(post(self.c, "admin/model-platform", **payload, model="boundary").status_code, 200)
             overview = self.c.get("/api/admin").json["modelPlatforms"]
             connection = next(p for p in overview["platforms"] if p["id"] == platform)["connections"]["text"]
-            self.assertEqual([m["id"] for m in connection["catalog"]["models"]], ["boundary"])
+            self.assertEqual({m["id"] for m in connection["catalog"]["models"]}, {r["id"] for r in rows})
             self.assertTrue(connection["selectable"])
             with studio.db(True) as c:
                 c.execute("UPDATE model_catalog SET data=? WHERE platform=?",
                           (json.dumps([dict(id="boundary", known=False, kinds=[], created=1790000000)]), platform))
+            self.assertEqual(post(self.c, "admin/model-routes", text=platform).status_code, 200)
+            with studio.db(True) as c:
+                c.execute("UPDATE model_catalog SET data='[]' WHERE platform=?", (platform,))
             self.assertEqual(post(self.c, "admin/model-routes", text=platform).status_code, 400)
         finally:
             with studio.db(True) as c:
+                c.execute("DELETE FROM model_route WHERE platform=?", (platform,))
                 c.execute("DELETE FROM model_provider WHERE id=?", (platform,))
         verified = catalog.catalog_view([dict(id="bytedance/seedream-v5.5/text-to-image"),
                                          dict(id="bytedance/seedream-v5.5-unverified")])
-        self.assertEqual(verified["models"][0]["released"], "2026-11-09")
-        self.assertEqual(verified["hiddenUnknown"], 1)
+        self.assertEqual(len(verified["models"]), 2)
+        self.assertEqual(catalog.release_metadata(dict(id="created-only", created=1790000000), "https://example.com/models"), {})
         self.assertIn("USD 0.016/张", catalog.atlas_price(dict(type="Image", price=dict(actual=dict(base_price="0.016", unit="image"))))["priceLabel"])
         text_price = catalog.atlas_price(dict(type="Text", price=dict(tiered_price=True,
             actual=dict(input_price="0", output_price="1.2"))))

@@ -106,7 +106,7 @@ const initialDraft = {
   lettering: "auto",
   fontId: "profile",
   asset: "",
-  assetMode: "processed",
+  assetMode: "original",
   assetConfirmed: false,
   source: "一句话创作",
   topicId: "",

@@ -110,6 +110,8 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
     return () => { active = false; clearTimeout(timer); };
   }, [request, planVersion]);
 
+  const reviewAsset = !planning && plan?.request === request && plan?.action === "review-asset" && selected;
+
   async function perform(label, action) {
     if (lock.current) return;
     lock.current = true;
@@ -129,10 +131,11 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
     });
   }
   function selectAsset(asset) {
-    patch({ asset, assetMode: "processed", assetConfirmed: false, identityRegion: null, extraFacts: "" });
+    patch({ asset, assetMode: "original", assetConfirmed: false, identityRegion: null, visualDetail: null, extraFacts: "" });
   }
   async function create(e) {
     e?.preventDefault();
+    if (reviewAsset) { checkAsset(selected); return; }
     if (!plan?.ready || plan.request !== request || planning || submitted === keyRef.current) return;
     if (needsChoice && !choice) return;
     if (Date.now() > plan.expires) { setPlanVersion((v) => v + 1); return; }
@@ -162,7 +165,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
             {selected ? (
               <div className="auto-preview">
                 <img src={selected.original} alt={selected.name} />
-                <span>{selected.name}</span>
+                <span>{selected.name} · {draft.assetMode === "original" ? "使用原图" : "使用处理后的图片"}</span>
                 <div>
                   <button type="button" className="textbtn" disabled={!!busy} onClick={() => selectAsset("")}><X size={14} />移除商品图</button>
                   <button type="button" className="textbtn" onClick={() => checkAsset(selected)}>核对商品素材</button>
@@ -201,7 +204,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
                 for(const file of files){const body=new FormData();body.append("image",file);ids.push((await api("/assets","POST",body)).id);}
                 await refreshRef.current();
                 const selection=await api("/assets/suggest-sources","POST",{ids,brief:draft.brief,authorized:true});
-                patch({...selection,assetMode:"processed",assetConfirmed:false,identityRegion:null,visualDetail:null});
+                patch({...selection,assetMode:"original",assetConfirmed:false,identityRegion:null,visualDetail:null});
               });
             }}/></label>
           {[["color","配色参考"],["layout","构图参考"]].map(([role,label]) => {
@@ -233,9 +236,13 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
         <div className="auto-plan" role="status" aria-live="polite">
           {busy === "upload" ? "正在检查图片…" : planning ? "正在理解需求、安排成品…" : plan?.ready ? <><strong>将为你制作：{plan.deliveries.map((item) => item.label).join("、")}</strong><span>{plan.cost} 积分 · 每项成功交付后结算</span></> : <span>{plan?.message || "写下想推广的商品或服务。"}</span>}
         </div>
+        {reviewAsset && <div className="model-tests">
+          {plan.allowOriginal && <button type="button" className="secondary" disabled={!!busy} onClick={() => patch({assetMode:"original", assetConfirmed:false, identityRegion:null, visualDetail:null})}>使用原图继续</button>}
+          <button type="button" className="textbtn" disabled={!!busy} onClick={() => checkAsset(selected)}>核对商品素材</button>
+        </div>}
         {needsChoice && plan?.request === request && <CopyChoices key={plan.quote} quote={plan.quote} value={choice} onChange={setChosen} disabled={!!busy || submitted === keyRef.current} />}
         {error && <p className="error" role="alert">{error} <button className="textbtn" type="button" disabled={!!busy} onClick={() => setPlanVersion((v) => v + 1)}>重新检查需求</button></p>}
-        <div className="auto-footer"><small>保留商品原貌。</small><button className="primary" disabled={!!busy || planning || !plan?.ready || (needsChoice && !choice) || plan.request !== request || submitted === keyRef.current}>{busy === "create" ? <Busy text="开始制作" /> : submitted === keyRef.current && plan?.ready ? "已开始 · 修改需求可再创作" : <><Sparkles size={16} />{needsChoice ? "用所选文案制作" : "开始制作"}<ArrowRight size={16} /></>}</button></div>
+        <div className="auto-footer"><small>保留商品原貌。</small><button className="primary" disabled={!!busy || planning || (!plan?.ready && !reviewAsset) || (needsChoice && !choice) || plan?.request !== request || submitted === keyRef.current}>{busy === "create" ? <Busy text="开始制作" /> : submitted === keyRef.current && plan?.ready ? "已开始 · 修改需求可再创作" : <><Sparkles size={16} />{reviewAsset ? "核对素材并继续" : needsChoice ? "用所选文案制作" : "开始制作"}<ArrowRight size={16} /></>}</button></div>
       </form>
     </section>
     {!!runs.length && <section className="auto-results" aria-label="创作结果"><h2>你的创作</h2>{runs.map((run) => <article className="auto-run" key={run.id}>

@@ -108,11 +108,11 @@ def coordinate(services, c, tenant, v):
     if not asset and (fidelity or route["workflow"] in ("launch", "mockup", "live")):
         return dict(ready=False, message="请上传能看清商品外观与标识的照片。", questions=[])
     if visual and asset.get("risk"):
-        return dict(ready=False, message=asset["detail"], questions=[])
-    if fidelity and not (v.get("identityRegion") and confirmed):
-        return dict(ready=False, message="请核对商品素材，框选要保真的标识或包装文字并确认。", questions=[])
-    if visual and asset.get("action") == "主体抠图" and not asset.get("suppliedTransparency") and not confirmed:
-        return dict(ready=False, message="请核对商品素材，确认抠图轮廓，或选择使用原图。", questions=[])
+        return dict(ready=False, message=asset["detail"], questions=[], action="review-asset")
+    if visual and (fidelity or v.get("identityRegion")) and not (v.get("identityRegion") and confirmed):
+        return dict(ready=False, message="请核对商品素材，框选要保真的标识或包装文字并确认。", questions=[], action="review-asset")
+    if visual and v.get("assetMode") != "original" and asset.get("action") == "主体抠图" and not asset.get("suppliedTransparency") and not confirmed:
+        return dict(ready=False, message="请核对抠图轮廓，或直接使用原图继续。", questions=[], action="review-asset", allowOriginal=True)
     profile = json.loads(c.execute("SELECT profile FROM merchant WHERE id=?", (tenant,)).fetchone()[0])
     lines = factual_lines(brief, extra, profile)
     facts = "；".join(lines)
@@ -157,7 +157,7 @@ def coordinate(services, c, tenant, v):
     refs = study(c,tenant,v.get("references"),services["owner"])
     if refs:
         common_request["posterStyle"] = "photo-grid"
-    base = services["plan_spec"](c, tenant, common_request)
+    base = services["plan_spec"](c, tenant, common_request, original_photo=True)
     if v.get("videoReference"):
         if mode != "video":
             raise ValueError("视频节奏参考用于短片创作。")
