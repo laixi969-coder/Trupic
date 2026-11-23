@@ -158,11 +158,12 @@ def write_options(spec, tenant, previous=()):
             named_subject = subject
         inputs["原图观察"] = str(observation.get("observation", ""))[:240]
 
-    def ask(task, payload, tokens, schema):
+    def ask(task, payload, tokens, schema, *, review=False):
+        instructions = task if review and not wenan.social_headline(plan) else skill + "\n" + task
         if not local_photo:
-            return model.ask(skill + "\n" + task, payload, tokens)
+            return model.ask(instructions, payload, tokens)
         messages = [
-            {"role": "system", "content": skill + "\n" + task},
+            {"role": "system", "content": instructions},
             {
                 "role": "user",
                 "content": json.dumps(payload, ensure_ascii=False) + "\n" + task,
@@ -186,6 +187,15 @@ def write_options(spec, tenant, previous=()):
     task += ("逐字使用商家给出的名称与价格，不纠正片名、不补全品牌。没有提供的档期、限时、"
              "库存、折扣、购票渠道一律不写。标题、副标题和末句合起来只写一次价格。")
     task += wenan.POSTER_HEADINGS
+    creative_title = wenan.wants_creative_headline(plan["original"])
+    single_price = re.fullmatch(r"\d+(?:\.\d+)?元", (base["offer"] or "").strip())
+    if creative_title:
+        task += wenan.POSTER_CREATIVE_BRIEF
+        inputs["三组选稿方向"] = [
+            "看画面：选一处最值得多看一眼的细节，用一句话点出来。",
+            "看顾客：替顾客说出与这个商品有关的一句邀约或心里话，另选切入点。",
+            "看卖点：把一条已知事实写成选择它的理由。各组选不同角度，最多一组主打票价或售价，其余在副标题标价。",
+        ]
     if wenan.social_headline(plan):
         task += (
             "三组主标题都是微信里能直接发给人的一句话。第一句从我和你的分工入手；"
@@ -205,15 +215,17 @@ def write_options(spec, tenant, previous=()):
         )
         review_task = (
             "你是独立审稿人。逐组检查事实、商家要求、项目名称、行动。商家原话是名称和价格的依据，按字面核对，不根据常识纠正商家片名或补充品牌。不同角度可以共享同一事实和商品名。"
-            '仅返回 JSON {"approved":[0,1,2],"feedback":"未通过稿件需要修正的具体问题"}，数组只列通过的零起始序号。'
+            '仅返回 JSON {"approved":[0,1,2],"feedback":"未通过稿件需要修正的具体问题"}，数组只列通过的零起始序号。feedback 至多40字，不写逐稿分析，全部通过时留空。'
         )
+        if creative_title:
+            review_task += "逐组检查主标题是否提出了新的观察、动作、问题或购买理由。只复述品名和价格、只换词序或加泛用赞词的退稿；价格用数字和汉字写了两遍、给普通售价加上未说明的促销或上市状态，也要退稿。写“回归、重映、返场”等上市状态必须有明确依据。全稿应能读出宣传的商品和重要条件。几句围绕同一个动作换形容词或问句算同一角度，最多保留一条。在 feedback 点出要改哪里。"
         if wenan.social_headline(plan):
             review_task += "逐条检验标题：顾客会把它发给谁，对方能怎么接话，和眼前的商品或场景有什么关系？空泛或换品也成立的标题退稿。"
         approved = []
         feedback = ""
         for attempt in range(2):
             drafts, sharing = [], []
-            length_error = ""
+            draft_error = ""
             result, engine = ask(
                 task, inputs, 900, option_schema("title", "body", "cta", "shareTo", "reply")
             )
@@ -254,9 +266,21 @@ def write_options(spec, tenant, previous=()):
                 ):
                     continue
                 if error := wenan.poster_length_error(title, body, locked):
-                    length_error = error
+                    draft_error = error
+                    continue
+                if creative_title and wenan.copied_headline(title, plan["original"]):
+                    draft_error = "主标题照搬了需求，请从画面细节或顾客动机另写标题，品名和条件放副标题"
                     continue
                 copy_text = f"{title} {body} {cta}"
+                if creative_title and single_price and not wenan.no_cta(plan):
+                    amount = single_price.group()
+                    price_count = len(re.findall(r"(?<![\d.])" + re.escape(amount), re.sub(r"\s+", "", copy_text)))
+                    if price_count != 1:
+                        draft_error = f"请把已确认的价格{amount}按原样写一次，方便商家核对"
+                        continue
+                    if amount in title and any(amount in item["title"] for item in [*drafts, *approved]):
+                        draft_error = "已有一组在标题强调价格。请换一个顾客视角，在副标题标价"
+                        continue
                 if unsupported_copy(copy_text, known):
                     continue
                 if wenan.social_headline(plan) and not all(
@@ -268,21 +292,20 @@ def write_options(spec, tenant, previous=()):
                 seen.add(key)
                 drafts.append({"title": title, "body": body, "cta": cta})
             if not drafts:
-                inputs["改写要求"] = (length_error or "缺少不同角度的合规候选") + "。请生成三组新的候选。"
+                inputs["改写要求"] = (draft_error or "缺少不同角度的合规候选") + "。请生成三组新的候选。"
                 continue
             reviewed = {i: {**d, **sharing[i]} for i, d in enumerate(drafts)}
-            review, _ = ask(
-                review_task,
-                {**inputs, "候选": reviewed},
-                400,
-                object_schema(
-                    feedback={"type": "string"},
-                    approved={
-                        "type": "array",
-                        "items": {"type": "integer", "minimum": 0, "maximum": 2},
-                    }
-                ),
+            review_schema = object_schema(
+                feedback={"type": "string", "maxLength": 80},
+                approved={"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 2}},
             )
+            review_input = {**inputs, "候选": reviewed}
+            if approved:
+                review_input["已保留，不再评序号"] = [item["title"] for item in approved]
+            try:
+                review, _ = ask(review_task, review_input, 768, review_schema, review=True)
+            except model.InvalidModelOutput:
+                review, _ = ask(review_task + " 只输出所需 JSON。", review_input, 1200, review_schema, review=True)
             passed = review.get("approved")
             if not isinstance(passed, list):
                 passed = []
@@ -301,9 +324,9 @@ def write_options(spec, tenant, previous=()):
             if len(approved) >= 2:
                 return approved[:3]
             feedback = str(review.get("feedback", ""))[:240]
-            inputs["改写要求"] = (feedback or "依据商家原话写明商品、价格，避免补充未经证实的描述。") + " 请改写为三个新标题。"
+            inputs["改写要求"] = (feedback or draft_error or "依据商家原话写明商品、价格，避免补充未经证实的描述。") + " 请改写为三个新标题。"
             inputs["已写过的标题"] = [draft["title"] for draft in drafts]
-        reason = feedback or length_error
+        reason = feedback or draft_error
         raise ValueError("通过复核的不同文案不足两组。" + (reason + "。" if reason else "") + "请检查需求中的商品名和卖点后重试。")
     except model.InvalidModelOutput as exc:
         raise ValueError(f"文案模型回复格式异常：{exc} 请重新生成候选。") from exc

@@ -118,6 +118,31 @@ def factual_only(brief):
     )
 
 
+POSTER_CREATIVE_BRIEF = (
+    "这份需求是创作素材。名称、票价和限制条件是事实，可以放到副标题或三级标题。"
+    "主标题要写出一句值得停下来看这张海报的话。可以取原图中一个有意思的动作、顾客会问的问题，"
+    "或这件商品给人的一个具体理由。每组换一个角度；片名加价格、调换词序、加上泛用赞词都不算新角度。"
+    "用一句能单独念出口的话完成这个想法，避免以‘治愈瞬间、精彩呈现’一类评价收尾。"
+    "有原图时只使用能看见的细节，不推测剧情、角色经历或效果。"
+    "价格保留原来的写法。名称与价格在20字内能说清时放在一行，省掉重复评价。"
+    "没有另外的必要条件或指定行动，三级标题留空。"
+)
+
+
+def wants_creative_headline(brief):
+    return not (
+        LOCKED.search(brief) or factual_only(brief)
+        or re.search(r"只(?:报|写|标|要)价格|(?:原文|原话|原标题)(?:照用|不改|保留)|"
+                     r"(?:照抄|照用|沿用|保留)(?:原文|原话|原标题)|(?:片名|品名|商品名|价格)(?:作为|当作|用作|做|作|为)主标题", brief)
+    )
+
+
+def copied_headline(title, brief):
+    # Ignore punctuation so adding book-title marks doesn't turn a name into a new headline.
+    headline = re.sub(r"\W+", "", title).casefold()
+    return bool(headline and headline in re.sub(r"\W+", "", brief).casefold())
+
+
 def social_headline(plan):
     brief = plan["original"]
     return (

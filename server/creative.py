@@ -266,8 +266,11 @@ def generate_copy(plan, variant=0, *, revision_note=""):
     poster = plan.get("kind") == "poster"
     locked = LOCKED.search(plan["original"])
     action = wenan.conversion(plan)
+    creative_title = poster and wenan.wants_creative_headline(plan["original"])
     if poster:
         prompt += wenan.POSTER_HEADINGS
+    if creative_title:
+        prompt += wenan.POSTER_CREATIVE_BRIEF
     if not action and not poster:
         prompt += " 本次没有指定交易动作，cta 留空。片名和商品名是资料，除非用户明确指定标题，否则可以另写创意标题。"
     elif action and not action["channel"]:
@@ -303,6 +306,8 @@ def generate_copy(plan, variant=0, *, revision_note=""):
         if (not spec and not LOCKED.search(plan["original"]) and not wenan.factual_only(plan["original"])
                 and val["title"].strip() == plan["original"].strip()):
             return {**base, "reviewFlag": "标题复述了输入需求"}
+        if creative_title and wenan.copied_headline(val["title"], plan["original"]):
+            return {**base, "reviewFlag": "海报主标题照搬了需求", "revisionNote": "请从素材或顾客动机另写主标题。"}
         if spec and (
             val["title"].strip() != spec or val["body"].strip() or val["cta"].strip()
         ):
@@ -341,6 +346,7 @@ def generate_copy(plan, variant=0, *, revision_note=""):
             "核对草稿与商家明确要求、原始资料和原图观察。价格、片名、商品名和限制条件必须准确。"
             "图片中可见的细节和邀请式创意表达可以使用。只有出现具体事实错误、杜撰承诺或违反明确要求才退稿。"
             "行动引导可提出询问，不得编造预约或购买渠道。返回 JSON，ok 为布尔值，reason 简短写出依据。"
+            + (" 主标题仅重排品名和价格或加泛用赞词也应退稿。" if creative_title else "")
             + headline_review + action_review
         )
         review, _ = model.ask(

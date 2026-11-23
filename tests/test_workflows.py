@@ -3590,6 +3590,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([r["title"] for r in response.json["options"]], ["把这一排留给老朋友", "大银幕上的猫去哪了"])
         self.assertIn("换一个观影视角", ask.call_args_list[2].args[1]["改写要求"])
 
+    def test_movie_name_alone_is_not_an_ad_headline_unless_requested(self):
+        from server import wenan
+        brief = "迪尼电影：黑猫和老鼠 9.9元看动画经典"
+        q = post(self.c, "creations/plan", brief=brief, deliveryMode="image", ratio="portrait", imageCount=1).json
+        self.assertIn("quote", q, q)
+        def option(title):
+            return dict(title=title, body="黑猫和老鼠 · 电影票9.9元", cta="")
+        responses = [
+            ({"options": [option("迪尼电影《黑猫和老鼠》"), option("9.9元看动画经典")]}, "writer"),
+            ({"options": [option("屋顶那点光谁先看见"), option("这一回你站猫还是鼠")]}, "writer"),
+            ({"approved": [0, 1]}, "reviewer"),
+        ]
+        with patch("server.model.route", return_value=dict(model="writer", url="", provider="test")), patch(
+            "server.model.ask", side_effect=responses
+        ) as ask:
+            result = post(self.c, "copy-options", quote=q["quote"])
+        self.assertEqual(result.status_code, 200, result.json)
+        self.assertEqual([op["title"] for op in result.json["options"]], ["屋顶那点光谁先看见", "这一回你站猫还是鼠"])
+        self.assertIn("照搬", ask.call_args_list[1].args[1]["改写要求"])
+        self.assertFalse(wenan.wants_creative_headline('主标题用「迪尼电影：黑猫和老鼠」'))
+        self.assertFalse(wenan.wants_creative_headline("只列事实，电影票9.9元"))
+
+        plain = prepare(brief, {}, [], dict(id="base", name="基础", method="moment"))
+        plain["kind"] = "poster"
+        with patch("server.model.engine_name", return_value="writer"), patch(
+            "server.model.ask", return_value=(option("迪尼电影《黑猫和老鼠》"), "writer")
+        ):
+            self.assertEqual(generate_copy(plain)["reviewFlag"], "海报主标题照搬了需求")
+
     def test_short_candidate_titles_are_rewritten_before_selection(self):
         q = post(self.c, "creations/plan", brief="给周末电影放映做海报").json
         def option(title):
