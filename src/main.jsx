@@ -536,7 +536,7 @@ function App() {
         <nav>{navs.slice(3).map(navItem)}</nav>
         <div className="sidebottom">
 
-          <button className="navitem subdued" onClick={navAdmin}>
+          <button className={"navitem subdued" + (section === "admin" ? " active" : "")} aria-current={section === "admin" ? "page" : undefined} onClick={navAdmin}>
             <Settings2 size={17} />
             运营管理
           </button>
@@ -808,7 +808,12 @@ function App() {
               )}
             </>
           )}
-          {page === "promotion" && <Promotion key={data.login || "guest"} onLogin={showAccount}/>}
+          {page === "promotion" && (
+            <>
+              <PageHead title="邀请与推广" />
+              <Promotion key={data.login || "guest"} onLogin={showAccount} />
+            </>
+          )}
           {page === "assets" && (
             <>
               <PageHead
@@ -886,7 +891,6 @@ function App() {
                     set={setProfile}
                     placeholder="例如：山野茶事"
                   />
-                  <IndustryPicker profile={profile} setProfile={setProfile}/>
                   <Field
                     name="product"
                     label="主要商品或服务"
@@ -894,6 +898,7 @@ function App() {
                     set={setProfile}
                     placeholder="例如：抹茶拿铁"
                   />
+                  <IndustryPicker profile={profile} setProfile={setProfile}/>
                   <Field
                     name="city"
                     label="所在地区"
@@ -915,6 +920,15 @@ function App() {
                     set={setProfile}
                     options={["自然亲切", "简洁直接", "轻松有趣", "沉静克制"]}
                   />
+                  <FontPicker
+                    profile
+                    fonts={data.fonts}
+                    value={profile.brandFont || ""}
+                    onChange={(brandFont) =>
+                      setProfile((old) => ({ ...old, brandFont }))
+                    }
+                    onRefresh={refresh}
+                  />
                 </div>
                 <Field
                   name="facts"
@@ -924,15 +938,6 @@ function App() {
                   area
                   limit={400}
                   placeholder="填写可以公开使用的信息，例如营业时间、真实原料或已确定的优惠。"
-                />
-                <FontPicker
-                  profile
-                  fonts={data.fonts}
-                  value={profile.brandFont || ""}
-                  onChange={(brandFont) =>
-                    setProfile((old) => ({ ...old, brandFont }))
-                  }
-                  onRefresh={refresh}
                 />
                 <div className="formend">
                   {error && <span className="error">{error}</span>}
@@ -1158,7 +1163,7 @@ function App() {
                       </select></label>
                       {editField==="background" && <ProductRegion background asset={{original:versionData.poster}} region={editBox} change={setEditBox}/>}
                       <label className="field">{editField==="background"?"选区修改要求":editField?"替换文字":"修改要求"}<textarea id="revision-text" maxLength={400} value={editText} onChange={e=>setEditText(e.target.value)} placeholder={editField==="background"?"提亮、压暗，或描述要重绘的背景":editField?"写下新的文字":"例如：48元改成38元；换一张"}/></label>
-                      <label><input type="checkbox" checked={duplicate} onChange={e=>setDuplicate(e.target.checked)}/> 照这个再做，另存作品</label>
+                      <label className="checkline"><input type="checkbox" checked={duplicate} onChange={e=>setDuplicate(e.target.checked)}/> 照这个再做，另存作品</label>
                       <button className="secondary" disabled={!editText.trim()||!!busy||(editField==="background"&&!editBox)} onClick={()=>quoteRevision(editField==="background"?"region":"edit")}>查看修改与积分</button>
                     </section>
                     <div className="advice">
@@ -1188,7 +1193,7 @@ function App() {
                         <>
                           <p>{versionData.layoutSuggestion.layoutIntent || versionData.layoutSuggestion.intent}</p>
                           <button
-                            className="textbtn rethink"
+                            className="textbtn layout-suggestion"
                             disabled={!!busy || !!job}
                             onClick={() => quoteRevision("layout")}
                           >
@@ -1196,19 +1201,23 @@ function App() {
                           </button>
                         </>
                       )}
-                      <button
-                        className="textbtn rethink"
-                        disabled={!!busy || !!job}
-                        onClick={() => quoteRevision("redesign")}
-                      >
-                        <RefreshCw size={14} />
-                        换个创意
-                      </button>
-                      <button className="textbtn" disabled={!!busy || !!job} onClick={()=>quoteRevision("shorten")}>文案短一点</button>
-                      {work.kind !== "copy" && <>
-                        <button className="textbtn" disabled={!!busy || !!job} onClick={()=>quoteRevision("image")}>换一张，保留文案</button>
+                      <div className="advice-actions">
+                        <button
+                          className="textbtn"
+                          disabled={!!busy || !!job}
+                          onClick={() => quoteRevision("redesign")}
+                        >
+                          <RefreshCw size={14} />
+                          换个创意
+                        </button>
+                        <button className="textbtn" disabled={!!busy || !!job} onClick={()=>quoteRevision("shorten")}>文案短一点</button>
+                        {work.kind !== "copy" && (
+                          <button className="textbtn" disabled={!!busy || !!job} onClick={()=>quoteRevision("image")}>换一张，保留文案</button>
+                        )}
+                      </div>
+                      {work.kind !== "copy" && (
                         <details><summary>照这个再做 · 换画幅</summary><RatioPicker value={versionData.ratio} onChange={r=>r !== versionData.ratio && quoteRevision("ratio",r)} /></details>
-                      </>}
+                      )}
                     </div>
                     <details className="original">
                       <summary>原始需求与创意依据</summary>
@@ -1789,6 +1798,7 @@ function Toolbar({ filters, filter, setFilter, search, setSearch }) {
           <button
             key={f}
             className={filter === f ? "sel" : ""}
+            aria-pressed={filter === f}
             onClick={() => setFilter(f)}
           >
             {formats[f]?.name || f}

@@ -299,7 +299,7 @@ export function GrowthAdmin({ tip }) {
                     });
                   }}
                 >
-                  <label>
+                  <label className="field">
                     核对凭证
                     <input name="reference" required maxLength={120} />
                   </label>
@@ -335,8 +335,7 @@ export function Promotion({ onLogin }) {
     return url.href;
   };
   return (
-    <section className="formpanel">
-      <h2>邀请与推广</h2>
+    <section className="formpanel promotion-panel">
       {data &&
         (Object.keys(data.codes).length === 0 ? (
           <button className="secondary" onClick={onLogin}>

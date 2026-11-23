@@ -4,6 +4,7 @@ page {
   font-family: -apple-system, "PingFang SC", sans-serif;
   font-size: 30rpx;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 .page {
   padding: 30rpx 36rpx 64rpx;
@@ -28,6 +29,8 @@ page {
   align-items: center;
   gap: 16rpx;
 }
+.between > .heading { min-width: 0; }
+.between > .link, .between > .close { flex-shrink: 0; }
 .between {
   justify-content: space-between;
 }
@@ -104,6 +107,7 @@ button::after {
   box-sizing: border-box;
   width: 100%;
 }
+input.field { min-height: 44px; padding: 0 20rpx; }
 .label {
   font-weight: 600;
   margin: 18rpx 0 8rpx;

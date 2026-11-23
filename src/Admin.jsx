@@ -95,11 +95,12 @@ export default function Admin({ tip }) {
         title="运营管理"
         desc="抽查作品、审核创意方法，管理测试与上线记录。"
       />
-      <div className="adminnav">
+      <div className="adminnav admin-sections">
         {tabs.filter(([k])=>!d?.allowedTabs||d.allowedTabs.includes(k)).map(([k, l, I]) => (
           <button
             key={k}
             className={k === tab ? "sel" : ""}
+            aria-pressed={k === tab}
             onClick={() => {
               setTab(k);
               if (k === "settings" && d) form(Object.fromEntries(["feed", "license", "board", "pinRights"].map(key => [key, d.settings[key] || ""])));

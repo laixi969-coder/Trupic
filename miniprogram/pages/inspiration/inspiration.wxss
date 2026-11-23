@@ -20,26 +20,21 @@ page {
   border-radius: 9rpx;
 }
 .grid {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24rpx;
+  align-items: start;
   padding-bottom: 48rpx;
 }
 .card {
-  width: 48%;
+  width: 100%;
+  min-width: 0;
   text-align: left;
-  margin-bottom: 24rpx;
-}
-.card:nth-child(even) {
-  transform: translateY(32rpx);
 }
 .card image {
   display: block;
   width: 100%;
-  height: 420rpx;
   border-radius: 12rpx;
-  max-height: 520rpx;
   height: calc(64vw - 46rpx);
 }
 .name {

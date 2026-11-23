@@ -1,0 +1,11 @@
+.plan-row, .copy-option {
+  display: grid;
+  align-items: baseline;
+  grid-template-columns: 4em minmax(0, 1fr);
+  gap: 16rpx;
+}
+.copy-option {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+.copy-option .sub { margin: 6rpx 0; }

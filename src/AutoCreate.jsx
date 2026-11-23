@@ -1,7 +1,7 @@
 import CreationSpecs from "./CreationSpecs.jsx";
 import CopyChoices from "./CopyChoices.jsx";
 import React, { useEffect, useRef, useState } from "react";
-import { UploadCloud, Sparkles, ArrowRight, RefreshCw, Download, X } from "lucide-react";
+import { UploadCloud, Mic, Sparkles, ArrowRight, RefreshCw, Download, X } from "lucide-react";
 import { api, Modal, Busy, dateText } from "./ui.jsx";
 
 const statusText = { queued: "等待制作", running: "正在制作", failed: "制作中断", complete: "已完成" };
@@ -158,13 +158,38 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
         <CreationSpecs {...{draft, patch, prices, profile, durations}} />
         <div className="auto-inputs">
           <div className="auto-source">
-            {selected ? <><img src={selected.original} alt={selected.name} /><span>{selected.name}</span><button type="button" className="textbtn" disabled={!!busy} onClick={() => { selectAsset(""); }}><X size={14} />移除商品图</button><button type="button" className="textbtn" onClick={() => checkAsset(selected)}>核对商品素材</button></> : <button type="button" className="auto-upload" onClick={() => fileRef.current?.click()} disabled={!!busy}><UploadCloud size={30} /><strong>添加商品图（选填）</strong><span>JPG、PNG、WebP · 最大 12 MB</span></button>}
+            <div className="auto-field-title">商品图 <small>选填</small></div>
+            {selected ? (
+              <div className="auto-preview">
+                <img src={selected.original} alt={selected.name} />
+                <span>{selected.name}</span>
+                <div>
+                  <button type="button" className="textbtn" disabled={!!busy} onClick={() => selectAsset("")}><X size={14} />移除商品图</button>
+                  <button type="button" className="textbtn" onClick={() => checkAsset(selected)}>核对商品素材</button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" className="auto-upload" onClick={() => fileRef.current?.click()} disabled={!!busy}>
+                <UploadCloud size={26} />
+                <strong>添加商品图</strong>
+                <span>JPG、PNG、WebP · 最大 12 MB</span>
+              </button>
+            )}
             <input ref={fileRef} type="file" aria-label="上传商品图" accept="image/jpeg,image/png,image/webp" onChange={upload} hidden />
             {!!assets.length && <details className="auto-library"><summary>从素材库选择</summary><select aria-label="选择已有商品图" value={draft.asset} disabled={!!busy} onChange={(e) => { selectAsset(e.target.value); }}><option value="">选择一张商品图</option>{assets.map((asset) => <option key={asset.id} value={asset.id} disabled={asset.risk}>{asset.name}{asset.risk ? "（请更换清晰图片）" : ""}</option>)}</select></details>}
           </div>
-          <label className="auto-brief">你想做什么？<textarea ref={textRef} required maxLength={1200} disabled={!!busy} value={draft.brief} onChange={(e) => patch({ brief: e.target.value, source: "一键创作", topicId: "", reference: "" })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") create(e); }} placeholder="例如：周五下班，想请附近的朋友来台球室组局。" /></label>
+          <div className="auto-brief">
+            <label className="auto-field-title" htmlFor="auto-brief">你想做什么？</label>
+            <div className="auto-editor">
+              <textarea id="auto-brief" ref={textRef} required maxLength={1200} disabled={!!busy} value={draft.brief} onChange={(e) => patch({ brief: e.target.value, source: "一键创作", topicId: "", reference: "" })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") create(e); }} placeholder="例如：周五下班，想请附近的朋友来台球室组局。" />
+              {Speech && (
+                <button className="textbtn auto-dictate" type="button" disabled={!!busy} aria-pressed={listening} onClick={dictate}>
+                  <Mic size={15} />{listening ? "结束听写" : "语音输入"}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
-        {Speech && <button className="textbtn" type="button" disabled={!!busy} onClick={dictate}>{listening?"结束听写":"语音输入"}</button>}
         {draft.kind !== "video" && <details className="brief-facts"><summary>添加配色或构图参考图</summary>
           <label><input type="checkbox" checked={multiAuthorized} onChange={e=>setMultiAuthorized(e.target.checked)}/> 我有权使用所选图片</label>
           <label className="field">同时上传 2–3 张，自动分配用途<input type="file" multiple accept="image/jpeg,image/png,image/webp" disabled={!!busy||!multiAuthorized}
@@ -204,7 +229,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
         </details>}
         {options}
         {draft.kind !== "video" && <label className="checkline"><input type="checkbox" checked={manualCopy} onChange={e=>setManualCopy(e.target.checked)}/> 制作前自选文案</label>}
-        {(plan?.questions?.length > 0 || facts || (draft.kind === "video" && draft.duration > 15)) && <div className="auto-questions"><p>{plan?.message || "补充商品信息"}</p>{plan?.questions?.map((question) => <p key={question}>{question}</p>)}<label>补充信息<textarea value={facts} maxLength={400} disabled={!!busy} onChange={(e) => setFacts(e.target.value)} placeholder="把实际价格、日期或适用条件写在这里" /></label></div>}
+        {(plan?.questions?.length > 0 || facts || (draft.kind === "video" && draft.duration > 15)) && <div className="auto-questions"><p>{plan?.message || "补充商品信息"}</p>{plan?.questions?.map((question) => <p key={question}>{question}</p>)}<label className="field">补充信息<textarea value={facts} maxLength={400} disabled={!!busy} onChange={(e) => setFacts(e.target.value)} placeholder="把实际价格、日期或适用条件写在这里" /></label></div>}
         <div className="auto-plan" role="status" aria-live="polite">
           {busy === "upload" ? "正在检查图片…" : planning ? "正在理解需求、安排成品…" : plan?.ready ? <><strong>将为你制作：{plan.deliveries.map((item) => item.label).join("、")}</strong><span>{plan.cost} 积分 · 每项成功交付后结算</span></> : <span>{plan?.message || "写下想推广的商品或服务。"}</span>}
         </div>

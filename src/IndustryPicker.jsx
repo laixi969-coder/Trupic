@@ -26,46 +26,50 @@ export default function IndustryPicker({ profile, setProfile }) {
     }
   }
   return (
-    <fieldset className="spec-picker">
+    <fieldset className="spec-picker industry-picker">
       <legend>经营行业（可多选）</legend>
-      {[...new Set([...industries, ...selected])].map((name) => (
+      <div className="industry-tags">
+        {[...new Set([...industries, ...selected])].map((name) => (
+          <button
+            type="button"
+            key={name}
+            aria-pressed={selected.includes(name)}
+            disabled={!selected.includes(name) && selected.length >= 10}
+            onClick={() =>
+              change(
+                selected.includes(name)
+                  ? selected.filter((n) => n !== name)
+                  : [...selected, name],
+              )
+            }
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+      <div className="industry-custom">
+        <label className="field">
+          自定义行业
+          <input
+            value={custom}
+            maxLength={24}
+            onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                add();
+              }
+            }}
+          />
+        </label>
         <button
           type="button"
-          key={name}
-          aria-pressed={selected.includes(name)}
-          disabled={!selected.includes(name) && selected.length >= 10}
-          onClick={() =>
-            change(
-              selected.includes(name)
-                ? selected.filter((n) => n !== name)
-                : [...selected, name],
-            )
-          }
+          disabled={!custom.trim() || selected.length >= 10}
+          onClick={add}
         >
-          {name}
+          添加
         </button>
-      ))}
-      <label className="field">
-        自定义行业
-        <input
-          value={custom}
-          maxLength={24}
-          onChange={(e) => setCustom(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              add();
-            }
-          }}
-        />
-      </label>
-      <button
-        type="button"
-        disabled={!custom.trim() || selected.length >= 10}
-        onClick={add}
-      >
-        添加
-      </button>
+      </div>
     </fieldset>
   );
 }

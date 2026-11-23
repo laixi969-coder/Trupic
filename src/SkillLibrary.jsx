@@ -83,8 +83,8 @@ export default function SkillLibrary({ skills = [], busy, act }) {
         }}/></label>
         {fileError && <p role="alert">{fileError}</p>}
       </details>
-      <div className="skill-library-filters">
-        <label>
+      <div className="fieldgrid skill-library-filters">
+        <label className="field">
           搜索方法
           <input
             value={query}
@@ -92,7 +92,7 @@ export default function SkillLibrary({ skills = [], busy, act }) {
             placeholder="海报、封面、品牌…"
           />
         </label>
-        <label>
+        <label className="field">
           接入状态
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">全部状态</option>
