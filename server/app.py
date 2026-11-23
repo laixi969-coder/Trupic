@@ -878,7 +878,13 @@ def produce_job(id):
     p = s["plan"]
     p.setdefault("kind", s["kind"])
     dest = DATA / t / "works" / work / str(n)
+
+    def stage(message):
+        with db(True) as c:
+            c.execute("UPDATE job SET stage=? WHERE id=?", (message, id))
+
     try:
+        stage("正在准备素材和文案")
         if (p.get("autoCreation") and model.route("vision")["model"]) or (not p.get("bundleRole") and not p.get("autoCreation")):
             preflight(s, DATA / t / "assets")
         cached_copy = j["copy_checkpoint"]
@@ -934,6 +940,8 @@ def produce_job(id):
         if not cached_copy:
             with db(True) as c:
                 c.execute("UPDATE job SET copy_checkpoint=?,spec=? WHERE id=?", (dump(cp), dump(s), id))
+        if s["kind"] != "copy":
+            stage("正在生成视频画面" if s["kind"] == "video" else "正在准备海报画面")
         if s.get("regionEdit"):
             background, visual_engine = None, "海报局部修图"
         elif p.get("autoCreation") and s["kind"] != "copy" and p.get("bundleRole") not in ("white","overlay","box","bag","card"):
@@ -995,6 +1003,7 @@ def produce_job(id):
                         source = DATA / t / "works" / local_edit["work"] / str(local_edit["version"])
                         layout = region_edit.original_layout(source, dest, cp)
                     if layout is None:
+                        stage("正在调整排版" if repair else "正在排版并导出成品")
                         layout = render(
                             dest,
                             p,
@@ -1022,6 +1031,7 @@ def produce_job(id):
                     except (OSError, ValueError, subprocess.SubprocessError) as exc:
                         issues = ["导出文件读取失败：" + str(exc)[:100]]
                     try:
+                        stage("正在审核成品画面")
                         review = (
                             None if p.get("bundleRole") and not p.get("autoCreation")
                             else content_review(dest, original, s, cp, layout)
@@ -1033,14 +1043,14 @@ def produce_job(id):
                         IndexError,
                         TypeError,
                         subprocess.SubprocessError,
-                    ):
+                    ) as exc:
                         # A damaged first export can also prevent preparing the model input.
                         review = (
                             None
                             if issues and not repair
                             else {
                                 "status": "unavailable",
-                                "reason": "已配置的视觉模型未返回有效结果，请重试。",
+                                "reason": model.vision_failure_message(exc),
                             }
                         )
                     if review:
@@ -1325,7 +1335,7 @@ def retry(id):
                 summary = json.loads(group["plan"])
                 summary.pop("copyError",None)
                 c.execute("UPDATE creative_run SET plan=? WHERE id=?",(dump(summary),rid))
-            c.execute("UPDATE job SET state='queued',error=NULL WHERE id=?", (id,))
+            c.execute("UPDATE job SET state='queued',error=NULL,stage=NULL WHERE id=?", (id,))
     pool.submit(produce, id)
     return jsonify(id=id)
 

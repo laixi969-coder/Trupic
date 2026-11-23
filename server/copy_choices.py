@@ -183,6 +183,8 @@ def write_options(spec, tenant, previous=()):
         "从原图可见细节和需求取材，保留项目或商品名、商业条件，正文和末句各说一件事。"
         "没有指定联系渠道就沿用商家的邀约说法。指定标题逐字保留，通过正文区分选项。"
     )
+    task += ("逐字使用商家给出的名称与价格，不纠正片名、不补全品牌。没有提供的档期、限时、"
+             "库存、折扣、购票渠道一律不写。标题、副标题和末句合起来只写一次价格。")
     task += wenan.POSTER_HEADINGS
     if wenan.social_headline(plan):
         task += (
@@ -193,8 +195,6 @@ def write_options(spec, tenant, previous=()):
         )
     try:
         locked = LOCKED.search(plan["original"])
-        drafts = []
-        sharing = []
         seen = set(previous)
         known = "。".join(
             (
@@ -203,7 +203,16 @@ def write_options(spec, tenant, previous=()):
                 json.dumps(plan["profile"], ensure_ascii=False),
             )
         )
+        review_task = (
+            "你是独立审稿人。逐组检查事实、商家要求、项目名称、行动。商家原话是名称和价格的依据，按字面核对，不根据常识纠正商家片名或补充品牌。不同角度可以共享同一事实和商品名。"
+            '仅返回 JSON {"approved":[0,1,2],"feedback":"未通过稿件需要修正的具体问题"}，数组只列通过的零起始序号。'
+        )
+        if wenan.social_headline(plan):
+            review_task += "逐条检验标题：顾客会把它发给谁，对方能怎么接话，和眼前的商品或场景有什么关系？空泛或换品也成立的标题退稿。"
+        approved = []
+        feedback = ""
         for attempt in range(2):
+            drafts, sharing = [], []
             length_error = ""
             result, engine = ask(
                 task, inputs, 900, option_schema("title", "body", "cta", "shareTo", "reply")
@@ -258,51 +267,48 @@ def write_options(spec, tenant, previous=()):
                 sharing.append({k: row[k] for k in ("shareTo", "reply") if k in row})
                 seen.add(key)
                 drafts.append({"title": title, "body": body, "cta": cta})
-            if len(drafts) >= 2 or not length_error:
-                break
-            if attempt == 0:
-                inputs["改写要求"] = length_error + "。请重新生成不同角度的合规候选。"
-        drafts = drafts[:3]
-        if len(drafts) < 2:
-            raise ValueError((length_error + "。 " if length_error else "") + "可用的不同文案不足两组，请重新生成。")
-        review_task = (
-            "你是独立审稿人。逐组检查事实、商家要求、项目名称、行动和创意切口是否不同。"
-            '仅返回 JSON {"approved":[0,1,2]}，数组只列通过的零起始序号。'
-        )
-        if wenan.social_headline(plan):
-            review_task += "逐条检验标题：顾客会把它发给谁，对方能怎么接话，和眼前的商品或场景有什么关系？空泛或换品也成立的标题退稿。"
-        reviewed = {i: {**d, **sharing[i]} for i, d in enumerate(drafts)}
-        review, _ = ask(
-            review_task,
-            {**inputs, "候选": reviewed},
-            180,
-            object_schema(
-                approved={
-                    "type": "array",
-                    "items": {"type": "integer", "minimum": 0, "maximum": 2},
+            if not drafts:
+                inputs["改写要求"] = (length_error or "缺少不同角度的合规候选") + "。请生成三组新的候选。"
+                continue
+            reviewed = {i: {**d, **sharing[i]} for i, d in enumerate(drafts)}
+            review, _ = ask(
+                review_task,
+                {**inputs, "候选": reviewed},
+                400,
+                object_schema(
+                    feedback={"type": "string"},
+                    approved={
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 0, "maximum": 2},
+                    }
+                ),
+            )
+            passed = review.get("approved")
+            if not isinstance(passed, list):
+                passed = []
+            approved.extend([
+                {**base, "engine": engine}
+                | draft
+                | {
+                    **({"sharingReview": sharing[i]} if sharing[i] else {}),
+                    "detailLine": draft["body"],
+                    "review": "商家候选文案已独立复核。",
+                    "writingSkill": wenan.record(plan, "模型创作与复核"),
                 }
-            ),
-        )
-        passed = review.get("approved")
-        if not isinstance(passed, list):
-            passed = []
-        approved = [
-            {**base, "engine": engine}
-            | draft
-            | {
-                **({"sharingReview": sharing[i]} if sharing[i] else {}),
-                "detailLine": draft["body"],
-                "review": "商家候选文案已独立复核。",
-                "writingSkill": wenan.record(plan, "模型创作与复核"),
-            }
-            for i, draft in enumerate(drafts)
-            if any(type(n) is int and n == i for n in passed)
-        ]
-        if len(approved) < 2:
-            raise ValueError("通过复核的不同文案不足两组，请重新生成。")
-        return approved
-    except (OSError, IndexError, KeyError, model.InvalidModelOutput) as exc:
-        raise ValueError("文案服务暂时不可用，请检查模型连接后重试。") from exc
+                for i, draft in enumerate(drafts)
+                if any(type(n) is int and n == i for n in passed)
+            ])
+            if len(approved) >= 2:
+                return approved[:3]
+            feedback = str(review.get("feedback", ""))[:240]
+            inputs["改写要求"] = (feedback or "依据商家原话写明商品、价格，避免补充未经证实的描述。") + " 请改写为三个新标题。"
+            inputs["已写过的标题"] = [draft["title"] for draft in drafts]
+        reason = feedback or length_error
+        raise ValueError("通过复核的不同文案不足两组。" + (reason + "。" if reason else "") + "请检查需求中的商品名和卖点后重试。")
+    except model.InvalidModelOutput as exc:
+        raise ValueError(f"文案模型回复格式异常：{exc} 请重新生成候选。") from exc
+    except OSError as exc:
+        raise ValueError(model.copy_failure_message(exc)) from exc
 
 
 def choices_for_quote(quotes, token, tenant, previous=None):
@@ -323,7 +329,8 @@ def choices_for_quote(quotes, token, tenant, previous=None):
     )
     for draft in write_options(spec, tenant, previous):
         choice = quotes.dumps(
-            {"quoteId": _quote_id(token), "draft": draft}, salt="trupic-copy-choice"
+            {"quoteId": _quote_id(token), "draft": draft, "asset": spec.get("asset"),
+             "sourceReview": spec["plan"].get("sourceReview")}, salt="trupic-copy-choice"
         )
         option = {k: draft[k] for k in ("title", "body", "cta")}
         if "spec" in q:
@@ -345,13 +352,19 @@ def selected_copy(quotes, request):
         raise ValueError("文案选项已失效，请重新获取。")
     if choice["quoteId"] != _quote_id(request["quote"]):
         raise ValueError("需求已更新，请重新选择本次文案。")
-    return choice["draft"]
+    draft = dict(choice["draft"])
+    if choice.get("asset") and choice.get("sourceReview"):
+        draft["_source"] = (choice["asset"], choice["sourceReview"])
+    return draft
 
 
 def apply_choice(spec, draft):
     role = spec["plan"].get("bundleRole")
     prior = spec.get("replacement", {})
     result = {**prior, **draft}
+    source = result.pop("_source", None)
+    if source and source[0] == spec.get("asset"):
+        spec["plan"]["sourceReview"] = source[1]
     if role in (
         "scene",
         "white",

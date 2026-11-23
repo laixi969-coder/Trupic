@@ -24,6 +24,8 @@ def make_scene(folder, plan, asset, kind, fresh, strict=False):
     backup = primary.get("backup")
     try:
         return generate_scene(primary, folder, plan, asset, kind, fresh, strict or bool(backup))
+    except atlas_image.PendingImage:
+        raise
     except ValueError as exc:
         if not backup or not isinstance(exc.__cause__, OSError):
             if backup and not strict and exc.__cause__ is not None:
@@ -99,6 +101,11 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
         prompt += ("\n本次海报主标题的含义：" + moment.get("headline", "") + "。"
                    + SET_BRIEFS.get(mode, "从实拍商品和标题的关系设计一个无字摄影布景，给前景实物与标题留白。")
                    + "只输出空摄影布景，产品、文字和商标由后续真实图层加入。")
+    if kind == "poster" and asset and asset.name != "subject.png" and art_direction.get("composition") == "photo-grid":
+        # The uploaded photograph and approved type are added by the compositor.
+        # Sending the sales brief here makes providers draw a second, fictitious ad.
+        prompt = (f"摄影棚空背景纸的全幅特写，配色 {palette}，柔和渐变与细微纸张质感。"
+                  "画面仅有连续的背景纸，没有主体、插图、标牌、边框、文字、字符或数字。")
     payload = {
         "model": cfg["imageModel"],
         "prompt": prompt,

@@ -1,7 +1,7 @@
 import CreationSpecs from "./CreationSpecs.jsx";
 import CopyChoices from "./CopyChoices.jsx";
 import React, { useEffect, useRef, useState } from "react";
-import { UploadCloud, Mic, Sparkles, ArrowRight, RefreshCw, Download, X } from "lucide-react";
+import { UploadCloud, Mic, Sparkles, RefreshCw, Download, X } from "lucide-react";
 import { api, Modal, Busy, dateText } from "./ui.jsx";
 
 const statusText = { queued: "等待制作", running: "正在制作", failed: "制作中断", complete: "已完成" };
@@ -21,7 +21,7 @@ function RunProgress({ run, busy, retry }) {
       <progress aria-label="已完成项目" value={done} max={run.items.length} />
       <ul>{run.items.map(item => <li key={item.job}>
         {item.label} · {statusText[item.state]}
-        {item.state === "running" && item.copyReady && item.kind !== "copy" && " · 文案已就绪"}
+        {item.state === "running" && item.stage && " · " + item.stage}
         {item.state === "failed" && item.error && <span className="error">{item.error}</span>}
       </li>)}</ul>
     </div>
@@ -36,11 +36,10 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
   const facts = draft.extraFacts || "";
   const setFacts = (extraFacts) => patch({ extraFacts });
   const [multiAuthorized,setMultiAuthorized] = useState(false);
-  const [manualCopy,setManualCopy] = useState(false);
   const [chosen, setChosen] = useState(null);
   const [plan, setPlan] = useState(null);
   const choice = chosen?.quote === plan?.quote ? chosen?.token : "";
-  const needsChoice = plan?.requiresCopyChoice || (manualCopy && plan?.deliveries?.some(item=>item.kind==="poster"));
+  const needsChoice = plan?.requiresCopyChoice;
   const [planning, setPlanning] = useState(false);
   const [planVersion, setPlanVersion] = useState(0);
   const [busy, setBusy] = useState("");
@@ -68,6 +67,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
     try {rec.start();} catch {setError("无法启动语音输入。");}
   }
   const keyRef = useRef("");
+  const newRun = useRef(false);
   const lock = useRef(false);
   const progress = useRef(null);
   const refreshRef = useRef(refresh);
@@ -118,13 +118,20 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
     setPlan(null);
     setError("");
     if (draft.brief.trim().length < 2) {
+      keyRef.current = "";
       setPlanning(false);
       return;
     }
-    const signature = JSON.stringify([request, planVersion]);
+    const signature = request;
     let saved;
     try { saved = JSON.parse(sessionStorage.getItem("trupic-auto-request") || "null"); } catch {}
-    keyRef.current = saved?.signature === signature ? saved.key : crypto.randomUUID();
+    // Older tabs stored the form together with a render counter.
+    let sameRequest = saved?.signature === signature;
+    if (!sameRequest && saved?.signature) {
+      try { sameRequest = JSON.parse(saved.signature)[0] === request; } catch {}
+    }
+    keyRef.current = !newRun.current && sameRequest ? saved.key : crypto.randomUUID();
+    newRun.current = false;
     try { sessionStorage.setItem("trupic-auto-request", JSON.stringify({ signature, key: keyRef.current })); } catch {}
     setPlanning(true);
     const timer = setTimeout(async () => {
@@ -167,8 +174,8 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
     e?.preventDefault();
     if (reviewAsset) { checkAsset(selected); return; }
     if (!plan?.ready || plan.request !== request || planning || submitted === keyRef.current) return;
-    if (needsChoice && !choice) return;
-    if (Date.now() > plan.expires) { setPlanVersion((v) => v + 1); return; }
+    if (needsChoice && !choice) { setError("请先生成候选文案，再选择一组制作海报。"); return; }
+    if (Date.now() > plan.expires) { setError("方案已过期，请重新检查需求并选稿。"); return; }
     await perform("create", async () => {
       const row = await api("/creations", "POST", { quote: plan.quote, copyChoice: needsChoice ? choice : "", confirmedCost: plan.cost, requestKey: keyRef.current });
       runRevision.current++;
@@ -218,7 +225,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
           <div className="auto-brief">
             <label className="auto-field-title" htmlFor="auto-brief">你想做什么？</label>
             <div className="auto-editor">
-              <textarea id="auto-brief" ref={textRef} required maxLength={1200} disabled={!!busy} value={draft.brief} onChange={(e) => patch({ brief: e.target.value, source: "一键创作", topicId: "", reference: "" })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") create(e); }} placeholder="例如：周五下班，想请附近的朋友来台球室组局。" />
+              <textarea id="auto-brief" ref={textRef} required maxLength={1200} disabled={!!busy} value={draft.brief} onChange={(e) => patch({ brief: e.target.value, source: "一键创作", topicId: "", reference: "" })} onKeyDown={(e) => { if (!needsChoice && (e.metaKey || e.ctrlKey) && e.key === "Enter") create(e); }} placeholder="例如：周五下班，想请附近的朋友来台球室组局。" />
               {Speech && (
                 <button className="textbtn auto-dictate" type="button" disabled={!!busy} aria-pressed={listening} onClick={dictate}>
                   <Mic size={15} />{listening ? "结束听写" : "语音输入"}
@@ -265,21 +272,29 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
             <button className="textbtn" type="button" onClick={()=>patch({videoReference:null})}>移除参考</button></p>}
         </details>}
         {options}
-        {draft.kind !== "video" && <label className="checkline"><input type="checkbox" checked={manualCopy} onChange={e=>setManualCopy(e.target.checked)}/> 制作前自选文案 <small>未勾选时自动写稿并审稿</small></label>}
+
         {(plan?.questions?.length > 0 || facts || (draft.kind === "video" && draft.duration > 15)) && <div className="auto-questions"><p>{plan?.message || "补充商品信息"}</p>{plan?.questions?.map((question) => <p key={question}>{question}</p>)}<label className="field">补充信息<textarea value={facts} maxLength={400} disabled={!!busy} onChange={(e) => setFacts(e.target.value)} placeholder="把实际价格、日期或适用条件写在这里" /></label></div>}
         <div className="auto-plan" role="status" aria-live="polite">
-          {busy === "upload" ? "正在检查图片…" : planning ? "正在理解需求、安排成品…" : plan?.ready ? <><strong>将为你制作：{plan.deliveries.map((item) => item.label).join("、")}</strong><span>{plan.cost} 积分 · 每项成功交付后结算</span></> : <span>{plan?.message || "写下想推广的商品或服务。"}</span>}
+          {busy === "upload" ? "正在检查图片…" : planning ? "正在检查需求和制作规格…" : plan?.ready ? <><strong>将为你制作：{plan.deliveries.map((item) => item.label).join("、")}</strong><span>{plan.cost} 积分 · 每项成功交付后结算</span></> : <span>{plan?.message || "写下想推广的商品或服务。"}</span>}
         </div>
         {reviewAsset && <div className="model-tests">
           {plan.allowOriginal && <button type="button" className="secondary" disabled={!!busy} onClick={() => patch({assetMode:"original", assetConfirmed:false, identityRegion:null, visualDetail:null})}>使用原图继续</button>}
           <button type="button" className="textbtn" disabled={!!busy} onClick={() => checkAsset(selected)}>核对商品素材</button>
         </div>}
-        {needsChoice && plan?.request === request && <CopyChoices key={plan.quote} quote={plan.quote} value={choice} onChange={setChosen} disabled={!!busy || submitted === keyRef.current} />}
+
         {error && <p className="error" role="alert">{error} <button className="textbtn" type="button" disabled={!!busy} onClick={() => setPlanVersion((v) => v + 1)}>重新检查需求</button></p>}
         {busy === "create" && <p role="status">正在提交制作请求，等待任务确认…</p>}
         {currentRun && <RunProgress run={currentRun} busy={busy} retry={retry} />}
         {statusOffline && <p role="status">暂时无法更新制作状态，正在自动重连。</p>}
-        <div className="auto-footer"><small>保留商品原貌。</small><button className="primary" disabled={!!busy || planning || (!plan?.ready && !reviewAsset) || (needsChoice && !choice) || plan?.request !== request || submitted === keyRef.current}>{busy === "create" ? <Busy text="正在提交" /> : submitted === keyRef.current && plan?.ready ? "本次需求已提交" : <><Sparkles size={16} />{reviewAsset ? "核对素材并继续" : needsChoice ? "用所选文案制作" : "开始制作"}<ArrowRight size={16} /></>}</button></div>
+        {currentRun || (submitted && submitted === keyRef.current) ?
+          (!currentRun?.active && <button className="secondary" type="button" disabled={!!busy} onClick={() => { newRun.current = true; setPlanVersion(v => v + 1); }}>用同一需求重新制作</button>)
+          : needsChoice && plan?.request === request ?
+          <CopyChoices key={plan.quote} quote={plan.quote} value={choice} onChange={setChosen}
+            confirmCost={plan.cost} submitting={busy === "create"} disabled={!!busy} onReplan={() => setPlanVersion(v => v + 1)} />
+          : <div className="auto-footer"><small>{reviewAsset ? "请先确认使用哪张商品图" : draft.kind === "video" ? "确认后开始制作视频" : "下一步选择海报文案"}</small>
+            <button className="primary" disabled={!!busy || planning || (!plan?.ready && !reviewAsset) || plan?.request !== request}>
+              {busy === "create" ? <Busy text="正在提交" /> : reviewAsset ? "核对素材并继续" : draft.kind === "video" ? "开始制作视频" : "生成候选文案"}
+            </button></div>}
       </form>
     </section>
     {!!runs.length && <section className="auto-results" aria-label="创作结果"><h2>你的创作</h2>{runs.map((run) => <article className="auto-run" id={"creation-" + run.id} key={run.id}>

@@ -114,7 +114,10 @@ def poster_footer(copy, *details):
     for text in details:
         if text and not any(text in line for line in [*lines, *extra]):
             extra.append(text)
-    return " · ".join(filter(None, [*extra, copy.get("cta")]))
+    cta = lines[-1]
+    if cta and not any(cta in heading for heading in lines[:2]):
+        extra.append(cta)
+    return " · ".join(extra)
 
 
 def storyboard(plan, copy, asset=None):

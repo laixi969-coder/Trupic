@@ -213,7 +213,11 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(ready.status_code, 200, ready.json)
                 self.assertTrue(ready.json["ready"], ready.json)
                 with patch.object(studio.pool, "submit"):
-                    result = post(self.c, "creations", quote=ready.json["quote"], confirmedCost=ready.json["cost"],
+                    self.assertEqual(ready.json["requiresCopyChoice"], mode == "image")
+                    if mode == "image":
+                        rejected = post(self.c, "creations", quote=ready.json["quote"], confirmedCost=ready.json["cost"], requestKey="no-choice")
+                        self.assertEqual(rejected.status_code, 400)
+                    result = submit_with_copy(self.c, "creations", quote=ready.json["quote"], confirmedCost=ready.json["cost"],
                                   requestKey=uuid.uuid4().hex)
                 self.assertEqual(result.status_code, 200, result.json)
                 with studio.db() as c:
@@ -238,7 +242,7 @@ class WorkflowTests(unittest.TestCase):
         try:
             post(self.c,"admin/pricing",**{**rates,"poster":9})
             with patch.object(studio.pool,"submit"):
-                run=post(self.c,"creations",quote=q["quote"],confirmedCost=8,requestKey="v3").json
+                run=submit_with_copy(self.c,"creations",quote=q["quote"],confirmedCost=8,requestKey="v3").json
                 self.assertEqual(self.state()["credits"],112)
                 for i in run["items"]:
                     studio.produce(i["job"])
@@ -286,7 +290,7 @@ class WorkflowTests(unittest.TestCase):
             post(self.c,"admin/growth",action="verify",login=name,identity=name)
         q=post(guest,"creations/plan",brief="周末台球组局",deliveryMode="image",ratio="square").json
         with patch.object(studio.pool,"submit"):
-            run=post(guest,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey="first").json
+            run=submit_with_copy(guest,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey="first").json
             for item in run["items"]:
                 studio.produce(item["job"])
         self.assertEqual(guest.get("/api/state").json["credits"],119)
@@ -746,7 +750,7 @@ class WorkflowTests(unittest.TestCase):
             imageCount=1,
         ).json
         with patch.object(studio.pool, "submit"):
-            run = post(
+            run = submit_with_copy(
                 self.c,
                 "creations",
                 quote=q["quote"],
@@ -1062,7 +1066,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(post(self.c,"creations/plan",**{**payload,"references":[{**refs[0],"authorized":False}]}).status_code,400)
         q=post(self.c,"creations/plan",**payload).json
         with patch.object(studio.pool,"submit"):
-            run=post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey="reference").json
+            run=submit_with_copy(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey="reference").json
             for item in run["items"]: studio.produce(item["job"])
         work="works/"+run["items"][-1]["work"]
         v=self.c.get("/api/"+work).json["versions"][0]
@@ -1349,6 +1353,28 @@ class WorkflowTests(unittest.TestCase):
             self.assertIsNone(retrieve_method(c,"给首次到店的顾客做一张展览海报",{}))
             c.execute("DELETE FROM rules WHERE id=?", (method_id,))
             c.execute("DELETE FROM cases WHERE id=?", (method_id,))
+
+    def test_omni_review_retries_truncation_without_accepting_a_bad_poster(self):
+        from pathlib import Path
+        from server import model, visual_review
+        cfg = dict(model="qwen3.8-omni-flash", provider="bailian", key="",
+                   url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+        responses = [
+            {"finish_reason": "length", "message": {"content": '{"status":'}},
+            {"finish_reason": "stop", "message": {"content": '{"status":"repair","reason":"价格有误"}'}},
+        ]
+        def fetch(request, timeout):
+            self.assertEqual(json.loads(request.data)["reasoning_effort"], "none")
+            return io.BytesIO(json.dumps({"choices": [responses.pop(0)]}).encode())
+
+        spec = {"kind": "poster", "plan": {"original": "电影票9.9元", "angle": "票价", "profile": {}}}
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory)
+            Image.new("RGB", (640, 640)).save(dest / "poster.png")
+            with patch.object(model, "route", return_value=cfg), patch("urllib.request.urlopen", side_effect=fetch):
+                audit = visual_review.content_review(dest, None, spec, {"title": "电影票", "body": "", "cta": ""})
+        self.assertEqual(audit["status"], "repair")
+        self.assertFalse(responses)
 
     def test_malformed_model_content_is_distinct_from_connection_failure(self):
         from server import model
@@ -1704,10 +1730,11 @@ class WorkflowTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'同一任务'):
                     video.prepare_background(folder,plan,dict(storyboard=[]),cfg)
             self.assertEqual(sum(len(c.args)>2 for c in remote.call_args_list),1)
-            with patch.object(video,'request_json',return_value=dict(status='succeeded',content=dict(video_url='https://cdn.example/video.mp4'))) as remote, patch.object(video,'download',side_effect=lambda url,dest:shutil.copy(source,dest)):
+            with patch.object(video.time, 'sleep'), patch.object(video,'request_json',side_effect=[TimeoutError(),dict(status='succeeded',content=dict(video_url='https://cdn.example/video.mp4'))]) as remote, patch.object(video,'download',side_effect=lambda url,dest:shutil.copy(source,dest)):
                 frames=video.prepare_background(folder,plan,dict(storyboard=[]),cfg)
             self.assertEqual(len(list(frames.glob('*.jpg'))),216)
-            self.assertEqual(remote.call_count,1)
+            self.assertEqual(remote.call_count,2)
+            self.assertEqual(remote.call_args_list[0],remote.call_args_list[1])
             self.assertEqual(remote.call_args.args[1],cfg['url']+'/task-1')
             self.assertNotIn('video-private',(folder/'video-task.json').read_text())
 
@@ -3544,6 +3571,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([r[0] for r in rows], list(draft.values()))
         self.assertGreater(rows[0][2], rows[1][2])
         self.assertGreater(rows[1][2], rows[2][2])
+
+    def test_failed_candidate_review_keeps_approved_copy_and_rewrites_the_rest(self):
+        q = post(self.c, "creations/plan", brief="给周末电影放映做海报").json
+        def option(title):
+            return dict(title=title, body="", cta="", shareTo="朋友", reply="坐哪排？")
+        responses = [
+            ({"options": [option("这周末一起去看电影"), option("把这一排留给老朋友")]}, "writer"),
+            ({"approved": [1], "feedback": "换一个观影视角"}, "reviewer"),
+            ({"options": [option("大银幕上的猫去哪了")]}, "writer"),
+            ({"approved": [0]}, "reviewer"),
+        ]
+        with patch("server.model.route", return_value=dict(model="writer", url="", provider="test")), patch(
+            "server.model.ask", side_effect=responses
+        ) as ask:
+            response = post(self.c, "copy-options", quote=q["quote"])
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual([r["title"] for r in response.json["options"]], ["把这一排留给老朋友", "大银幕上的猫去哪了"])
+        self.assertIn("换一个观影视角", ask.call_args_list[2].args[1]["改写要求"])
 
     def test_short_candidate_titles_are_rewritten_before_selection(self):
         q = post(self.c, "creations/plan", brief="给周末电影放映做海报").json

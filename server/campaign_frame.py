@@ -97,7 +97,7 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts, d
             treatment, size, photo, art.get("lighting"), image_layers, photo_area, repair,
             reference_color=next((r["color"] for r in plan.get("references",[]) if r["role"]=="color"),None),
             framed=plan.get("design", {}).get("photoLayout", "framed") == "framed" if treatment == "photo-grid" else None,
-            background=background if asset and treatment == "photo-grid" else None,
+            background=background if asset and treatment == "photo-grid" and not repair else None,
         )
     if not asset:
         sector = DIRECTIONS.get(plan.get("sector"), DIRECTIONS["general"])

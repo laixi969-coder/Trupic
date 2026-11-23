@@ -3,6 +3,7 @@
 Protocol: https://github.com/volcengine/volcengine-go-sdk/blob/master/service/arkruntime/model/content_generation.go
 """
 import hashlib
+import http.client
 import json
 import re
 import subprocess
@@ -31,6 +32,19 @@ def request_json(cfg, url, payload=None, limit=1_000_000):
     if len(raw) > limit:
         raise ValueError('接口响应过大。')
     return json.loads(raw)
+
+
+def read_with_retry(operation, *args):
+    for attempt in range(3):
+        try:
+            return operation(*args)
+        except urllib.error.HTTPError as exc:
+            if attempt == 2 or exc.code not in (408, 429, 500, 502, 503, 504):
+                raise
+        except (OSError, http.client.IncompleteRead):
+            if attempt == 2:
+                raise
+        time.sleep(2 ** attempt)
 
 
 def download(url, path):
@@ -148,7 +162,7 @@ def render_background(folder, plan, copy, cfg):
         raise ValueError('视频提交结果未知，请先在视频平台确认任务；不会自动重复提交。')
     try:
         for _ in range(120):
-            state, video_url = poll_task(cfg, task['id'])
+            state, video_url = read_with_retry(poll_task, cfg, task['id'])
             if state in ('failed','cancelled','canceled','expired'):
                 task['state'] = 'failed'
                 checkpoint.write_text(json.dumps(task))
@@ -161,7 +175,7 @@ def render_background(folder, plan, copy, cfg):
         else:
             raise ValueError('视频仍在平台生成中。稍后重试会继续查询同一任务，不重复提交。')
         clip = folder / 'cloud-background.mp4'
-        download(video_url,clip)
+        read_with_retry(download, video_url, clip)
         frames.mkdir(exist_ok=True)
         timing = "fps=24,tpad=stop_mode=clone:stop_duration=9"
         if duration != 9:
@@ -175,5 +189,5 @@ def render_background(folder, plan, copy, cfg):
         if not final_frame.is_file():
             raise ValueError('视频未完整解码。')
         return frames
-    except (OSError,KeyError,TypeError,subprocess.SubprocessError) as exc:
+    except (OSError,http.client.IncompleteRead,KeyError,TypeError,subprocess.SubprocessError) as exc:
         raise ValueError('视频查询或下载未完成，重试会继续查询同一任务。') from exc

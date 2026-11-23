@@ -269,7 +269,7 @@ def register(app, services):
                                           (job["work"], job["version"])).fetchone()[0])
             else:
                 cp = json.loads(job["copy_checkpoint"]) if job["copy_checkpoint"] else spec["replacement"]
-            items.append({**item, "promptEngine":spec["plan"].get("promptBrief", {}).get("engine"),
+            items.append({**item, "stage":job["stage"], "promptEngine":spec["plan"].get("promptBrief", {}).get("engine"),
                           "directions":spec["plan"].get("promptBrief", {}).get("prompts", {}),
                           "copyEngine":cp.get("engine") if cp else None, "kind":spec["kind"],"state":job["state"],"copyReady":bool(job["copy_checkpoint"]),"error":job["error"],"work":job["work"],"preview":base+"/poster" if done and spec["kind"]!="copy" else None,"video":base+"/video" if done and spec["kind"]=="video" else None,"text":"\n\n".join(cp[k] for k in ("title","body","cta") if cp.get(k)) if done and spec["kind"]=="copy" else None,"download":base+"/download" if done else None})
         complete=bool(items) and all(i["state"]=="complete" for i in items)
@@ -282,7 +282,7 @@ def register(app, services):
             result=coordinate(services,c,t,services["body"]())
         if not result["ready"]:
             return jsonify(result)
-        return jsonify(ready=True,requiresCopyChoice=not result["deliveryMode"] and any(i["spec"]["kind"] == "poster" for i in result["items"]),title=result["title"],cost=result["cost"],deliveries=[dict(label=i["label"],kind=i["spec"]["kind"]) for i in result["items"]],notes=result["notes"],quote=quotes.dumps({"autoCreation":True,"tenant":t,**result}))
+        return jsonify(ready=True,requiresCopyChoice=any(i["spec"]["kind"] == "poster" for i in result["items"]),title=result["title"],cost=result["cost"],deliveries=[dict(label=i["label"],kind=i["spec"]["kind"]) for i in result["items"]],notes=result["notes"],quote=quotes.dumps({"autoCreation":True,"tenant":t,**result}))
 
     @app.post("/api/creations")
     def auto_create():
@@ -303,7 +303,7 @@ def register(app, services):
                 raise ValueError("创作费用已更新，请查看按钮旁的积分后重试。")
             services["enough"](c, t, q["cost"])
             visuals = [e["spec"] for e in q["items"] if e["spec"]["kind"] != "copy"]
-            if (not q.get("deliveryMode") or v.get("copyChoice")) and any(s["kind"] == "poster" for s in visuals):
+            if any(s["kind"] == "poster" for s in visuals):
                 chosen = selected_copy(quotes, v)
                 copy_fields = {k: chosen[k] for k in ("title", "body", "cta", "offer", "terms")}
                 q["shared"].update(copy_fields)

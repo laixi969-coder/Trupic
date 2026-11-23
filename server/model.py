@@ -198,6 +198,18 @@ def copy_failure_message(exc):
     return "文案调用未完成，请检查平台调用记录后重试此项。"
 
 
+def vision_failure_message(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"视觉审核平台返回 HTTP {exc.code}。请检查视觉连接的权限、额度和平台状态。"
+    if isinstance(getattr(exc, "reason", exc), TimeoutError):
+        return "等待视觉审核超时，请重试此项。"
+    if isinstance(exc, InvalidModelOutput):
+        return f"视觉审核未完成：{exc} 请重试此项。"
+    if isinstance(exc, OSError):
+        return "视觉审核无法读取画面或连接平台，请重试此项。"
+    return "视觉审核未取得有效结论，请检查视觉模型连接后重试此项。"
+
+
 def response_object(raw):
     if not isinstance(raw, str):
         raise InvalidModelOutput("模型未返回有效对象。")
@@ -228,10 +240,13 @@ def chat_request(cfg, name, messages, max_tokens, kind):
     # Qwen3.8 Flash enables thinking by default. Our short JSON drafting and
     # review requests use its direct-answer mode on DashScope.
     host = urlsplit(cfg["url"]).hostname or ""
-    if kind == "text" and name == "qwen3.8-flash" and host in (
+    if host in (
         "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com",
     ):
-        data["enable_thinking"] = False
+        if kind == "text" and name == "qwen3.8-flash":
+            data["enable_thinking"] = False
+        elif name == "qwen3.8-omni-flash":
+            data["reasoning_effort"] = "none"
     if schema := cfg.get("responseSchema"):
         data["response_format"] = {"type": "json_schema", "json_schema": {"name": "visual_audit", "schema": schema}}
     headers = {"Content-Type": "application/json", "User-Agent": "Trupic/1.0"}
@@ -249,10 +264,22 @@ def chat_request(cfg, name, messages, max_tokens, kind):
             body = response.read(250_001)
         if len(body) > 250_000:
             raise ValueError("模型响应过长。")
-        reply = json.loads(body)
+        try:
+            reply = json.loads(body)
+        except ValueError as exc:
+            raise InvalidModelOutput("平台回复不是有效 JSON。") from exc
+        if not isinstance(reply, dict):
+            raise InvalidModelOutput("模型响应不是 JSON 对象。")
         if isinstance(reply.get("usage"), dict):
             usage = reply["usage"]
-        result = response_object(reply["choices"][0]["message"]["content"])
+        choices = reply.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise InvalidModelOutput("模型响应缺少候选结果。")
+        choice = choices[0]
+        if choice.get("finish_reason") == "length":
+            raise InvalidModelOutput("模型回复达到输出上限，结果被截断。")
+        message = choice.get("message")
+        result = response_object(message.get("content") if isinstance(message, dict) else None)
         ok = True
         return result
     finally:

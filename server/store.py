@@ -113,6 +113,7 @@ def init():
             ("job", "worker_pid", "INTEGER"),
             ("job", "copy_checkpoint", "TEXT"),
             ("job", "visual_review", "TEXT"),
+            ("job", "stage", "TEXT"),
             ("rules", "retrievable", "INTEGER NOT NULL DEFAULT 0"),
             ("event", "is_news", "INTEGER NOT NULL DEFAULT 0"),
             ("event", "feed_id", "TEXT"),

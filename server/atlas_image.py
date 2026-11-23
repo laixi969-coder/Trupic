@@ -1,5 +1,6 @@
 """Generate an Atlas image and resume the same prediction after a poll/download failure."""
 import hashlib
+import http.client
 import json
 import re
 import time
@@ -8,13 +9,29 @@ import urllib.request
 from urllib.parse import urlsplit
 
 from .model import reserve_provider_call
-from .video_api import NoRedirect, request_json
+from .video_api import NoRedirect, read_with_retry, request_json
 
 ROOT = "https://api.atlascloud.ai/api/v1/model"
 
 
 def matches(cfg):
     return urlsplit(cfg["url"]).hostname == "api.atlascloud.ai"
+
+
+class PendingImage(ValueError):
+    """A prediction has already been accepted. Resume it without submitting another."""
+
+
+def download(url):
+    request = urllib.request.Request(url, headers={"User-Agent": "Trupic/1.0"})
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=90) as response:
+        data = response.read(24_000_001)
+        if len(data) > 24_000_000:
+            raise ValueError("Atlas 返回的图片超过大小限制。")
+        expected = response.headers.get("Content-Length")
+        if expected and expected.isdecimal() and len(data) < int(expected):
+            raise http.client.IncompleteRead(data)
+        return data
 
 
 def generate(cfg, folder, prompt, width, height):
@@ -41,7 +58,7 @@ def generate(cfg, folder, prompt, width, height):
             tmp.write_text(json.dumps(task_id))
             tmp.replace(checkpoint)
         for _ in range(120):
-            result = request_json(cfg, ROOT + "/prediction/" + task_id)
+            result = read_with_retry(request_json, cfg, ROOT + "/prediction/" + task_id)
             task = result.get("data") or result
             state = str(task.get("status", "")).lower()
             if state in ("failed", "cancelled", "canceled", "expired"):
@@ -51,17 +68,14 @@ def generate(cfg, folder, prompt, width, height):
                 outputs = task.get("outputs") or []
                 if not outputs or not isinstance(outputs[0], str) or urlsplit(outputs[0]).scheme != "https":
                     raise ValueError("Atlas 已完成图片任务，但未返回图片下载地址。")
-                request = urllib.request.Request(outputs[0], headers={"User-Agent":"Trupic/1.0"})
-                with urllib.request.build_opener(NoRedirect()).open(request, timeout=90) as response:
-                    data = response.read(24_000_001)
-                if len(data) > 24_000_000:
-                    raise ValueError("Atlas 返回的图片超过大小限制。")
-                return data
+                return read_with_retry(download, outputs[0])
             time.sleep(2)
-        raise ValueError("Atlas 图片仍在生成。重试会继续查询同一任务。")
+        raise PendingImage("Atlas 图片仍在生成。重试会继续查询同一任务。")
     except urllib.error.HTTPError as exc:
-        raise ValueError(f"Atlas 图片服务返回 HTTP {exc.code}。") from exc
-    except OSError as exc:
         if checkpoint.exists():
-            raise ValueError("与 Atlas 的连接中断，重试会继续获取同一张图片。") from exc
+            raise PendingImage(f"Atlas 图片查询或下载返回 HTTP {exc.code}。重试将继续获取同一张图片。") from exc
+        raise ValueError(f"Atlas 图片服务返回 HTTP {exc.code}。") from exc
+    except (OSError, http.client.IncompleteRead) as exc:
+        if checkpoint.exists():
+            raise PendingImage("与 Atlas 的连接中断，重试会继续获取同一张图片。") from exc
         raise ValueError("未收到 Atlas 图片提交结果，请在平台核对任务记录。") from exc
