@@ -34,8 +34,8 @@ def validate(box, instruction, protected=()):
         raise ValueError("本地可用提亮或压暗。其他修改需要先配置图片编辑模型。")
 
 
-def cloud_patch(cfg, image, instruction):
-    # Send only the selected patch. A provider can never modify the surrounding pixels.
+def request_edit(cfg, image, instruction, fields, timeout):
+    """Send the supplied pixels to a configured Images Edits endpoint."""
     raw = io.BytesIO()
     image.save(raw, "PNG")
     boundary = "trupic-" + secrets.token_hex(16)
@@ -43,7 +43,7 @@ def cloud_patch(cfg, image, instruction):
     for key, value in (
         ("model", cfg["model"]),
         ("prompt", instruction),
-        ("response_format", "b64_json"),
+        *fields.items(),
     ):
         parts.append(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode()
@@ -57,22 +57,20 @@ def cloud_patch(cfg, image, instruction):
     if cfg.get("key"):
         headers["Authorization"] = "Bearer " + cfg["key"]
     request = urllib.request.Request(cfg["url"], b"".join(parts), headers)
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+        payload = response.read(23_000_001)
+    if len(payload) > 23_000_000:
+        raise ValueError("修图响应过大。")
+    return base64.b64decode(json.loads(payload)["data"][0]["b64_json"], validate=True)
+
+
+def cloud_patch(cfg, image, instruction):
+    # Send only the selected patch. A provider can never modify the surrounding pixels.
     model.reserve_provider_call("edit")
     started, ok = time.monotonic(), False
     try:
-        with urllib.request.build_opener(NoRedirect()).open(
-            request, timeout=95
-        ) as response:
-            payload = response.read(23_000_001)
-        if len(payload) > 23_000_000:
-            raise ValueError("修图响应过大。")
-        with Image.open(
-            io.BytesIO(
-                base64.b64decode(
-                    json.loads(payload)["data"][0]["b64_json"], validate=True
-                )
-            )
-        ) as edited:
+        raw = request_edit(cfg, image, instruction, {"response_format": "b64_json"}, 95)
+        with Image.open(io.BytesIO(raw)) as edited:
             if min(edited.size) < 8 or edited.width * edited.height > 24_000_000:
                 raise ValueError("修图尺寸不适用。")
             patch = edited.convert("RGB").resize(image.size, Image.Resampling.LANCZOS)

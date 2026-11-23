@@ -50,6 +50,69 @@ def submit_with_copy(client, path, **data):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_moment_reference_edit_passes_the_photo_and_reuses_the_scene(self):
+        import base64
+        from pathlib import Path
+        from server.background import generate_scene
+        selected = dict(provider="custom", url="https://images.example/v1/images/generations",
+                        model="gpt-image-2", key="")
+        plan = dict(subject="水杯", goal="日常分享", angle="喝水提醒", shot="杯盖",
+                    moment={"headline": "收到，请回「吨」。"}, design={"photoLayout": "reply", "scene": "实拍"},
+                    output={"width": 1080, "height": 1920})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Image.new("RGB", (300, 650), "green").save(root / "original.png")
+            rendered = io.BytesIO()
+            Image.new("RGB", (400, 640), "cyan").save(rendered, format="PNG")
+            response = json.dumps({"data": [{"b64_json": base64.b64encode(rendered.getvalue()).decode()}]})
+            with patch("server.region_edit.urllib.request.build_opener") as opener:
+                opener.return_value.open.return_value = io.BytesIO(response.encode())
+                args = selected, root / "works" / "1", plan, root / "subject.png", "poster"
+                first = generate_scene(*args, fresh=True, strict=False)
+                self.assertEqual(first[1], selected["model"])
+                self.assertTrue(first[0].is_file())
+                self.assertEqual(generate_scene(*args, fresh=False, strict=False), first)
+                opener.return_value.open.assert_called_once()
+                req = opener.return_value.open.call_args.args[0]
+                self.assertEqual(req.full_url, "https://images.example/v1/images/edits")
+                self.assertIn(plan["moment"]["headline"].encode(), req.data)
+                self.assertIn(b"\x89PNG", req.data)
+                self.assertIn(b"1008x1792", req.data)
+
+    def test_matte_fringe_and_measured_text_do_not_imply_clipping(self):
+        from pathlib import Path
+        from server.product_bundle import qualified_cutout
+        from server.visual_review import measured_separation
+        from PIL import ImageDraw
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "subject.png"
+            photo = Image.new("RGBA", (300, 300))
+            pen = ImageDraw.Draw(photo)
+            pen.rectangle((30, 60, 298, 230), fill=(30, 30, 30, 255))
+            info = dict(path=path, risk=False, file=path.name)
+            for alpha, intact in ((124, True), (255, False)):
+                pen.line((299, 90, 299, 120), fill=(30, 30, 30, alpha))
+                photo.save(path)
+                self.assertEqual(qualified_cutout(info, True), intact)
+        frame = dict(subjectBounds=(30, 125, 260, 270), size=(300, 300))
+        for box, separate in (((15, 12, 220, 80), True), ((15, 12, 220, 160), False),
+                              ((-8, 12, 220, 80), False)):
+            self.assertEqual(measured_separation({**frame, "text": [(box, None, 20, "标题")]}), separate)
+
+    def test_phone_mpo_jpeg_uses_primary_image(self):
+        image = Image.new("RGB", (250, 260), "red")
+        upload = io.BytesIO()
+        image.save(upload, format="MPO", save_all=True,
+                   append_images=[Image.new("RGB", image.size, "blue")])
+        upload.seek(0)
+        from pathlib import Path
+        from server.media import inspect_upload
+        with tempfile.TemporaryDirectory() as folder:
+            inspect_upload(upload, Path(folder))
+            with Image.open(Path(folder) / "original.png") as primary:
+                self.assertEqual(primary.size, image.size)
+                self.assertGreater(primary.getpixel((100, 100))[0], 250)
+
     def setUp(self):
         self.c = studio.app.test_client()
         self.c.get("/api/state")

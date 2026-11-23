@@ -1,11 +1,14 @@
 """Generate only concept scenery. Product masks are composited from the original upload."""
 
 import base64
+import hashlib
 import io
 import json
 import re
 import time
 import urllib.request
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from PIL import Image, ImageOps
 
@@ -13,6 +16,7 @@ from .model import reserve_provider_call, route
 from .store import db, now
 from .design import DIRECTIONS
 from . import qwen_image
+from .moment_poster import PLATES, SET_BRIEFS
 
 
 def make_scene(folder, plan, asset, kind, fresh, strict=False):
@@ -35,16 +39,24 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
     if asset and asset.name == "subject.png" and art_direction.get("composition") == "material":
         return None, "商品原片纹理取景"
     cfg = dict(imageUrl=selected["url"], imageModel=selected["model"], imageKey=selected["key"])
+    moment = plan.get("moment") if kind == "poster" and asset and asset.name == "subject.png" else None
+    mode = plan.get("design", {}).get("photoLayout")
+    preset = PLATES / (mode + ".webp") if moment and mode in SET_BRIEFS else None
     if kind == "copy" or not (cfg["imageUrl"] and cfg["imageModel"]):
-        return None, "本地排版"
+        return (preset, "ImageGen 商业布景 · 实拍分层") if preset else (None, "本地排版")
     if asset and asset.name != "subject.png" and not plan.get("autoCreation"):
         return None, "原图排版"
     # A revision reuses the same approved scene. No extra provider billing.
-    path = folder.parent / "concept.webp"
+    name = "concept.webp"
+    if moment:
+        out = plan["output"]
+        source = (selected.get("provider", "") + "|" + cfg["imageModel"] + "|" + cfg["imageUrl"]).encode()
+        name = f"moment-{mode or 'studio'}-{out['width']}x{out['height']}-{hashlib.sha256(source).hexdigest()[:12]}.webp"
+    path = folder.parent / name
     if path.exists():
         return path, cfg["imageModel"]
     if not fresh:
-        return None, "本地排版"
+        return (preset, "ImageGen 商业布景 · 实拍分层") if preset else (None, "本地排版")
     prompt = (
         "为商家营销设计摄影背景，全幅商业摄影、清楚的主光方向、视觉集中、无文字、无商标。仅作概念配图，"
         "不要虚构门店的陈设、产品包装、优惠或品牌。"
@@ -83,6 +95,10 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
         prompt += "保护下半幅商品轮廓，上方和侧边保留平稳的文字留白。"
     if optimized:
         prompt += " 本次创作指令：" + optimized
+    if moment:
+        prompt += ("\n本次海报主标题的含义：" + moment.get("headline", "") + "。"
+                   + SET_BRIEFS.get(mode, "从实拍商品和标题的关系设计一个无字摄影布景，给前景实物与标题留白。")
+                   + "只输出空摄影布景，产品、文字和商标由后续真实图层加入。")
     payload = {
         "model": cfg["imageModel"],
         "prompt": prompt,
@@ -99,8 +115,28 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
         headers["Authorization"] = "Bearer " + cfg["imageKey"]
     started, ok = time.monotonic(), False
     try:
-        if cfg["imageModel"] in qwen_image.MODELS:
-            data = qwen_image.generate(cfg, prompt, payload["size"])
+        endpoint = cfg["imageUrl"].rstrip("/")
+        if moment and cfg["imageModel"].startswith("gpt-image-") and endpoint.endswith("/images/generations"):
+            from .region_edit import request_edit
+            edits = {**selected, "url": endpoint.removesuffix("/generations") + "/edits"}
+            size = "1024x1536"
+            if cfg["imageModel"].startswith("gpt-image-2"):
+                size = "1008x1792" if height / width > 1.6 else "1104x1472"
+            with Image.open(asset.with_name("original.png")) as original:
+                original.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+                reserve_provider_call("image")
+                data = request_edit(edits, original.convert("RGB"), prompt,
+                                    {"size": size, "output_format": "png"}, 240)
+        elif cfg["imageModel"] in qwen_image.MODELS:
+            if moment:
+                with TemporaryDirectory() as tmp:
+                    ref = Path(tmp) / "reference.jpg"
+                    with Image.open(asset.with_name("original.png")) as original:
+                        original.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+                        original.convert("RGB").save(ref, quality=90)
+                    data = qwen_image.generate(cfg, prompt, f"{width}x{height}", ref)
+            else:
+                data = qwen_image.generate(cfg, prompt, payload["size"])
         else:
             req = urllib.request.Request(
                 cfg["imageUrl"], json.dumps(payload).encode(), headers
@@ -124,6 +160,8 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
     except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
         if strict:
             raise ValueError("图片生成接口未返回可用画面，请检查图片连接后重试此项。") from exc
+        if preset:
+            return preset, "ImageGen 商业布景 · 图像服务未返回可用画面"
         return None, "本地排版（图像服务未返回可用画面）"
     finally:
         with db(True) as c:

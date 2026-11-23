@@ -297,6 +297,15 @@ def campaign_frame(
     kit = plan.get("brandKit", {})
     from .skill_render import brand_logo
     logo_path = brand_logo(asset, kit) if not shot and plan.get("kind") == "poster" else None
+    motif = copy.get("motif")
+    if (treatment == "photo-grid" and motif in ("columns", "reply") and asset and not logo_path
+            and plan.get("design", {}).get("photoLayout") == motif and w <= h):
+        from .moment_poster import conversation
+        return conversation(copy, asset, size, ts, image_layers, background, repair)
+    if (treatment == "photo-grid" and plan.get("design", {}).get("photoLayout") in ("time", "clock-object", "object")
+            and asset and asset.name == "subject.png" and not logo_path):
+        from .moment_poster import compose
+        return compose(plan, copy, asset, size, background, ts, image_layers)
     if treatment == "photo-grid":
         design = plan.get("design", {})
         mode = design.get("photoLayout", "framed")
@@ -304,8 +313,10 @@ def campaign_frame(
         brand = kit.get("name") or plan["profile"].get("name", "")
         if not asset and (background or plan.get("scenePhoto")):
             brand = (brand + "  创意场景示意").strip()
+        # The note belongs in the caption. Leave the merchant's photograph room on the card.
+        grid_copy = {**copy, "body": "", "cta": ""} if "moment" in plan else copy
         photo_area, entries = grid_layout(
-            size, ts, brand, copy, art.get("detail"), mode, first,
+            size, ts, brand, grid_copy, "" if "moment" in plan else art.get("detail"), mode, first,
             body=copy.get("body") if plan.get("bundleRole") else "",
             logo=bool(logo_path), has_picture=bool(asset or background or plan.get("scenePhoto")),
         )

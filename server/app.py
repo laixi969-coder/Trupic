@@ -26,7 +26,7 @@ from io import BytesIO
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import model, providers
+from . import model, moments, providers
 from .copy_choices import apply_choice, choices_for_quote, selected_copy
 from .background import make_scene
 from .creative import (
@@ -57,7 +57,7 @@ from .lettering import OPTIONS as LETTERING_OPTIONS
 from .campaign import storyboard
 from .shot_detail import merchant_detail
 from .prompt_agent import apply_poster_layout, full_poster_prompt, optimize
-from .product_bundle import register as register_bundles
+from .product_bundle import qualified_cutout, register as register_bundles
 from .auto_creation import register as register_creations
 from .auto_pipeline import shared_copy
 from .model_tools import register as register_model_tools
@@ -529,7 +529,7 @@ def delete_asset(id):
     return jsonify(ok=True)
 
 
-def plan_spec(c, t, v):
+def plan_spec(c, t, v, *, original_photo=False):
     brief = string(v.get("brief"), 1200)
     kind = string(v.get("kind"))
     ratio = string(v.get("ratio") or ("story" if kind == "video" else "portrait"))
@@ -544,6 +544,7 @@ def plan_spec(c, t, v):
             raise ValueError("这张图片无法可靠还原商品，请更换清晰原图。")
         if (
             kind != "copy"
+            and not (original_photo and policy == "original")
             and json.loads(a["info"])["action"] == "主体抠图"
             and not v.get("assetConfirmed")
         ):
@@ -699,7 +700,34 @@ def enough(c, t, cost):
         raise ValueError("可用积分不足。")
 
 
-def enqueue(t, v, work=None):
+def moment_spec(c, tenant, request):
+    asset = string(request.get("asset"), 60)
+    note = request.get("note", "")
+    if not asset:
+        raise ValueError("请先拍照或选一张照片。")
+    if not isinstance(note, str) or len(note) > 140:
+        raise ValueError("补充说明最多 140 字。")
+    note = note.strip()
+    row = owner(c, "asset", asset, tenant)
+    folder = DATA / tenant / "assets" / asset
+    info = {**json.loads(row["info"]), "path": folder / "subject.png"}
+    cutout = qualified_cutout(info, True)
+    ratio = request.get("ratio", "portrait")
+    if ratio not in ("portrait", "story"):
+        raise ValueError("朋友圈画幅请选择 3:4 或 9:16。")
+    brief = "用实拍商品做今天的朋友圈图文。" + note
+    spec = plan_spec(c, tenant, dict(
+        kind="poster", brief=brief, facts=note, asset=asset,
+        assetMode="processed" if cutout else "original", assetConfirmed=cutout,
+        posterStyle="auto", ratio=ratio, resolution=1080, dpi=72, source="今天的朋友圈",
+    ), original_photo=True)
+    spec["plan"]["moment"] = dict(note=note, workflowVersion=2)
+    if cutout:
+        spec["plan"]["moment"]["roundSubject"] = moments.round_subject(info["path"])
+    return spec
+
+
+def enqueue(t, v, work=None, *, moment=False):
     key = string(v.get("requestKey"), 90)
     if not key:
         raise ValueError("缺少请求标识，请刷新后再试。")
@@ -738,7 +766,9 @@ def enqueue(t, v, work=None):
                 s["plan"]["sourceVersion"] = {"work": work, "version": q["base"]}
                 work, nxt = ident(), 1
         else:
-            if v.get("quote"):
+            if moment:
+                s = moment_spec(c, t, v)
+            elif v.get("quote"):
                 try:
                     q = quotes.loads(v["quote"], max_age=1800)
                 except BadSignature:
@@ -753,11 +783,13 @@ def enqueue(t, v, work=None):
                     owner(c, "asset", s["asset"], t)
             else:
                 s = plan_spec(c, t, v)
-            if s["kind"] == "poster":
+            if s["kind"] == "poster" and not moment:
                 apply_choice(s, selected_copy(quotes, v))
-            cost = pricing.quoted_cost(s) if v.get("quote") else pricing.snapshot(s, pricing.current(c))
+            cost = pricing.quoted_cost(s) if v.get("quote") and not moment else pricing.snapshot(s, pricing.current(c))
             work = ident()
             nxt = 1
+            if moment and (type(v.get("confirmedCost")) is not int or v["confirmedCost"] != cost or v.get("confirmed") is not True):
+                raise ValueError("本次用量已更新，请查看按钮上的积分后再制作。")
             if cost and (v.get("confirmedCost") != cost or not v.get("confirmed")):
                 raise ValueError("请确认本次积分用量后再制作。")
         enough(c, t, cost)
@@ -769,6 +801,18 @@ def enqueue(t, v, work=None):
         wallet.reserve(c,t,id,cost)
     pool.submit(produce, id)
     return dict(id=id, state="queued", work=work)
+
+
+@app.get("/api/moments/price")
+def moment_price():
+    tenant = reqtenant()
+    with db() as c:
+        return jsonify(cost=pricing.current(c)["poster"], workspace=tenant)
+
+
+@app.post("/api/moments")
+def create_moment():
+    return jsonify(enqueue(reqtenant(), body(), moment=True))
 
 
 @app.post("/api/jobs")
@@ -788,6 +832,8 @@ def revision_quote(id):
         spec, cp = json.loads(r["spec"]), json.loads(r["copy"])
         action = v.get("action", "revision")
         options = revisions.short_options(cp) if action == "shorten" else []
+        if action == "moment-copy" and "moment" in spec["plan"]:
+            options = moments.drafts(spec["plan"])
         instruction = v.get("instruction")
         if action == "edit":
             instruction = revisions.resolve_instruction(spec,cp,instruction,v.get("field"))
@@ -831,14 +877,19 @@ def produce_job(id):
         if (p.get("autoCreation") and model.route("vision")["model"]) or (not p.get("bundleRole") and not p.get("autoCreation")):
             preflight(s, DATA / t / "assets")
         if not p.get("promptBrief"):
+            if "moment" in p:
+                moments.read_photo(p)
             optimize(s)
             with db(True) as c:
                 c.execute("UPDATE job SET spec=? WHERE id=?", (dump(s), id))
         cached_copy = j["copy_checkpoint"]
+        if "moment" in p and not (cached_copy or s.get("replacement") or p["moment"].get("drafts")):
+            moments.prepare_drafts(s, t)
         cp = (
             json.loads(cached_copy)
             if cached_copy
-            else shared_copy(s) if p.get("autoCreation") and n == 1 else s.get("replacement") or generate_copy(p, 0)
+            else shared_copy(s) if p.get("autoCreation") and n == 1 else s.get("replacement")
+            or (moments.first_copy(p) if "moment" in p else generate_copy(p, 0))
         )
         ap = None
         if s["asset"]:
@@ -849,9 +900,11 @@ def produce_job(id):
         if s["kind"] == "video":
             cp["storyboard"] = storyboard(p, cp, ap)
         if s["kind"] == "poster" and p.get("posterArt") and p.get("output"):
-            if n == 1:
+            if n == 1 or ("moment" in p and not s.get("regionEdit") and not p.get("layoutOverride")):
                 apply_poster_layout(p, cp)
             cp["fullPosterPrompt"] = full_poster_prompt(p, cp)
+            if "moment" in p:
+                p["moment"]["headline"] = cp["title"]
         known = (
             p["original"]
             + " "
@@ -869,7 +922,7 @@ def produce_job(id):
             raise ValueError("检测到未经确认的经营声明，请补充事实后重新创作。")
         if not cached_copy:
             with db(True) as c:
-                c.execute("UPDATE job SET copy_checkpoint=? WHERE id=?", (dump(cp), id))
+                c.execute("UPDATE job SET copy_checkpoint=?,spec=? WHERE id=?", (dump(cp), dump(s), id))
         if s.get("regionEdit"):
             background, visual_engine = None, "海报局部修图"
         elif p.get("autoCreation") and s["kind"] != "copy" and p.get("bundleRole") not in ("white","overlay","box","bag","card"):
@@ -918,6 +971,12 @@ def produce_job(id):
                         "抠图" in issue or "蒙版" in issue for issue in last_issues
                     )
                     chosen = ap if intact_mask else original
+                    design = p.get("design", {})
+                    if (p.get("moment") and not p.get("layoutOverride")
+                            and (not intact_mask or design.get("photoLayout") not in ("columns", "reply"))
+                            and design.get("photoLayout") in ("columns", "reply", "object", "time", "clock-object")):
+                        design["photoLayout"] = "bleed"
+                        design["readingOrder"]["layoutReason"] = "首稿复检后使用满版摄影，给标题与实拍各留独立区域。"
                 visual.pop("content", None)
                 try:
                     layout = None

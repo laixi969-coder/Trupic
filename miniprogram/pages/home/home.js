@@ -1,5 +1,6 @@
 const api = require("../../lib/api");
 const { confirmBriefChange } = require("../../lib/draft");
+const moment = require("../../lib/moment");
 const samples = require("../../lib/samples");
 const kinds = [
   { id: "poster", name: "海报" },
@@ -15,7 +16,10 @@ const defaults = {
   video: { ratio: "9:16", resolution: 720, dpi: 300 },
 };
 Page({
+  ...moment.methods,
   data: {
+    ...moment.data,
+    studio: false,
     kinds,
     ratios,
     resolutions,
@@ -61,6 +65,7 @@ Page({
     if (app.globalData.sample) {
       const s = app.globalData.sample;
       this.setData({
+        studio: true,
         kind: "poster",
         brief: s.brief,
         briefError: "",
@@ -73,7 +78,12 @@ Page({
       this.save();
       wx.pageScrollTo({ scrollTop: 0, duration: 0 });
     }
-    return this.loadTopics();
+    return this.data.studio ? this.loadTopics() : this.loadMoment();
+  },
+  toggleStudio() {
+    if (this.data.busy) return;
+    this.setData({ studio: !this.data.studio });
+    return this.data.studio ? this.loadTopics() : this.loadMoment();
   },
   async loadTopics() {
     const request = (this.topicRequest || 0) + 1;

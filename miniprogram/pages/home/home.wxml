@@ -1,4 +1,25 @@
-<view class="page">
+<view wx:if="{{!studio}}" class="page moment-page">
+  <view class="title">今天的朋友圈</view>
+  <view class="panel">
+    <button class="moment-photo" aria-label="{{momentAsset?'更换照片':'拍照或从相册选图'}}" bindtap="takeMomentPhoto" disabled="{{busy || momentCost===null}}">
+      <image wx:if="{{momentPhoto}}" src="{{momentPhoto}}" mode="aspectFit"/>
+      <text wx:if="{{!momentPhoto}}" class="camera-icon" aria-hidden="true"></text>
+      <text class="{{momentPhoto?'change-photo':''}}">{{momentAsset?'换张照片':'拍照或从相册选图'}}</text>
+    </button>
+    <view class="label">补一句话 <text class="sub">（选填）</text></view>
+    <textarea class="moment-note" aria-label="补一句话，选填" maxlength="140" value="{{momentNote}}" bindinput="momentInput" disabled="{{busy || momentCost===null}}" placeholder="比如：今天多烤了 10 个可颂，下午 4 点能取。"/>
+    <view class="row moment-format"><text class="sub">画幅</text>
+      <button class="chip {{momentRatio==='portrait'?'active':''}}" aria-pressed="{{momentRatio==='portrait'}}" data-ratio="portrait" bindtap="momentFormat" disabled="{{busy || momentCost===null}}">3:4</button>
+      <button class="chip {{momentRatio==='story'?'active':''}}" aria-pressed="{{momentRatio==='story'}}" data-ratio="story" bindtap="momentFormat" disabled="{{busy || momentCost===null}}">9:16</button>
+    </view>
+    <view wx:if="{{momentError}}" class="error" aria-live="polite">{{momentError}}</view>
+    <button wx:if="{{momentCost===null && momentError}}" class="secondary" bindtap="loadMoment">重新连接</button>
+    <button wx:else class="primary" disabled="{{busy || !momentAsset || momentCost===null}}" loading="{{busy}}" bindtap="makeMoment">{{momentJob?'查看这条朋友圈':'做好今天这条朋友圈'}}{{momentCost!==null && !momentJob?' · '+momentCost+' 积分':''}}</button>
+  </view>
+  <button class="link" bindtap="toggleStudio" disabled="{{busy}}">其他创作 ›</button>
+</view>
+<view wx:else class="page">
+  <button class="link" bindtap="toggleStudio" disabled="{{busy}}">‹ 今天的朋友圈</button>
   <view class="title">今天要推广什么？</view>
   <view class="panel">
     <view class="row"><button wx:for="{{kinds}}" wx:key="id" data-kind="{{item.id}}" bindtap="changeKind" aria-pressed="{{item.id===kind}}" class="chip {{item.id===kind?'active':''}}">{{item.name}}</button></view>

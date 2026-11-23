@@ -88,6 +88,11 @@ def write_options(spec, tenant, previous=()):
         "已知事实": plan["facts"],
         "原图观察": plan.get("sourceReview", {}).get("reason", ""),
     }
+    if plan.get("moment"):
+        detail = plan.get("sourceReview", {}).get("visualDetail", {}).get("label")
+        if detail:
+            inputs["原图观察"] = detail + "。" + inputs["原图观察"]
+        inputs["朋友圈选稿要求"] = plan.get("skillPlan", {}).get("instructions", {}).get("copy", [])
     photos = (
         source_images(asset_dir / spec["asset"] / "original.png", None)
         if local_photo and spec.get("asset")
@@ -121,7 +126,7 @@ def write_options(spec, tenant, previous=()):
             ]
         skill = "\n".join(paragraphs)
     named_subject = plan["profile"].get("name", "")
-    if local_photo and photos:
+    if local_photo and photos and not (plan.get("moment") and inputs["原图观察"]):
         try:
             observation = model.chat_request(
                 {**cfg, "responseSchema": string_fields("observation", "subject")},
@@ -294,6 +299,7 @@ def write_options(spec, tenant, previous=()):
             {**base, "engine": engine}
             | draft
             | {
+                **({"sharingReview": sharing[i]} if sharing[i] else {}),
                 "detailLine": draft["body"],
                 "review": "商家候选文案已独立复核。",
                 "writingSkill": wenan.record(plan, "模型创作与复核"),

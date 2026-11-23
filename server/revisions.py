@@ -158,6 +158,18 @@ def prepare(spec, cp, action, ratio=None, option=0, instruction=None, field=None
         }
     elif action == "edit":
         edit_request(spec, cp, instruction, field)
+    elif action == "moment-copy" and "moment" in plan:
+        from .moments import drafts
+        choices = drafts(plan)
+        if type(option) is not int or not 0 <= option < len(choices):
+            raise ValueError("请选择这条朋友圈的文案。")
+        if stored := plan["moment"].get("drafts"):
+            cp.pop("sharingReview", None)
+            cp.pop("motif", None)
+            cp.pop("posterDeck", None)
+            cp.update(stored[option])
+        else:
+            cp.update(choices[option])
     elif action == "shorten":
         values = short_options(cp)
         if type(option) is not int or not 0 <= option < len(values):

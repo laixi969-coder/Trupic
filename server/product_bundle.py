@@ -30,7 +30,9 @@ def qualified_cutout(asset, confirmed):
         alpha = im.convert("RGBA").getchannel("A")
         hist = alpha.histogram()
         coverage = sum(hist[128:]) / (im.width * im.height)
-        box = alpha.getbbox()
+        # Use the same foreground threshold as the coverage measurement. A soft
+        # antialiased fringe reaching the edge does not clip the opaque product.
+        box = alpha.point(lambda value: 255 if value >= 128 else 0).getbbox()
         return bool(
             box
             and min(im.size) >= 220

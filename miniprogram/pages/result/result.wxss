@@ -8,3 +8,5 @@
   height: 62vh;
   background: #18251c;
 }
+
+.moment-image { display: block; width: 100%; height: 44vh; margin-top: 20rpx; }

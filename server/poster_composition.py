@@ -131,10 +131,12 @@ def edge_light(photo, size, bounds, flat):
     return plate
 
 
-def picture_layout(treatment, size, photo, lighting, layers, photo_area=None, repair=False, *, framed=None, background=None, reference_color=None):
+def picture_layout(treatment, size, photo, lighting, layers, photo_area=None, repair=False, *, framed=None, background=None, reference_color=None, plate=None):
     """Fit source pixels within a reserved picture zone and keep text areas clear."""
     pigment = mean_color(photo)
-    plate = stage(treatment, size, pigment, lighting)
+    custom_plate = plate is not None
+    if plate is None:
+        plate = stage(treatment, size, pigment, lighting)
     if background:
         with Image.open(background) as source:
             plate = Image.blend(ImageOps.fit(source.convert("RGB"), size), plate, 0.72)
@@ -174,7 +176,7 @@ def picture_layout(treatment, size, photo, lighting, layers, photo_area=None, re
         )
 
     px, py, pr, pb = map(round, visible)
-    if photo_area and not framed and not background and not reference_color and (not alpha or alpha.getextrema() == (255, 255)):
+    if photo_area and not framed and not background and not reference_color and not custom_plate and (not alpha or alpha.getextrema() == (255, 255)):
         plate = edge_light(photo, size, (px, py, max(px + 1, pr), max(py + 1, pb)), repair)
     if layers is not None:
         layers.append(("stage", plate.copy(), (0, 0)))

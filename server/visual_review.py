@@ -468,6 +468,18 @@ def review_schema(cfg, field):
     }
 
 
+def measured_separation(frame):
+    """True only when every measured text rectangle fits and clears the visible product."""
+    product = frame.get("subjectBounds") or frame.get("product")
+    if not product or not frame.get("text") or not frame.get("size"):
+        return False
+    w, h = frame["size"]
+    l, t, r, b = product
+    return all(0 <= x < xx <= w and 0 <= y < yy <= h
+               and (xx <= l or x >= r or yy <= t or y >= b)
+               for (x, y, xx, yy), _, _, _ in frame["text"])
+
+
 def compact_review(dest, spec, cfg, layout):
     """Inspect the exported view alone; compare original SKU pixels in inspect_export."""
     from . import model
@@ -550,13 +562,24 @@ def compact_review(dest, spec, cfg, layout):
         for im in whole_views:
             board.paste(im, (x, 0))
             x += im.width
+        separated = (spec["kind"] == "poster" and measured_separation(layout["frames"][0]))
+        review_cfg = review_schema(cfg, "status")
+        system = "审核整幅广告构图。并排画面按播放顺序排列。观察主体与标题的空间关系，短片观察景别变化。若标题明显盖住主体识别处、文案挤出画幅，或三镜只换字而图像完全相同，返回 repair 并点明位置。画面可辨、构图成立时返回 pass，简述所见。风格喜好或无法读清的小字不单独判为缺陷。"
+        if separated:
+            system = ("逐项观察这张成品广告：商品是否可辨、背景中是否出现多余商品、是否出现异常拼接或重影。"
+                      "版面测量已确认所有字框在画布内、均与商品边界分离。请描述实际看到的主体与环境。"
+                      "若确有视觉缺陷请返回 repair，同时在 defects 中列出所有缺陷的类型。正常返回 pass 和空数组。")
+            schema = review_cfg["responseSchema"]
+            schema["properties"]["defects"] = {"type": "array", "items": {"type": "string", "enum": [
+                "text_outside_canvas", "text_over_product", "product", "background", "legibility", "other"]}}
+            schema["required"].append("defects")
         observation = model.chat_request(
-            review_schema(cfg, "status"),
+            review_cfg,
             cfg["model"],
             [
                 {
                     "role": "system",
-                    "content": "审核整幅广告构图。并排画面按播放顺序排列。观察主体与标题的空间关系，短片观察景别变化。若标题明显盖住主体识别处、文案挤出画幅，或三镜只换字而图像完全相同，返回 repair 并点明位置。画面可辨、构图成立时返回 pass，简述所见。风格喜好或无法读清的小字不单独判为缺陷。",
+                    "content": system,
                 },
                 {"role": "user", "content": image_message("实际成品全幅", board)},
             ],
@@ -566,7 +589,12 @@ def compact_review(dest, spec, cfg, layout):
         note = observation.get("reason")
         if observation.get("status") not in ("repair", "pass") or not isinstance(note, str) or not note.strip():
             raise ValueError("视觉模型未返回成品全幅观察")
-        if observation["status"] == "repair":
+        defects = observation.get("defects")
+        contradicted = separated and isinstance(defects, list) and defects and all(
+            issue in ("text_outside_canvas", "text_over_product") for issue in defects)
+        if observation["status"] == "repair" and contradicted:
+            note = "字形和实拍边界测量排除了遮挡及越界。模型原观察：" + note
+        elif observation["status"] == "repair":
             verdict = "repair"
             selected = [{"view": "整幅构图", "reason": note}]
     return {

@@ -1,12 +1,26 @@
 <view class="page"><block wx:if="{{state==='complete'}}">
-<view class="heading">{{version.title}}</view>
-<image wx:if="{{work.kind==='poster' && media}}" class="poster" src="{{media}}" mode="widthFix"/>
+<view class="heading">{{isMoment?"今天的朋友圈":version.title}}</view>
+<image wx:if="{{work.kind==='poster' && media}}" class="{{isMoment?'moment-image':'poster'}}" src="{{media}}" mode="{{isMoment?'aspectFit':'widthFix'}}"/>
 <video wx:if="{{work.kind==='video' && media}}" class="movie" src="{{media}}" controls muted/>
-<view class="panel"><text selectable>{{version.body}}</text><view class="spaced">{{version.cta}}</view></view>
+<view class="panel"><text selectable>{{version.body}}</text><view wx:if="{{version.cta}}" class="spaced">{{version.cta}}</view></view>
 <button wx:if="{{work.kind!=='copy'}}" class="primary" disabled="{{busy || !media}}" loading="{{busy}}" bindtap="save">保存到相册</button>
 <button class="secondary spaced" bindtap="copy">复制文案</button>
-<button wx:if="{{version.fullPosterPrompt}}" class="link" bindtap="copyPosterPrompt">复制整张海报直出提示词</button>
-<view class="panel">
+<button wx:if="{{!isMoment && version.fullPosterPrompt}}" class="link" bindtap="copyPosterPrompt">复制整张海报直出提示词</button>
+<view wx:if="{{isMoment}}" class="row spaced">
+  <button class="secondary" bindtap="openCopies" disabled="{{busy}}">选文案</button>
+  <button class="secondary" data-action="layout" bindtap="revise" disabled="{{busy}}">换版式</button>
+</view>
+<block wx:if="{{copyMenu}}">
+  <view class="sheetmask" bindtap="closeCopies"></view>
+  <view class="sheet">
+    <view class="between"><view class="heading">选一版配文</view><button class="close" bindtap="closeCopies">关闭</button></view>
+    <view wx:for="{{copyMenu.options}}" wx:key="title" class="line">
+      <view>{{item.title}}</view><view class="note">{{item.body}}{{item.cta?' '+item.cta:''}}</view>
+      <button class="secondary" disabled="{{busy || (item.title===version.title && item.body===version.body && item.cta===version.cta)}}" data-action="moment-copy" data-option="{{index}}" bindtap="revise">{{item.title===version.title && item.body===version.body && item.cta===version.cta?'当前版本':'用这版 · '+copyMenu.cost+' 积分'}}</button>
+    </view>
+  </view>
+</block>
+<view wx:if="{{!isMoment}}" class="panel">
   <view class="heading">专业建议</view>
   <view class="note">换个开场：{{version.suggestion.title}}</view>
   <button class="secondary" data-action="revision" bindtap="revise" disabled="{{busy}}">应用文案建议</button>
@@ -17,10 +31,10 @@
   <button class="link" data-action="redesign" bindtap="revise" disabled="{{busy}}">换个创意</button>
   <view class="sub">修改前会显示总积分。</view>
 </view>
-<view class="panel">
-  <view wx:if="{{work.kind!=='copy'}}"><view class="label">检查记录</view>
+<view wx:if="{{!isMoment || versionLabels.length > 1}}" class="panel">
+  <view wx:if="{{!isMoment && work.kind!=='copy'}}"><view class="label">检查记录</view>
 <view wx:for="{{version.quality}}" wx:key="label" class="note">{{item.label}} · {{item.detail}}</view></view>
-  <view class="label">原始需求</view><text selectable>{{version.brief}}</text>
+  <block wx:if="{{!isMoment}}"><view class="label">原始需求</view><text selectable>{{version.brief}}</text></block>
   <view wx:if="{{version.plan.topic}}" class="note">本周主题 · {{version.plan.topic.title}}。{{version.plan.topic.basis}}{{version.plan.topic.relevance}}<text selectable="{{true}}" wx:if="{{version.plan.topic.source}}"> 来源 {{version.plan.topic.source}}</text></view>
   <picker wx:if="{{versionLabels.length > 1}}" range="{{versionLabels}}" value="{{versionIndex}}" disabled="{{busy}}" bindchange="selectVersion">
     <view class="line between"><text>版本对照</text><text>{{versionLabels[versionIndex]}}　›</text></view>

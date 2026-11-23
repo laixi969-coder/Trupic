@@ -68,11 +68,12 @@ async function request(path, method = "GET", data) {
     await network("request", { url: base() + "/api/" + path, method, data })
   ).data;
 }
-async function upload(path) {
+async function upload(path, formData = {}) {
   await ready();
   const res = await network("uploadFile", {
     url: base() + "/api/assets",
     filePath: path,
+    formData,
     name: "image",
   });
   return JSON.parse(res.data);

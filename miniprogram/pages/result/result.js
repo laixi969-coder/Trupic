@@ -8,6 +8,7 @@ Page({
     media: "",
     versionLabels: [],
     versionIndex: 0,
+    copyMenu: null,
     busy: false,
   },
   onLoad(options) {
@@ -75,6 +76,8 @@ Page({
       state: "complete",
       error: "",
       version,
+      isMoment: !!version.plan.moment,
+      copyMenu: null,
       densePosterAdvice: work.kind === "poster" && version.n === 1 && version.brief.includes("满屏字"),
       versionIndex: index,
       media: "",
@@ -91,11 +94,30 @@ Page({
   selectVersion(e) {
     return this.displayVersion(Number(e.detail.value));
   },
+  async openCopies() {
+    if (this.data.busy) return;
+    const base = this.data.version.n;
+    this.setData({ busy: true });
+    try {
+      const q = await api.request("works/" + this.id + "/revision-quote", "POST", { action: "moment-copy", base });
+      if (this.data.version.n === base) this.setData({ copyMenu: { ...q, base } });
+    } catch (e) {
+      api.message(e);
+    } finally {
+      this.setData({ busy: false });
+    }
+  },
+  closeCopies() {
+    this.setData({ copyMenu: null });
+  },
   async revise(e) {
     if (this.data.busy || this.job) return;
     const action = e.currentTarget.dataset.action;
     const base = this.data.version.n;
-    const operation = base + "-" + action;
+    const option = Number(e.currentTarget.dataset.option || 0);
+    const menu = action === "moment-copy" ? this.data.copyMenu : null;
+    if (action === "moment-copy" && menu?.base !== base) return;
+    const operation = [base, action, option].join("-");
     if (this.operation !== operation) {
       this.operation = operation;
       this.requestKey =
@@ -103,18 +125,22 @@ Page({
     }
     this.setData({ busy: true });
     try {
-      const q = await api.request("works/" + this.id + "/revision-quote", "POST", {action, base});
-      const consent = await new Promise((resolve, reject) => wx.showModal({ title:"确认修改", content:"本次共 " + q.cost + " 积分，原作品会保留。", success:resolve, fail:reject }));
-      if (!consent.confirm) return;
+      const q = menu || await api.request("works/" + this.id + "/revision-quote", "POST", {action, base});
+      if (!menu) {
+        const consent = await new Promise((resolve, reject) => wx.showModal({
+          title: "确认修改", content: "本次共 " + q.cost + " 积分，原作品会保留。", success: resolve, fail: reject,
+        }));
+        if (!consent.confirm) return;
+      }
       const job = await api.request("works/" + this.id + "/revise", "POST", {
         quote:q.quote, confirmed:true, confirmedCost:q.cost,
-        action,
+        action, option,
         base,
         requestKey: this.requestKey,
       });
       this.job = job.id;
       this.operation = null;
-      this.setData({ state: "queued" });
+      this.setData({ state: "queued", copyMenu: null });
       if (this.visible !== false) await this.refresh();
     } catch (e) {
       api.message(e);
@@ -154,7 +180,7 @@ Page({
   copy() {
     const v = this.data.version;
     wx.setClipboardData({
-      data: [v.title, v.body, v.cta].filter(Boolean).join("\n\n"),
+      data: [this.data.isMoment ? "" : v.title, v.body, v.cta].filter(Boolean).join("\n\n"),
     });
   },
   copyPosterPrompt() {

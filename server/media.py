@@ -69,7 +69,9 @@ def inspect_upload(source, folder):
     folder.mkdir(parents=True, exist_ok=True)
     try:
         with Image.open(source) as raw:
-            if raw.format not in {"JPEG", "PNG", "WEBP"}:
+            # Some phones store an auxiliary HDR image in the same JPEG (MPO).
+            # The first frame is the owner's ordinary, full-colour photograph.
+            if raw.format not in {"JPEG", "MPO", "PNG", "WEBP"}:
                 raise ValueError("请选择 JPG、PNG 或 WebP 图片。")
             if raw.width * raw.height > 32_000_000:
                 raise ValueError("图片超过 3200 万像素，请先缩小。")
@@ -416,7 +418,8 @@ def render(
         folder / "poster.png", compress_level=6, dpi=(output["dpi"], output["dpi"])
     )
     with (folder / "copy.txt").open("w", encoding="utf-8") as fp:
-        fp.write("\n\n".join(copy[x] for x in ("title", "body", "cta") if copy[x]))
+        fields = ("body", "cta") if "moment" in plan else ("title", "body", "cta")
+        fp.write("\n\n".join(copy[x] for x in fields if copy[x]))
     if kind == "video":
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:

@@ -50,7 +50,12 @@ def direct(plan, style, product, focus):
         mechanism, feature, detail = "原片取景与编辑线", "原图边缘、视线或运动方向", ""
         concept = "完整保留原片，用真实的取景框边缘对齐标题与边注。选择一处结构线延伸阅读，边角让信息区与照片保持联系。"
         reference = "本地 24→25、32→33、34→35 分别借实物边、建筑边和道路方向组织图文。"
-        if plan.get("design", {}).get("photoLayout") == "bleed":
+        mode = plan.get("design", {}).get("photoLayout")
+        if mode in ("time", "clock-object", "object"):
+            mechanism = "到店时间与实物对角呼应" if mode in ("time", "clock-object") else "实物纹理与原色轮廓"
+            concept = ("让商家给出的时间占据上方大字区，标题和商品在左下和右下接力。"
+                       if mode in ("time", "clock-object") else "将实物内的一处纹理放大为底色，短标题落在留白里，完整商品从对角接住目光。")
+        if mode == "bleed":
             mechanism = "原片延色与关系网格"
             concept = "原片贴近画幅边缘，延续边缘光色。按实际标题行数给字区留量，横幅按照片和文字的分栏重新排印。"
     elif style == "riso":
@@ -214,7 +219,7 @@ def poster_reading(plan, copy):
     return None
 
 
-def first_draft_treatment(plan, reading):
+def first_draft_treatment(plan, reading, *, transaction_copy=False, motif=None):
     """Choose a rendering treatment without changing the approved reading order."""
     original = plan["original"]
     brief = visual_requests(original)
@@ -243,6 +248,11 @@ def first_draft_treatment(plan, reading):
     quiet = re.search(r"慢下来|慢一点|安静|清静|放松|独处|歇一会|坐一会|喘口气|清晨|午后|温柔|克制", brief)
     natural = re.search(r"原色|真实颜色|自然一点|日常|实拍感|不要.{0,4}(?:滤镜|改色|花哨|太花|网点|印刷|孔版)", original)
     if not grid_requested:
+        if plan.get("moment") and aspect <= 1 and not (transaction_copy or plan.get("brandKit", {}).get("logo")):
+            if motif == "columns" and plan.get("visualSource") == "cutout":
+                return "photo-grid", "columns", "把实拍放在横向表格的最后一列，列标接住同事之间的玩笑。"
+            if motif == "reply" and plan.get("visualSource") == "cutout":
+                return "photo-grid", "reply", "让实拍水杯像在回消息，气泡尖角指向杯盖。"
         if detailed and energetic and not natural and not quiet and not re.search(negative + r"(?:双[色墨]|孔版|网点|印刷)", original):
             return "riso", None, "活动需要远看醒目，原片的明暗和边缘适合提取双色网点，旁边保留原色商品。"
         if not re.search(negative + r"(?:留白|暗调|暗底|黑底|深色)", original):
@@ -250,6 +260,13 @@ def first_draft_treatment(plan, reading):
                 return "quiet-light", None, "给安静的场景留出空间，借原片的光色承托缩小后的商品。"
             if calm >= 0.48 and photo["brightness"] < 92 and plan.get("visualSource") != "cutout":
                 return "quiet-light", None, "原片有大块平静暗部，延续原有明暗，在主体周围留白。"
+    if (plan.get("moment") and plan.get("visualSource") == "cutout" and aspect <= 1
+            and not (grid_requested or transaction_copy or plan.get("brandKit", {}).get("logo"))):
+        if plan["moment"].get("clock"):
+            if plan["moment"].get("roundSubject"):
+                return "photo-grid", "clock-object", "实拍物体的圆形轮廓接替时间末位的零，另排完整时间和经营说明。"
+            return "photo-grid", "time", "将确认的到店时间放成大数字，实物轮廓和数字沿对角线相接。"
+        return "photo-grid", "object", "从实物取局部纹理与色调，放大轮廓形成前景，以连续留白承接标题。"
     if plan.get("visualSource") != "cutout" and (calm < 0.23 or fit < 0.58):
         return "photo-grid", "bleed", "保留完整原片，沿照片边缘延展底色排字，让标题避开密集细节。"
     return "photo-grid", "bleed", "原片主体可完整放大，标题沿照片边缘另排。"

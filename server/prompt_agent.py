@@ -32,7 +32,9 @@ def apply_poster_layout(plan, copy):
     if not decision:
         return
     design = plan["design"]
-    style, mode, reason = first_draft_treatment(plan, decision)
+    style, mode, reason = first_draft_treatment(
+        plan, decision, transaction_copy=bool(copy.get("offer") or copy.get("terms")), motif=copy.get("motif")
+    )
     decision = {**decision, "layoutReason": reason}
     if design["id"] == style and design.get("readingOrder") == decision and design.get("photoLayout") == mode:
         return

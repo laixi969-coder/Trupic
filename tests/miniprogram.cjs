@@ -12,8 +12,8 @@ const { setTimeout: delay } = require("node:timers/promises");
 const vm = require("node:vm");
 
 test(
-  "灵感回填、原图确认、方案计费、生成、导出及作品恢复",
-  { timeout: 90000 },
+  "朋友圈拍照直出、成品后选稿与换版，以及原有创作和导出",
+  { timeout: 180000 },
   async (t) => {
     const root = resolve(__dirname, "..");
     const temp = mkdtempSync(join(tmpdir(), "trupic-wx-"));
@@ -61,6 +61,7 @@ test(
           let body;
           if (type === "upload") {
             body = new FormData();
+            for (const [key, value] of Object.entries(options.formData || {})) body.append(key, value);
             body.append(
               "image",
               new Blob([readFileSync(options.filePath)], {
@@ -189,6 +190,7 @@ test(
     assert.equal(growth.data.invites[0].login,"wechat-guest");
     const home = page("home");
     home.onLoad();
+    await home.toggleStudio();
     await home.preview();
     assert.ok(home.data.focusBrief);
     assert.match(home.data.briefError, /至少/);
@@ -286,7 +288,7 @@ test(
       assert.equal(route.split("=").pop(), job);
       const result = page("result");
       result.onLoad({ job });
-      for (let i = 0; i < 400; i++) {
+      for (let i = 0; i < 1200; i++) {
         await result.refresh();
         result.stop();
         if (result.data.state === "complete") break;
@@ -382,6 +384,102 @@ test(
     reopened.onLoad();
     reopened.changeKind(click({ kind: "poster" }));
     assert.equal(reopened.data.format.ratio, "1:1");
+    async function waitForMoment(result) {
+      for (let i = 0; i < 1200; i++) {
+        await result.refresh();
+        result.stop();
+        assert.notEqual(result.data.state, "failed", result.data.error);
+        assert.notEqual(result.data.state, "error", result.data.error);
+        if (result.data.state === "complete" && result.data.media) return;
+        await delay(60);
+      }
+      assert.fail("朋友圈没有交付");
+    }
+    await reopened.onShow();
+    assert.equal(reopened.data.studio, false);
+    assert.equal(reopened.data.momentRatio, "portrait");
+    assert.equal(reopened.data.momentCost, state.prices.poster);
+    await reopened.makeMoment();
+    assert.equal(reopened.data.momentJob, "");
+    reopened.takeMomentPhoto();
+    for (let i = 0; i < 300 && reopened.data.busy; i++) await delay(60);
+    assert.ok(reopened.data.momentAsset, reopened.data.momentError);
+    await assert.rejects(api.request("moments", "POST", {
+      asset: reopened.data.momentAsset.id, confirmed: true, confirmedCost: state.prices.poster + 1, requestKey: "stale-price",
+    }), /用量已更新/);
+    const note = "今天多做了 10 杯抹茶，下午 4 点能取。";
+    for (const message of ["", note]) {
+      if (message) {
+        reopened.momentFormat(click({ ratio: "story" }));
+        assert.equal(reopened.data.momentJob, "");
+        reopened.momentInput(input(message));
+        const request = api.request;
+        api.request = async (path, ...args) => {
+          const response = await request(path, ...args);
+          if (path === "moments") throw new Error("提交后连接中断");
+          return response;
+        };
+        try {
+          await reopened.makeMoment();
+          assert.equal(reopened.data.momentError, "提交后连接中断");
+          assert.equal(reopened.data.momentJob, "");
+        } finally {
+          api.request = request;
+        }
+      }
+      await Promise.all([reopened.makeMoment(), reopened.makeMoment()]);
+      const job = reopened.data.momentJob;
+      assert.ok(job, reopened.data.momentError);
+      assert.equal(route, "/pages/result/result?job=" + job);
+      const result = page("result");
+      result.onLoad({ job });
+      await waitForMoment(result);
+      assert.equal(result.data.isMoment, true);
+      assert.equal(result.data.version.asset, reopened.data.momentAsset.id);
+      result.copy();
+      assert.ok(clipboard.trim());
+      if (message) assert.ok(clipboard.includes(message));
+      else assert.doesNotMatch(clipboard, /元|折|限量|促销|分享今天的店里实拍/);
+      await result.save();
+      const picture = readFileSync(album);
+      assert.equal(picture.readUInt32BE(16), 1080);
+      assert.equal(picture.readUInt32BE(20), message ? 1920 : 1440);
+      assert.equal(result.data.version.plan.moment.workflowVersion, 2);
+      assert.ok(result.data.version.writingSkill);
+      assert.ok(result.data.version.plan.skillPlan.skills.some(skill => skill.id === "poster_design"));
+      const resumed = page("home");
+      resumed.onLoad();
+      await resumed.onShow();
+      await resumed.makeMoment();
+      assert.equal(resumed.data.momentJob, job);
+      assert.equal(resumed.data.momentRatio, message ? "story" : "portrait");
+      if (message) {
+        await result.openCopies();
+        assert.ok(result.data.copyMenu.options.length >= 2);
+        const option = result.data.copyMenu.options.length - 1;
+        const selected = result.data.copyMenu.options[option];
+        await result.revise(click({ action: "moment-copy", option }));
+        await waitForMoment(result);
+        assert.equal(result.data.version.n, 2);
+        assert.equal(result.data.version.body, selected.body);
+        result.copy();
+        const chosenCopy = clipboard;
+        const beforeLayout = readFileSync(result.data.media);
+        await result.revise(click({ action: "layout" }));
+        await waitForMoment(result);
+        assert.equal(result.data.version.n, 3);
+        assert.equal(beforeLayout.equals(readFileSync(result.data.media)), false);
+        result.copy();
+        assert.equal(clipboard, chosenCopy);
+        await result.save();
+        await result.selectVersion(input(2));
+        await result.restore();
+        assert.equal(result.data.work.current, 1);
+      }
+    }
+    const afterMoments = await api.request("state");
+    assert.equal(afterMoments.works.length, state.works.length + 2);
+    assert.equal(state.credits - afterMoments.credits, 2 * state.prices.poster + 2 * state.prices.revision);
     assert.deepEqual(errors, []);
   },
 );
