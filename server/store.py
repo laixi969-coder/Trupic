@@ -110,6 +110,10 @@ def init():
                 r["name"] for r in c.execute(f"PRAGMA table_info({table})")
             ]:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}")
+        from .pricing import initialize
+        initialize(c)
+        from . import wallet
+        wallet.initialize(c)
         from .event_sources import init_sources
         init_sources(c)
         if not c.execute("SELECT 1 FROM rules LIMIT 1").fetchone():
@@ -129,10 +133,10 @@ def init():
 
 
 def tenant_new(c, tenant):
+    from .pricing import current
+    from . import wallet
+    rates = current(c)
     c.execute(
-        "INSERT INTO merchant(id,profile,created)VALUES(?,?,?)", (tenant, "{}", now())
+        "INSERT INTO merchant(id,profile,credits,created)VALUES(?,?,?,?)", (tenant, "{}", 0, now())
     )
-    c.execute(
-        "INSERT INTO ledger(tenant,delta,note,created)VALUES(?,?,?,?)",
-        (tenant, 120, "开通工作室体验积分", now()),
-    )
+    wallet.grant(c, tenant, "开通工作室体验积分", "trial:"+tenant, rates["trial"], wallet.after_days(rates.get("trialDays",30)))

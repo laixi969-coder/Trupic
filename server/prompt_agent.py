@@ -4,7 +4,7 @@ import re
 from . import model, wenan
 from .campaign import LOCKED, copy_route, offer_and_terms
 from .creative import METHODS, promotion_terms
-from .art_direction import direct
+from .art_direction import direct, first_draft_treatment, poster_reading
 from .design import choose_style, requested_style
 from .skill_library import attach as attach_skills
 
@@ -26,13 +26,38 @@ TREATMENTS = {
 }
 
 
+def apply_poster_layout(plan, copy):
+    """Resolve the first draft against its actual copy before rendering or preview."""
+    decision = poster_reading(plan, copy)
+    if not decision:
+        return
+    design = plan["design"]
+    style, mode, reason = first_draft_treatment(plan, decision)
+    decision = {**decision, "layoutReason": reason}
+    if design["id"] == style and design.get("readingOrder") == decision and design.get("photoLayout") == mode:
+        return
+    plan["design"] = {**choose_style(plan, style), "selection": design["selection"], "readingOrder": decision}
+    if mode:
+        plan["design"]["photoLayout"] = mode
+    reading = plan["promptBrief"]["reading"]
+    reading["style"] = style
+    art = direct(plan, style, reading["product"], reading["focus"])
+    prompts = plan["promptBrief"]["prompts"]
+    old = plan["posterArt"]
+    # Preserve factual and merchant constraints following the former art direction.
+    prompts["image"] = art["concept"] + prompts["image"].removeprefix(old["concept"])
+    if old.get("modelConcept"):
+        prompts["image"] = prompts["image"].replace(" " + old["modelConcept"], "")
+    plan["posterArt"] = art
+
+
 def full_poster_prompt(plan, copy):
     """Hand off the approved concept and literal final copy to a reference-image model."""
     art = plan["posterArt"]
     output = plan["output"]
     words = list(dict.fromkeys(filter(None, (
         plan["profile"].get("name"), copy["title"], copy.get("offer"),
-        copy.get("terms"), copy.get("cta"),
+        copy.get("terms"), copy.get("body"), copy.get("cta"),
     ))))
     brief = [
         f"为「{plan.get('promptBrief', {}).get('reading', {}).get('product') or plan['subject']}」生成一张 {output['width']} × {output['height']} 的满幅商业海报。",
@@ -239,7 +264,7 @@ def optimize(spec, *, infer=True, previous=None):
         }[action["goal"]]
     copy = f"为{reading['audience']}写关于「{product}」的内容，目标是{plan['goal']}。{plan['angle']}。"
     copy += {
-        "poster": "主标题只承担一个重点，价格与条件留给次级文字。",
+        "poster": "主标题只承担一个重点，促销主诉求将优惠与条件放在同一读区。",
         "copy": "用一个具体场景开篇，解释一个选择理由，结尾给一个行动。",
         "video": "开头写能在前三秒读完的一句，中段只说一处能从原图看出的卖点，末镜只给一个行动。",
     }[kind]

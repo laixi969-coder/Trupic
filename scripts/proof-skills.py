@@ -134,6 +134,11 @@ with studio.db(True) as c:
     )
 
 
+def fixture_options(spec, tenant, previous=()):
+    base = {**studio.draft_copy(spec["plan"]), **spec["replacement"]}
+    return [base, {**base, "body": "春山抹茶粉，搭配牛奶冲调。"}]
+
+
 def post(path, **data):
     r = client.post("/api/" + path, json=data)
     if r.status_code != 200:
@@ -193,8 +198,13 @@ with patch.object(
                 benefits="100g罐装抹茶粉 · 搭配牛奶冲调 · 48元/罐",
             )
         quote = post("bundles/preview", **req)
+        choice = ""
+        if quote["requiresCopyChoice"]:
+            with patch("server.copy_choices.write_options", side_effect=fixture_options):
+                choice = post("copy-options", quote=quote["quote"])["options"][0]["token"]
         pack = post(
             "bundles",
+            copyChoice=choice,
             quote=quote["quote"],
             confirmed=True,
             confirmedCost=quote["cost"],

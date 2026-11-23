@@ -44,6 +44,28 @@ class SkillLayoutTests(unittest.TestCase):
                         self.assertIn(cp["terms"], text)
                     self.assertGreaterEqual(min(row[2] for row in ts.audit_text), 27)
 
+    def test_first_draft_changes_reading_order_with_the_merchants_goal(self):
+        from server.art_direction import poster_reading
+
+        from server.photo_grid import grid_layout
+        cp = dict(title="给牛奶加一点春山", offer="第二件半价", terms="本周末；仅限到店",
+                  body="第二件半价；本周末；仅限到店；净含量100g", cta="")
+        for dims in ((540, 720), (720, 405)):
+            for role, brief, first, mode in (("hero", "抹茶新品上架", "product", "bleed"),
+                                             ("campaign", "做周末促销海报", "offer", "framed")):
+                plan = dict(original=brief, bundleRole=role, visualSource="photograph")
+                reading = poster_reading(plan, cp)
+                self.assertEqual(reading["first"], first)
+                area, entries = grid_layout(dims, Typesetter(), "", cp, "", mode, first, body=cp["body"])
+                for _, _, _, (l, t, r, b) in entries:
+                    self.assertTrue(r <= area[0] or b <= area[1] or l >= area[2] or t >= area[3])
+                if first == "offer":
+                    self.assertEqual([entry[0] for entry in entries[:2]], [cp["offer"], cp["terms"]])
+                    self.assertGreater(entries[0][2], entries[1][2])
+                    self.assertIn("净含量100g", [entry[0] for entry in entries])
+        self.assertEqual(poster_reading(dict(original="新品上架，使用照片编排"), cp)["first"], "product")
+        self.assertEqual(poster_reading(dict(original="促销海报，不要突出价格"), cp)["first"], "title")
+
     def test_transparent_margins_do_not_shrink_the_visible_product(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "subject.png"

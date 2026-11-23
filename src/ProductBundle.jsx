@@ -1,3 +1,4 @@
+import CopyChoices from "./CopyChoices.jsx";
 import React, { useEffect, useRef, useState } from "react";
 import { api, Modal } from "./ui.jsx";
 
@@ -31,6 +32,7 @@ export default function ProductBundle({
   });
   const [brandStatus, setBrandStatus] = useState("");
   const [packs, setPacks] = useState([]);
+  const [chosenCopy, setChosenCopy] = useState(null);
   const [quote, setQuote] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -124,6 +126,7 @@ export default function ProductBundle({
     await perform(async () => {
       const pack = await api("/bundles", "POST", {
         quote: quote.quote,
+        copyChoice: chosenCopy?.quote === quote.quote ? chosenCopy.token : "",
         confirmed: true,
         confirmedCost: quote.cost,
         requestKey: requestKey.current,
@@ -384,7 +387,8 @@ export default function ProductBundle({
           </p>
           <p>{quote.note}</p>
           <p>整套 {quote.cost} 积分，每项成功交付后结算。</p>
-          <button className="primary" disabled={busy} onClick={create}>
+          {quote.requiresCopyChoice && <CopyChoices key={quote.quote} quote={quote.quote} value={chosenCopy?.quote === quote.quote ? chosenCopy.token : ""} onChange={setChosenCopy} disabled={busy} />}
+          <button className="primary" disabled={busy || (quote.requiresCopyChoice && chosenCopy?.quote !== quote.quote)} onClick={create}>
             确认并生成整套
           </button>
         </section>

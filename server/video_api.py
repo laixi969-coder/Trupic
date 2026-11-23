@@ -79,7 +79,9 @@ def prepare_background(folder, plan, copy, cfg=None):
         raise ValueError('请配置受支持的异步文生视频连接。')
     folder.mkdir(parents=True, exist_ok=True)
     frames = folder / 'video-background'
-    if (frames / '216.jpg').is_file():
+    duration = plan["output"].get("duration", 9)
+    final_frame = frames / f"{duration * 24:03d}.jpg"
+    if final_frame.is_file():
         return frames
     checkpoint = folder / 'video-task.json'
     signature = hashlib.sha256((cfg['url']+'\n'+cfg['model']).encode()).hexdigest()
@@ -135,8 +137,16 @@ def prepare_background(folder, plan, copy, cfg=None):
         clip = folder / 'cloud-background.mp4'
         download(video_url,clip)
         frames.mkdir(exist_ok=True)
-        subprocess.run(['ffmpeg','-v','error','-y','-i',str(clip),'-an','-vf',f"scale={output['width']}:{output['height']}:force_original_aspect_ratio=increase,crop={output['width']}:{output['height']},fps=24,tpad=stop_mode=clone:stop_duration=9",'-t','9','-q:v','2',str(frames/'%03d.jpg')],check=True,capture_output=True,timeout=90)
-        if not (frames/'216.jpg').is_file():
+        timing = "fps=24,tpad=stop_mode=clone:stop_duration=9"
+        if duration != 9:
+            probe = subprocess.check_output(["ffprobe","-v","error","-show_entries","format=duration","-of","csv=p=0",str(clip)], timeout=15)
+            length = float(probe)
+            if not 0 < length < 3600:
+                raise ValueError("无法核对动态背景的时长。")
+            timing = f"setpts={duration / length}*(PTS-STARTPTS),fps=24,tpad=stop_mode=clone:stop_duration=1"
+
+        subprocess.run(['ffmpeg','-v','error','-y','-i',str(clip),'-an','-vf',f"scale={output['width']}:{output['height']}:force_original_aspect_ratio=increase,crop={output['width']}:{output['height']},{timing}",'-t',str(duration),'-q:v','2',str(frames/'%03d.jpg')],check=True,capture_output=True,timeout=90)
+        if not final_frame.is_file():
             raise ValueError('视频未完整解码。')
         return frames
     except (OSError,KeyError,TypeError,subprocess.SubprocessError) as exc:

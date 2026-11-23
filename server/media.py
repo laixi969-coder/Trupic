@@ -35,6 +35,36 @@ PALETTES = {
 }
 
 
+def photo_layout_features(path):
+    """Summarize the pixels that will be placed, ignoring transparent margins."""
+    with Image.open(path) as source:
+        source.thumbnail((192, 192), Image.Resampling.BOX)
+        preview = source.convert("RGBA")
+    bounds = preview.getchannel("A").getbbox()
+    if not bounds:
+        return {}
+    preview = preview.crop(bounds).resize((64, 64), Image.Resampling.BOX)
+    opacity = np.asarray(preview.getchannel("A")) > 160
+    if not opacity.any():
+        return {}
+    grey = np.asarray(preview.convert("L"), dtype=float)
+    visible = grey[opacity]
+    # Mask out the matte so its hidden RGB cannot create artificial texture.
+    grey = np.where(opacity, grey, np.median(visible))
+    tiles = grey.reshape(8, 8, 8, 8)
+    local_variation = tiles.std(axis=(1, 3))
+    dx = np.abs(np.diff(grey, axis=1, prepend=grey[:, :1]))
+    dy = np.abs(np.diff(grey, axis=0, prepend=grey[:1]))
+    low, high = np.percentile(visible, (10, 90))
+    return {
+        "aspect": round((bounds[2] - bounds[0]) / (bounds[3] - bounds[1]), 3),
+        "calmArea": round(float((local_variation < 10).mean()), 3),
+        "edgeDensity": round(float((np.maximum(dx, dy)[opacity] > 20).mean()), 3),
+        "tonalRange": round(float(high - low), 1),
+        "brightness": round(float(np.median(visible)), 1),
+    }
+
+
 def inspect_upload(source, folder):
     folder.mkdir(parents=True, exist_ok=True)
     try:
@@ -215,11 +245,11 @@ def picture(plan, asset_path, area, variant, scene, background, dark, accent):
     return out
 
 
-def soundtrack(path, optical=False):
+def soundtrack(path, optical=False, duration=9, cuts=(0,3,6)):
     rate = 22050
-    t = np.arange(rate * 9) / rate
+    t = np.arange(rate * duration) / rate
     signal = np.zeros_like(t)
-    for i, note in enumerate([261.63, 329.63, 392, 523.25, 392, 329.63] * 3):
+    for i, note in enumerate([261.63, 329.63, 392, 523.25, 392, 329.63] * ((duration + 2) // 3)):
         elapsed = t - i * 0.5
         mask = (elapsed >= 0) & (elapsed < 0.46)
         s = elapsed[mask]
@@ -234,9 +264,9 @@ def soundtrack(path, optical=False):
         signal = 0.055 * np.sin(2 * np.pi * 55 * t) + 0.025 * np.sin(
             2 * np.pi * 82.41 * t
         )
-        signal *= np.minimum(t / 0.22, 1) * np.clip((9 - t) / 0.45, 0, 1)
+        signal *= np.minimum(t / 0.22, 1) * np.clip((duration - t) / 0.45, 0, 1)
         rng = np.random.default_rng(40)
-        for when in (0.10, 3.02, 6.01):
+        for when in (cut + 0.05 for cut in cuts):
             span = (t >= when) & (t < when + 0.13)
             elapsed = t[span] - when
             signal[span] += 0.32 * rng.normal(size=span.sum()) * np.exp(-49 * elapsed)
@@ -264,6 +294,7 @@ def render(
 
     from .visual_review import product_geometry, map_box
     from .campaign_frame import campaign_frame, film_planes, moving_frame, video_stage
+    from .film_timing import camera_tick, frame_count
     from .film_edit import encode
     from .poster_composition import LAYOUTS
 
@@ -275,7 +306,7 @@ def render(
     frames = []
     original_box = product_geometry(dims, asset_path) if asset_path else None
 
-    directed = repair or (kind == "video" and asset_path is not None) or bool(
+    directed = (kind == "video" and output.get("duration", 9) != 9) or repair or (kind == "video" and asset_path is not None) or bool(
         plan.get("posterArt") and not (dense and not asset_path)
         and (
             kind == "video"
@@ -301,7 +332,10 @@ def render(
         typesetter.audit_text = [] if kind != "copy" else None
         box = original_box
         layer_info = {}
-        if plan.get("bundleRole") and kind == "poster" and asset_path and not plan.get("layoutOverride"):
+        directed_cover = plan.get("design", {}).get("id") in ("photo-grid", "quiet-light", "riso") and plan.get("bundleRole") in (
+            "hero", "cover", "campaign", "promotion", "price", "banner"
+        )
+        if plan.get("bundleRole") and kind == "poster" and asset_path and not (plan.get("layoutOverride") or directed_cover):
             from .product_bundle import render_product
             image, box = render_product(plan, copy, asset_path, dims, typesetter, background)
         elif directed:
@@ -393,23 +427,25 @@ def render(
             shots = copy.get("storyboard") or storyboard(plan, copy, asset_path)
             drift = {"quiet": 0.0006, "steady": 0.0009, "brisk": 0.0012}[pace]
             for i, shot in enumerate(shots):
-                movement = drift * (1.6, 1.2, 0.65)[i] if directed else drift
+                movement = drift * (1.6 if i == 0 else 1.2 if i == 1 else 0.65) if directed else drift
                 image = draw_frame(i + 1, shot, movement)
+                frames[-1].update(startFrame=shot["start"]*24, frameCount=frame_count(shot))
                 if not directed:
                     image.save(tmp / f"shot{i}.png")
             soundtrack(
-                tmp / "track.wav", optical=bool(plan.get("posterArt", {}).get("optics"))
+                tmp / "track.wav", optical=bool(plan.get("posterArt", {}).get("optics")),
+                duration=shots[-1]["end"], cuts=[s["start"] for s in shots]
             )
             if directed:
                 def motion(bg, fg, index, tick):
                     if cloud_frames:
-                        with Image.open(cloud_frames / f"{(index-1)*72+tick+1:03d}.jpg") as cloud:
+                        with Image.open(cloud_frames / f"{shots[index-1]['start']*24+tick+1:03d}.jpg") as cloud:
                             bg = video_stage(cloud)
-                    return moving_frame(bg, fg, index, tick, pace=pace)
+                    return moving_frame(bg, fg, index, camera_tick(tick, frame_count(shots[index-1])), pace=pace)
                 if cloud_frames:
                     for index, (bg, fg, overlay) in layers.items():
                         sequence = []
-                        for tick in range(72):
+                        for tick in range(frame_count(shots[index-1])):
                             expected = motion(bg, fg, index, tick)
                             expected.paste(overlay, mask=overlay.getchannel("A"))
                             sequence.append(expected.resize((80,80)))

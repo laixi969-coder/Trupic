@@ -5,6 +5,13 @@ import re
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 
+def brand_logo(asset, kit):
+    if asset and kit.get("logo"):
+        folder = asset.parent.parent / kit["logo"]
+        return next((path for path in (folder / "subject.png", folder / "original.png") if path.is_file()), None)
+    return None
+
+
 def render_product(plan, cp, asset, dims, ts, background=None):
     role = plan["bundleRole"]
     w, h = dims
@@ -78,15 +85,9 @@ def render_product(plan, cp, asset, dims, ts, background=None):
         )
 
     def brand():
-        logo_id = kit.get("logo")
-        if logo_id:
-            folder = asset.parent.parent / logo_id
-            path = folder / "subject.png"
-            if not path.is_file():
-                path = folder / "original.png"
-            if path.is_file():
-                with Image.open(path) as logo:
-                    place(logo.convert("RGBA"), (0.81, 0.035, 0.94, 0.105))
+        if path := brand_logo(asset, kit):
+            with Image.open(path) as logo:
+                place(logo.convert("RGBA"), (0.81, 0.035, 0.94, 0.105))
         text(
             kit.get("name") or plan.get("profile", {}).get("name") or "",
             (0.06, 0.035, 0.72, 0.09),

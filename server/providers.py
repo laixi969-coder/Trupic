@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from urllib.parse import urlsplit
+from . import model_admission
 from .store import audit, db
 
 PRESETS = {
@@ -124,10 +125,12 @@ def overview(c):
             cfg = capability(record, kind) or dict(url=DEFAULT_URLS.get((platform,kind), url if kind in ("text","vision") else ""), model="",key="",protocol=protocols_for(platform, kind)[0])
             connections[kind] = {k:v for k,v in cfg.items() if k != "key"} | {"hasKey":bool(cfg.get("key"))}
             cached = c.execute("SELECT data,updated FROM model_catalog WHERE platform=? AND kind=? AND signature=?",(platform,kind,catalog_signature(cfg))).fetchone()
+            candidate_cfg = {**cfg, "provider":platform}
+            connections[kind]["approved"] = bool(cfg.get("model") and model_admission.eligible(c,kind,candidate_cfg))
             if cached:
                 connections[kind]["catalog"] = dict(models=json.loads(cached["data"]),updated=cached["updated"])
         platforms.append(dict(id=platform,label=label,url=record["url"],text=record.get("text",""),vision=record.get("vision",""),hasKey=bool(record.get("key")),connections=connections,supported=list(supported(platform))))
-    return {"platforms": platforms, "routes": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_route")}, "protocols": PROTOCOLS}
+    return {"formal": model_admission.formal(), "platforms": platforms, "routes": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_route")}, "protocols": PROTOCOLS}
 
 
 def save(c, actor, payload):
@@ -194,6 +197,8 @@ def select(c, actor, payload):
             row = c.execute("SELECT * FROM model_provider WHERE id=?", (platform,)).fetchone()
             if kind not in supported(platform) or not row or not capability(dict(row), kind):
                 raise ValueError("请先保存该平台对应能力的接口与模型。")
+            if model_admission.formal() and not model_admission.eligible(c,kind,{"provider":platform, **capability(dict(row),kind)}):
+                raise ValueError("正式调用需要核验发布日期、系列版本和测试记录。")
         labels.append(
             (row["label"] or PRESETS.get(platform,(platform,))[0]) if row else "本地处理" if platform else "默认连接"
         )
@@ -221,7 +226,12 @@ def connection(kind):
         cfg = capability(dict(row),kind)
         if kind not in supported(row["id"]) or not cfg:
             raise ValueError("已选平台不支持此用途，请重新保存调用设置。")
-        return dict(provider=row["id"], **cfg)
+        cfg = dict(provider=row["id"], **cfg)
+        if model_admission.formal():
+            with db() as c:
+                if not model_admission.eligible(c,kind,cfg):
+                    return dict(provider="local-rules",url="",key="",model="",protocol=PROTOCOLS[kind][0])
+        return cfg
 
 
 def catalog_signature(cfg):

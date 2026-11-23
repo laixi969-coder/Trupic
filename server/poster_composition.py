@@ -1,7 +1,7 @@
 """Picture placement and text areas for the reference-led poster layouts."""
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageStat
+from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageStat
 
 from .posters import extend_edges
 
@@ -131,10 +131,17 @@ def edge_light(photo, size, bounds, flat):
     return plate
 
 
-def picture_layout(treatment, size, photo, lighting, layers, photo_area=None, repair=False):
+def picture_layout(treatment, size, photo, lighting, layers, photo_area=None, repair=False, *, framed=None, background=None, reference_color=None):
     """Fit source pixels within a reserved picture zone and keep text areas clear."""
     pigment = mean_color(photo)
     plate = stage(treatment, size, pigment, lighting)
+    if background:
+        with Image.open(background) as source:
+            plate = Image.blend(ImageOps.fit(source.convert("RGB"), size), plate, 0.72)
+    if reference_color:
+        plate = Image.blend(plate, Image.new("RGB", size, tuple(reference_color)), 0.5)
+    if framed is None:
+        framed = treatment == "photo-grid" and photo_area is None
     if photo is None:
         if layers is not None:
             layers.append(("stage", plate.copy(), (0, 0)))
@@ -148,7 +155,7 @@ def picture_layout(treatment, size, photo, lighting, layers, photo_area=None, re
     scale = min((c - a) / (r - l), (d - b) / (bottom - t))
     pw, ph = max(1, round(photo.width * scale)), max(1, round(photo.height * scale))
     x = round((a + c) / 2 - (l + r) * pw / (2 * photo.width))
-    if treatment == "photo-grid" and not photo_area:
+    if framed:
         x = round(a - l * pw / photo.width)
     y = round((b + d) / 2 - (t + bottom) * ph / (2 * photo.height))
     visible = (
@@ -167,13 +174,13 @@ def picture_layout(treatment, size, photo, lighting, layers, photo_area=None, re
         )
 
     px, py, pr, pb = map(round, visible)
-    if photo_area and (not alpha or alpha.getextrema() == (255, 255)):
+    if photo_area and not framed and not background and not reference_color and (not alpha or alpha.getextrema() == (255, 255)):
         plate = edge_light(photo, size, (px, py, max(px + 1, pr), max(py + 1, pb)), repair)
     if layers is not None:
         layers.append(("stage", plate.copy(), (0, 0)))
 
     unit = min(size)
-    if treatment == "photo-grid" and not photo_area:
+    if framed:
         rules = Image.new("RGBA", size)
         draw = ImageDraw.Draw(rules)
         gap = unit * 0.012

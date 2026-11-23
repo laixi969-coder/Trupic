@@ -26,7 +26,7 @@ def write_status(folder, result):
 
 
 def probe_signature(cfg):
-    return providers.catalog_signature(cfg) + ':' + cfg['model'] + ':' + cfg['protocol']
+    return providers.catalog_signature(cfg) + ':' + cfg['model'] + ':' + cfg.get('protocol','chat')
 
 
 

@@ -250,6 +250,13 @@ test(
         p.plan.design?.id,
         kind === "copy" ? undefined : gallery.data.samples[0].style,
       );
+      if (p.requiresCopyChoice) {
+        await confirm.submit();
+        assert.equal(route, "/pages/confirm/confirm");
+        await confirm.loadOptions();
+        assert.ok(confirm.data.options.length >= 2, confirm.data.error);
+        confirm.chooseCopy(input(confirm.data.options[1].token));
+      }
       await confirm.submit();
       assert.ok(
         route.startsWith("/pages/result/result?job="),
@@ -348,7 +355,7 @@ test(
     assert.equal(mine.data.edit, false);
     assert.match(confirmations.at(-1), /未保存/);
     assert.equal(mine.data.works.length, 3);
-    assert.equal(mine.data.credits, 104);
+    assert.equal(mine.data.credits, 103);
     const state = await api.request("state");
     assert.equal(state.assets.length, 1);
     assert.ok(state.recs.find((r) => r.topicId === home.data.topicId).adopted);

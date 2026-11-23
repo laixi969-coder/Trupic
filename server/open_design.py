@@ -9,6 +9,7 @@ import zipfile
 from html import escape
 from pathlib import Path
 
+from .film_timing import camera_tick
 from .campaign_frame import camera_window
 from .design_source import save_source
 
@@ -53,7 +54,7 @@ def composition(folder, dims, plates, titles, shots, audio, pace):
                     for v, target in zip((0, 0, *dims), window)
                 )
                 for window in (
-                    camera_window(dims, index, frame, pace)
+                    camera_window(dims, index, camera_tick(frame, length * FPS), pace)
                     for frame in range(length * FPS)
                 )
             ]

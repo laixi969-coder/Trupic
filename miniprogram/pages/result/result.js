@@ -103,7 +103,11 @@ Page({
     }
     this.setData({ busy: true });
     try {
+      const q = await api.request("works/" + this.id + "/revision-quote", "POST", {action, base});
+      const consent = await new Promise((resolve, reject) => wx.showModal({ title:"确认修改", content:"本次共 " + q.cost + " 积分，原作品会保留。", success:resolve, fail:reject }));
+      if (!consent.confirm) return;
       const job = await api.request("works/" + this.id + "/revise", "POST", {
+        quote:q.quote, confirmed:true, confirmedCost:q.cost,
         action,
         base,
         requestKey: this.requestKey,

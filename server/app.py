@@ -27,6 +27,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from . import model, providers
+from .copy_choices import apply_choice, choices_for_quote, selected_copy
 from .background import make_scene
 from .creative import (
     CASES,
@@ -39,9 +40,9 @@ from .creative import (
     prepare,
 )
 from .governance import active_rule, discover, run_tests, retrieve_method
-from .media import ROOT, SIZES, inspect_upload, render
+from .media import ROOT, SIZES, inspect_upload, photo_layout_features, render
 from .store import DATA, audit, db, dump, ident, init, now, secret, tenant_new
-from . import event_sources, costs
+from . import event_sources, costs, pricing, work_history, revisions, wallet, commerce, model_admission, growth, coupons, staff
 from .topics import weekly, check_topic
 from .formats import output_spec
 from .design import (
@@ -55,7 +56,7 @@ from .typography import Typesetter, inspect_face
 from .lettering import OPTIONS as LETTERING_OPTIONS
 from .campaign import storyboard
 from .shot_detail import merchant_detail
-from .prompt_agent import full_poster_prompt, optimize
+from .prompt_agent import apply_poster_layout, full_poster_prompt, optimize
 from .product_bundle import register as register_bundles
 from .auto_creation import register as register_creations
 from .auto_pipeline import shared_copy
@@ -78,10 +79,11 @@ app.config.update(
     SESSION_COOKIE_NAME="trupic_workspace",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_REFRESH_EACH_REQUEST=False,
     PERMANENT_SESSION_LIFETIME=dt.timedelta(days=180),
 )
 quotes = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="trupic-creative-quote")
-COST = {"copy": 0, "poster": 4, "video": 12}
+COST = {key: pricing.DEFAULT[key] for key in pricing.KINDS}
 LABEL = {"copy": "推广文案", "poster": "营销海报", "video": "宣传短片"}
 ADMIN = os.getenv("TRUPIC_ADMIN_KEY") or secret("admin.key")
 init()
@@ -131,15 +133,15 @@ def is_admin(c):
 
 def require_admin():
     with db() as c:
-        if not is_admin(c):
-            abort(403, description="请使用当前管理密码重新登录。")
+        if not is_admin(c) and not staff.permitted(staff.role(c),request.path,request.method):
+            abort(403, description="当前账号没有此项管理权限。")
 
 
 def owner(c, table, id, t):
     row = c.execute(
         f"SELECT * FROM {table} WHERE id=? AND tenant=?", (id, t)
     ).fetchone()
-    if not row:
+    if not row or (table == "work" and work_history.hidden(c, id)):
         abort(404, description="找不到这项内容。")
     return row
 
@@ -204,7 +206,7 @@ def history(c, t):
                    OR EXISTS(SELECT 1 FROM version edited WHERE edited.work=w.id AND edited.n>1)) AS engaged
            FROM work w JOIN version v ON v.work=w.id AND w.current=v.n
            LEFT JOIN topic_record tr ON tr.tenant=w.tenant AND tr.id=json_extract(v.spec,'$.plan.topic.id')
-           WHERE w.tenant=? ORDER BY w.created DESC,w.rowid DESC LIMIT 35""",
+           WHERE w.tenant=? AND NOT EXISTS (SELECT 1 FROM work_trash h WHERE h.work=w.id) ORDER BY w.created DESC,w.rowid DESC LIMIT 35""",
         (t,),
     ):
         p = json.loads(row["spec"])["plan"]
@@ -278,13 +280,15 @@ def pack(c, w, all_versions=False):
 @app.get("/api/state")
 def state():
     t = reqtenant()
-    with db() as c:
+    with db(True) as c:
+        commerce.issue_due(c,t)
+        wallet.expire(c,t)
         m = c.execute("SELECT * FROM merchant WHERE id=?", (t,)).fetchone()
         prof = json.loads(m["profile"])
         works = [
             pack(c, w)
             for w in c.execute(
-                "SELECT * FROM work WHERE tenant=? ORDER BY created DESC,rowid DESC",
+                "SELECT * FROM work WHERE tenant=? AND id NOT IN (SELECT work FROM work_trash) ORDER BY created DESC,rowid DESC",
                 (t,),
             )
         ]
@@ -305,7 +309,7 @@ def state():
         jobs = [
             dict(x)
             for x in c.execute(
-                "SELECT id,state,work,error,created,json_extract(spec,'$.plan.autoCreation') AS autoCreation FROM job WHERE tenant=? AND state IN ('queued','running','failed') ORDER BY created DESC,rowid DESC LIMIT 15",
+                "SELECT id,state,work,error,created,json_extract(spec,'$.plan.autoCreation') AS autoCreation FROM job WHERE tenant=? AND work NOT IN (SELECT work FROM work_trash) AND state IN ('queued','running','failed') ORDER BY created DESC,rowid DESC LIMIT 15",
                 (t,),
             )
         ]
@@ -322,15 +326,18 @@ def state():
                 )
             ],
             login=m["login"],
-            admin=is_admin(c),
-            credits=m["credits"],
+            admin=is_admin(c) or bool(staff.role(c)),
+            credits=pricing.available(c, t),
             works=works,
             assets=assets,
             cases=CASES,
             recs=recs,
             ledger=ledger,
+            reservations=[dict(r) for r in c.execute("""SELECT job,action,SUM(amount) amount,created FROM credit_event
+                WHERE tenant=? GROUP BY job,action,created ORDER BY MAX(id) DESC LIMIT 80""",(t,))],
             jobs=jobs,
-            prices=COST,
+            prices=pricing.current(c),
+            videoDurations=[15,30,45] if commerce.subscription(c,t) else [15],
         )
 
 
@@ -352,8 +359,14 @@ def profile():
         k: string(v.get(k), 400 if k == "facts" else 80)
         for k in ("name", "industry", "product", "audience", "facts", "tone", "city")
     }
-    if not p["name"]:
-        raise ValueError("请填写商家名称。")
+    tags = v.get("industryTags")
+    if tags is not None:
+        if not isinstance(tags, list) or len(tags) > 10 or any(not isinstance(tag, str) or not 0 < len(tag.strip()) <= 24 for tag in tags):
+            raise ValueError("行业最多可选 10 项，每项不超过 24 字。")
+        p["industryTags"] = list(dict.fromkeys(tag.strip() for tag in tags))
+        p["industry"] = "、".join(p["industryTags"])
+    else:
+        p["industryTags"] = [tag for tag in p["industry"].split("、") if tag]
     with db(True) as c:
         previous = json.loads(
             c.execute("SELECT profile FROM merchant WHERE id=?", (t,)).fetchone()[0]
@@ -445,11 +458,13 @@ def account(action):
                 "UPDATE merchant SET login=?,password=? WHERE id=?",
                 (login, generate_password_hash(pw), t),
             )
+            growth.bind(c,t,string(v.get("invite"),64),new=True)
         elif action == "login":
             r = c.execute("SELECT * FROM merchant WHERE login=?", (login,)).fetchone()
             if not r or not check_password_hash(r["password"], pw):
                 abort(401, description="账号或密码不正确。")
             session.clear()
+            growth.bind(c,r["id"],string(v.get("invite"),64))
             session["tenant"] = r["id"]
             session.permanent = True
         else:
@@ -502,8 +517,9 @@ def delete_asset(id):
     with db(True) as c:
         owner(c, "asset", id, t)
         if c.execute(
-            "SELECT 1 FROM job WHERE tenant=? AND json_extract(spec,'$.asset')=? LIMIT 1",
-            (t, id),
+            """SELECT 1 FROM job WHERE tenant=? AND (json_extract(spec,'$.asset')=? OR
+               EXISTS (SELECT 1 FROM json_each(spec,'$.plan.references') WHERE json_extract(value,'$.id')=?)) LIMIT 1""",
+            (t,id,id),
         ).fetchone():
             raise ValueError("已有任务引用此素材，需保留以供版本回看。")
         c.execute("DELETE FROM asset WHERE id=?", (id,))
@@ -559,6 +575,9 @@ def plan_spec(c, t, v):
         "做张海报",
     ):
         raise ValueError("想宣传什么商品或门店？请补充一句，或先填写商家档案。")
+    promoted = string(v.get("promotedItem"), 80)
+    if promoted:
+        prof = {**prof, "product": promoted}
     rule = active_rule(c, t)
     retrieved = retrieve_method(c, brief, prof)
     if retrieved:
@@ -575,6 +594,12 @@ def plan_spec(c, t, v):
         "SELECT c.id,c.title,c.lesson,c.kind,c.source,c.license FROM cases c JOIN rules r ON c.id=r.case_id WHERE r.id=? AND c.status='approved' AND c.category!='反面案例'",
         (plan["ruleId"],),
     ).fetchone()
+    plan["promotedItem"] = promoted or prof.get("product", "")
+    plan["industryTags"] = prof.get("industryTags", [prof["industry"]] if prof.get("industry") else [])
+    plan["businessGoal"] = string(v.get("businessGoal"), 40)
+    if plan["businessGoal"]:
+        plan["goal"] = plan["businessGoal"]
+        plan["briefGoal"] = plan["businessGoal"]
     plan["output"] = output
     plan["kind"] = kind
     if kind == "video" and v.get("visualDetail") is not None:
@@ -585,6 +610,9 @@ def plan_spec(c, t, v):
             "cutout" if policy != "original" and json.loads(a["info"])["file"] == "subject.png"
             else "photograph"
         )
+        if asset and kind == "poster":
+            filename = "original.png" if policy == "original" else json.loads(a["info"])["file"]
+            plan["photoFeatures"] = photo_layout_features(DATA / t / "assets" / asset / filename)
         plan["lettering"] = string(v.get("lettering") or "auto")
         if plan["lettering"] not in LETTERING_OPTIONS:
             raise ValueError("请选择支持的图形文字组合。")
@@ -631,32 +659,42 @@ def plan_spec(c, t, v):
     )
 
 
+@app.post("/api/copy-options")
+def copy_options():
+    v = body()
+    return jsonify(options=choices_for_quote(quotes, string(v.get("quote"), 1_000_000), reqtenant(), v.get("previousTitles")))
+
+
 @app.post("/api/preview")
 def preview():
     t = reqtenant()
     with db() as c:
         s = plan_spec(c, t, body())
+        cost = pricing.snapshot(s, pricing.current(c))
     preflight(s, DATA / t / "assets")
     optimize(s)
+    poster_prompt = None
+    if s["kind"] == "poster":
+        draft = draft_copy(s["plan"])
+        apply_poster_layout(s["plan"], draft)
+        poster_prompt = full_poster_prompt(s["plan"], draft)
     return jsonify(
         plan=s["plan"],
-        fullPosterPrompt=full_poster_prompt(s["plan"], draft_copy(s["plan"])) if s["kind"] == "poster" else None,
-        cost=COST[s["kind"]],
+        fullPosterPrompt=poster_prompt,
+        requiresCopyChoice=s["kind"] == "poster",
+        cost=cost,
         kind=s["kind"],
         ratio=s["ratio"],
         engine=model.engine_name(),
-        quote=quotes.dumps({"tenant": t, "spec": s, "cost": COST[s["kind"]]}),
+        quote=quotes.dumps({"tenant": t, "spec": s, "cost": cost}),
     )
 
 
 def enough(c, t, cost):
-    balance = c.execute("SELECT credits FROM merchant WHERE id=?", (t,)).fetchone()[0]
-    pending = c.execute(
-        "SELECT COALESCE(SUM(cost),0) FROM job WHERE tenant=? AND state IN ('queued','running')",
-        (t,),
-    ).fetchone()[0]
-    if balance - pending < cost:
-        raise ValueError("可用体验积分不足，可选择免费文案创作。")
+    commerce.issue_due(c,t)
+    wallet.expire(c,t)
+    if pricing.available(c, t) < cost:
+        raise ValueError("可用积分不足。")
 
 
 def enqueue(t, v, work=None):
@@ -676,39 +714,24 @@ def enqueue(t, v, work=None):
                 (work,),
             ).fetchone():
                 raise ValueError("此作品仍在生成新版本，请稍后再试。")
-            r = c.execute(
-                "SELECT * FROM version WHERE work=? AND n=?",
-                (work, int(v.get("base") or w["current"])),
-            ).fetchone()
-            if not r:
-                abort(404)
+            try:
+                q = quotes.loads(v.get("quote") or "", salt="revision", max_age=1800)
+            except BadSignature:
+                raise ValueError("请先查看并确认修改报价。")
+            if q["tenant"] != t or q["work"] != work:
+                abort(403)
+            if type(v.get("confirmedCost")) is not int or v["confirmedCost"] != q["cost"] or v.get("confirmed") is not True:
+                raise ValueError("请确认本次修改的总积分。")
+            r = c.execute("SELECT spec,copy FROM version WHERE work=? AND n=?", (work,q["base"])).fetchone()
             s = json.loads(r["spec"])
-            nxt = c.execute(
-                "SELECT MAX(n)+1 FROM version WHERE work=?", (work,)
-            ).fetchone()[0]
+            cost = q["cost"]
+            s["pricingSnapshot"] = q["pricingSnapshot"]
+            nxt = c.execute("SELECT MAX(n)+1 FROM version WHERE work=?", (work,)).fetchone()[0]
             s["variant"] = nxt - 1
-            cost = 0
-            current_copy = json.loads(r["copy"])
-            action = v.get("action", "revision")
-            if action == "layout":
-                if s["kind"] == "copy":
-                    raise ValueError("纯文案作品无需调整画面版式。")
-                design = layout_alternative(s["plan"], current_copy, s["kind"])
-                s["plan"]["design"] = {k: v for k, v in design.items() if k not in ("buttonLabel", "layoutIntent")}
-                s["plan"]["layoutOverride"] = True
-                s["replacement"] = current_copy
-            else:
-                s["plan"], suggestion = next_suggestion(s, current_copy)
-                if action == "redesign":
-                    s.pop("replacement", None)
-                    design = s["plan"].get("design")
-                    if design and design["selection"] == "auto":
-                        s["plan"]["design"] = next_style(design)
-                elif action == "revision":
-                    s["replacement"] = suggestion
-                else:
-                    raise ValueError("请选择有效的修改方式。")
-            optimize(s, infer=False, previous=s["plan"].get("promptBrief"))
+            revisions.prepare(s, json.loads(r["copy"]), q["action"], q.get("ratio"), v.get("option", 0),q.get("instruction"),q.get("field"))
+            if q["action"] == "ratio" or q.get("duplicate"):
+                s["plan"]["sourceVersion"] = {"work": work, "version": q["base"]}
+                work, nxt = ident(), 1
         else:
             if v.get("quote"):
                 try:
@@ -717,13 +740,17 @@ def enqueue(t, v, work=None):
                     raise ValueError("这份方案已过期，请返回重新分析。")
                 if q["tenant"] != t:
                     abort(403)
+                if "spec" not in q:
+                    raise ValueError("请使用单项作品的创作方案。")
                 s = q["spec"]
                 check_topic(c, t, s["plan"].get("topic"))
                 if s["asset"]:
                     owner(c, "asset", s["asset"], t)
             else:
                 s = plan_spec(c, t, v)
-            cost = COST[s["kind"]]
+            if s["kind"] == "poster":
+                apply_choice(s, selected_copy(quotes, v))
+            cost = pricing.quoted_cost(s) if v.get("quote") else pricing.snapshot(s, pricing.current(c))
             work = ident()
             nxt = 1
             if cost and (v.get("confirmedCost") != cost or not v.get("confirmed")):
@@ -734,6 +761,7 @@ def enqueue(t, v, work=None):
             "INSERT INTO job(id,tenant,request_key,spec,state,cost,work,version,error,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (id, t, key, dump(s), "queued", cost, work, nxt, None, now()),
         )
+        wallet.reserve(c,t,id,cost)
     pool.submit(produce, id)
     return dict(id=id, state="queued", work=work)
 
@@ -741,6 +769,25 @@ def enqueue(t, v, work=None):
 @app.post("/api/jobs")
 def create_job():
     return jsonify(enqueue(reqtenant(), body()))
+
+
+@app.post("/api/works/<id>/revision-quote")
+def revision_quote(id):
+    t, v = reqtenant(), body()
+    with db() as c:
+        w = owner(c, "work", id, t)
+        base = v.get("base", w["current"])
+        r = c.execute("SELECT spec,copy FROM version WHERE work=? AND n=?", (id, base)).fetchone()
+        if not r:
+            abort(404)
+        spec, cp = json.loads(r["spec"]), json.loads(r["copy"])
+        action = v.get("action", "revision")
+        options = revisions.short_options(cp) if action == "shorten" else []
+        revisions.prepare(spec, cp, action, v.get("ratio"),instruction=v.get("instruction"),field=v.get("field"))
+        cost = pricing.snapshot(spec, pricing.current(c), "revision")
+        quote = quotes.dumps(dict(tenant=t, work=id, base=base, action=action, ratio=v.get("ratio"),
+                                  pricingSnapshot=spec["pricingSnapshot"], cost=cost, instruction=v.get("instruction"),field=v.get("field"),duplicate=v.get("duplicate") is True), salt="revision")
+        return jsonify(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta")} if action=="edit" else None)
 
 
 @app.post("/api/works/<id>/revise")
@@ -785,6 +832,8 @@ def produce(id):
         if s["kind"] == "video":
             cp["storyboard"] = storyboard(p, cp, ap)
         if s["kind"] == "poster" and p.get("posterArt") and p.get("output"):
+            if n == 1:
+                apply_poster_layout(p, cp)
             cp["fullPosterPrompt"] = full_poster_prompt(p, cp)
         known = (
             p["original"]
@@ -977,11 +1026,19 @@ def produce(id):
                 + " 像素画幅及文案文件。",
             },
         ]
+        if s["kind"] == "poster":
+            # Map only text that appears in the delivered raster to a replaceable copy field.
+            positions=[]
+            for bounds, _, _, rendered in layout["frames"][0]["text"]:
+                field=next((k for k in ("title","body","cta") if cp.get(k) and rendered.strip()==cp[k].strip()),None)
+                if field:
+                    positions.append(dict(field=field,box=[max(0,min(1,round(v/dims[i%2],5))) for i,v in enumerate(bounds)]))
+            cp["editRegions"]=positions
         if renderer := layout.get("videoRenderer"):
             checks.append({"label": "短片渲染引擎", "detail": renderer})
         if visual:
             coverage = "已检查导出 PNG" + (
-                "及 MP4 全部 216 帧，抽查三个镜头首、中、尾共九帧"
+                f"及 MP4 全部 {24 * output.get('duration',9)} 帧，抽查各镜头首、中、尾帧"
                 if s["kind"] == "video"
                 else ""
             )
@@ -1087,7 +1144,7 @@ def produce(id):
             checks.append(
                 {
                     "label": "短片检查",
-                    "detail": f"已核实 {dims[0]} × {dims[1]}、9 秒、24 fps 画面和声音轨道。",
+                    "detail": f"已核实 {dims[0]} × {dims[1]}、{output.get('duration',9)} 秒、24 fps 画面和声音轨道。",
                 }
             )
         with db(True) as c:
@@ -1112,6 +1169,9 @@ def produce(id):
                 (work, n, dump(s), dump(cp), dump(checks), now()),
             )
             c.execute("UPDATE work SET current=? WHERE id=?", (n, work))
+            if n == 1 and s["kind"] != "copy":
+                growth.milestone(c,t,"generate",id)
+            wallet.finish(c,t,id,True)
             if j["cost"]:
                 c.execute(
                     "UPDATE merchant SET credits=credits-? WHERE id=?", (j["cost"], t)
@@ -1128,6 +1188,7 @@ def produce(id):
         app.logger.exception("Generation failed for %s", id)
         msg = str(e) if isinstance(e, ValueError) else "制作中断，已保留需求。请重试。"
         with db(True) as c:
+            wallet.finish(c,t,id,False)
             c.execute("UPDATE job SET state='failed',error=? WHERE id=?", (msg, id))
 
 
@@ -1143,6 +1204,8 @@ def retry(id):
     t = reqtenant()
     with db(True) as c:
         j = owner(c, "job", id, t)
+        if work_history.hidden(c, j["work"]):
+            abort(404)
         if j["state"] == "failed":
             if c.execute(
                 "SELECT 1 FROM version WHERE work=? AND n=?", (j["work"], j["version"])
@@ -1154,6 +1217,7 @@ def retry(id):
             ).fetchone():
                 raise ValueError("另一版本正在生成，请稍后再试。")
             enough(c, t, j["cost"])
+            wallet.reserve(c,t,id,j["cost"])
             spec = json.loads(j["spec"])
             if rid := spec["plan"].get("creationRun"):
                 group = owner(c,"creative_run",rid,t)
@@ -1223,11 +1287,24 @@ def output(id, n, mode):
     )
 
 
+@app.route("/api/admin/pricing", methods=["GET", "POST"])
+def admin_pricing():
+    require_admin()
+    actor = reqtenant()
+    with db(request.method == "POST") as c:
+        if request.method == "POST":
+            pricing.update(c, actor, body())
+        return jsonify(pricing.current(c))
+
+
 @app.get("/api/admin")
 def admin_state():
     require_admin()
     cfg = model.settings()
     with db() as c:
+        group = None if is_admin(c) else staff.role(c)
+        if group in ("finance","support"):
+            return jsonify(allowedTabs=staff.TABS[group],role=group)
         works = []
         for row in c.execute(
             """SELECT w.id,w.kind,v.n,v.copy,v.quality,r.rating,r.tags,r.metrics,
@@ -1254,7 +1331,17 @@ def admin_state():
                 if reason
             ]
             works.append(val)
-        return jsonify(
+        dashboard = dict(
+            metrics=dict(c.execute("""SELECT
+                (SELECT COUNT(*) FROM merchant WHERE login IS NOT NULL AND date(created)=date('now')) registrations,
+                (SELECT COUNT(DISTINCT tenant) FROM job WHERE date(created)=date('now')) active,
+                (SELECT COUNT(DISTINCT tenant) FROM purchase WHERE state='paid') payers,
+                (SELECT COALESCE(SUM(cents),0) FROM purchase WHERE state='paid') revenueCents,
+                (SELECT COUNT(*) FROM job WHERE state='complete') delivered,
+                (SELECT COUNT(*) FROM job WHERE state IN ('complete','failed')) finished,
+                (SELECT COUNT(*) FROM merchant WHERE login IS NOT NULL AND date(created)=date('now','-7 days')) cohort,
+                (SELECT COUNT(*) FROM merchant m WHERE login IS NOT NULL AND date(created)=date('now','-7 days') AND EXISTS
+                    (SELECT 1 FROM job j WHERE j.tenant=m.id AND date(j.created)=date('now'))) retained""").fetchone()),
             adminAuth={"environmentManaged": bool(os.getenv("TRUPIC_ADMIN_KEY")), "customPassword": admin_credential(c)[1]},
             modelPlatforms={**providers.overview(c), "defaults": {kind:{k:v for k,v in model.default_connection(kind).items() if k in ("url","model")} for kind in providers.KINDS}, "effective": {kind:{k:v for k,v in model.route(kind).items() if k in ("provider","url","model","protocol")} for kind in providers.KINDS}},
             modelCosts=costs.overview(c),
@@ -1344,6 +1431,11 @@ def admin_state():
                 or (cfg["board"] and cfg["pinToken"] and cfg["pinRights"])
             ),
         )
+
+        if group:
+            keys = ("works","visualReviews","cases","events","eventFeeds","jobs","effects")
+            return jsonify(**{k:dashboard[k] for k in keys},allowedTabs=staff.TABS[group],role=group)
+        return jsonify(dashboard)
 
 
 @app.get("/api/admin/preview/<id>/<int:n>/<kind>")
@@ -1770,9 +1862,15 @@ def site(path=""):
     return send_from_directory(dist, "index.html")
 
 
+staff.register(app, globals())
+growth.register(app, globals())
+commerce.register(app, globals())
+coupons.register(app, globals())
+work_history.register(app, globals())
 register_bundles(app, globals())
 register_creations(app, globals())
 register_model_tools(app, globals())
+model_admission.register(app, globals())
 
 
 def start():

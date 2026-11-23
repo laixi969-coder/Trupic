@@ -222,11 +222,14 @@ def exported_frame(path, number):
         return im.convert("RGB")
 
 
+from .film_timing import camera_tick
+
+
 def camera_at(entry, tick):
     if index := entry.get("cameraShot"):
         from .campaign_frame import camera_window
 
-        return camera_window(entry["size"], index, tick, entry.get("pace", "steady"))
+        return camera_window(entry["size"], index, camera_tick(tick,entry.get("frameCount",72)), entry.get("pace", "steady"))
     return zoom_crop(entry["size"], 1 + tick * entry["movement"])
 
 
@@ -241,7 +244,7 @@ def preview_at(entry, tick):
     if entry.get("foreground") is not None:
         from .campaign_frame import moving_frame
 
-        frame = moving_frame(ref, entry["foreground"], entry["cameraShot"], tick, entry.get("pace", "steady"))
+        frame = moving_frame(ref, entry["foreground"], entry["cameraShot"], camera_tick(tick,entry.get("frameCount",72)), entry.get("pace", "steady"))
     else:
         frame = ref.crop(rect).resize(ref.size)
     if overlay := entry.get("overlay"):
@@ -271,6 +274,8 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
                 alpha = im.getchannel("A")
     issues = []
     if len(frames) > 1:
+        duration = output.get("duration", 9)
+        count = 24 * duration
         meta = subprocess.run(
             [
                 "ffprobe",
@@ -291,7 +296,7 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
         video = next((v for v in streams["streams"] if v["codec_type"] == "video"), {})
         if (
             not video
-            or not 8.9 <= float(streams["format"]["duration"]) <= 9.1
+            or abs(float(streams["format"]["duration"]) - duration) > 0.1
             or Fraction(video["avg_frame_rate"]) != 24
         ):
             return ["短片时长或帧率与方案不符"]
@@ -311,7 +316,7 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
                 "-f",
                 "s16le",
                 "-t",
-                "9",
+                str(duration),
                 "-",
             ],
             capture_output=True,
@@ -320,7 +325,7 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
         pcm = np.frombuffer(audio.stdout, dtype="<i2").astype(float)
         if (
             audio.returncode
-            or len(pcm) < 71000
+            or len(pcm) < duration * 8000 - 1000
             or any(np.sqrt(np.mean(block**2)) < 12 for block in np.array_split(pcm, 3))
         ):
             issues.append("短片音轨缺失或镜头配乐静音")
@@ -338,7 +343,7 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
                 "-vf",
                 "scale=80:80",
                 "-frames:v",
-                "217",
+                str(count+1),
                 "-pix_fmt",
                 "rgb24",
                 "-f",
@@ -348,15 +353,15 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
             capture_output=True,
             timeout=45,
         )
-        if decoded.returncode or len(decoded.stdout) != 216 * 80 * 80 * 3:
-            issues.append("短片未完整解码出 216 帧")
+        if decoded.returncode or len(decoded.stdout) != count * 80 * 80 * 3:
+            issues.append(f"短片未完整解码出 {count} 帧")
         else:
             video_frames = np.frombuffer(decoded.stdout, dtype=np.uint8).reshape(
-                216, 80, 80, 3
+                count, 80, 80, 3
             )
             for i, entry in enumerate(frames[1:]):
-                for tick in range(72):
-                    n = i * 72 + tick
+                for tick in range(entry.get("frameCount",72)):
+                    n = entry.get("startFrame", i * 72) + tick
                     expected = np.asarray(preview_at(entry, tick), dtype=float)
                     if (
                         np.abs(expected - video_frames[n]).mean() > 14
@@ -380,17 +385,17 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
                 ("海报" if not index else f"镜头 {index}")
                 + " · 标题、字幕或交易条件不完整"
             )
-        for tick in [0] if index == 0 else [0, 36, 71]:
+        for tick in [0] if index == 0 else [0, entry.get("frameCount",72)//2, entry.get("frameCount",72)-1]:
             label = (
                 "海报"
                 if not index
-                else f"镜头 {index}（{(72 * (index - 1) + tick) / 24:.1f} 秒）"
+                else f"镜头 {index}（{(entry.get('startFrame',72 * (index - 1)) + tick) / 24:.1f} 秒）"
             )
             if not index:
                 with Image.open(dest / "poster.png") as im:
                     image = im.convert("RGB")
             else:
-                image = exported_frame(dest / "video.mp4", (index - 1) * 72 + tick)
+                image = exported_frame(dest / "video.mp4", entry.get("startFrame", (index - 1) * 72) + tick)
             zoom = camera_at(entry, tick)
             if image.size != dims:
                 issues.append(label + " · 画幅异常")
@@ -469,7 +474,7 @@ def compact_review(dest, spec, cfg, layout):
 
     frames = [("封面" if spec["kind"] == "video" else "海报", None)]
     if spec["kind"] == "video":
-        frames.extend((f"第{i + 1}镜", i * 72 + 36) for i in range(3))
+        frames.extend((f"第{i}镜", e.get("startFrame",(i-1)*72) + e.get("frameCount",72)//2) for i,e in enumerate(layout["frames"][1:],1))
     observations = []
     whole_views = []
     product = spec["plan"]["profile"].get("product") or spec["plan"]["subject"]
@@ -494,7 +499,7 @@ def compact_review(dest, spec, cfg, layout):
             entry = layout["frames"][index]
             box = entry.get("subjectBounds") or entry.get("product")
             if box and frame is not None:
-                box = map_box(box, camera_at(entry, 36), target.size)
+                box = map_box(box, camera_at(entry, entry.get("frameCount",72)//2), target.size)
             if box:
                 rect = (
                     max(0, int(box[0])),
@@ -608,13 +613,13 @@ def content_review(dest, original, spec, copy, layout=None):
     with Image.open(dest / "poster.png") as im:
         content.extend(image_message("交付海报或短片封面", im))
     if spec["kind"] == "video":
-        for i in range(3):
+        for i, shot in enumerate(copy["storyboard"]):
             label = f"第{i + 1}镜"
             if i == 1 and (evidence := copy["storyboard"][i].get("evidence")):
                 label += "，核对实物中的「" + evidence["label"] + "」能否支撑本镜字幕"
             content.extend(
                 image_message(
-                    label, exported_frame(dest / "video.mp4", 72 * i + 36)
+                    label, exported_frame(dest / "video.mp4", (shot["start"] + shot["end"]) * 12)
                 )
             )
     response = model.chat_request(
@@ -686,7 +691,9 @@ def preflight(spec, folder):
         return
     plan = spec["plan"]
     previous = plan.get("sourceReview", {})
-    locate = spec["kind"] == "video" and not plan.get("markedDetail")
+    from .art_direction import poster_reading
+    product_poster = spec["kind"] == "poster" and (poster_reading(plan, {}) or {}).get("first") == "product"
+    locate = (spec["kind"] == "video" or product_poster) and not plan.get("markedDetail")
     endpoint = hashlib.sha256(cfg["url"].encode()).hexdigest()[:16]
     if (
         previous.get("model") == name
@@ -701,8 +708,9 @@ def preflight(spec, folder):
     if locate:
         positive, excluded = evidence_clauses(plan)
         request += "\n商家资料：" + "。".join(positive)
+        purpose = "为上新海报首稿" if product_poster else "为第3至6秒"
         instructions += (
-            "为第3至6秒只挑一处在实物上看得清、能回应商家卖点的细节。visualDetail 返回对象："
+            purpose + "只挑一处在实物上看得清、能回应商家卖点的细节。visualDetail 返回对象："
             "label 是20字以内的可见外观短语，region 是相对最后一张完整商家原图的归一化框 [左,上,右,下]（0到1）。"
             "claim 可逐字摘录商家资料中完全能由该区域证明的一条短句，否则留空。不可凭外观推测性能、功效或内部结构。无法定位就省略对象。"
         )

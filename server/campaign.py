@@ -289,4 +289,22 @@ def storyboard(plan, copy, asset=None):
         )
     elif plan.get("visualSource") == "concept":
         shots[1]["purpose"] = "以场景承接开场，字幕沿用文案里的信息。"
+    duration = plan.get("output", {}).get("duration", 9)
+    if duration == 15:
+        shots[1]["end"] = shots[2]["start"] = 10
+        shots[2]["end"] = 15
+    elif duration in (30, 45):
+        segments = [s.strip() for s in re.split(r"[。！？；;，,\n]", copy["body"]) if s.strip()]
+        facts = list(dict.fromkeys([*plan.get("coordination", {}).get("facts", []), *segments]))
+        used = {shot["line"].strip("。！？") for shot in shots}
+        extras = [f for f in facts if f not in used and len(f) > 2]
+        needed = 2 if duration == 30 else 4
+        if len(extras) < needed:
+            raise ValueError(f"制作 {duration} 秒短片需要 {needed} 条不同的商品卖点或使用场景，请补充。")
+        middle = [dict(camera=camera, line=fact, caption="", purpose="呈现商家提供的具体信息。")
+                  for camera, fact in zip(("侧面观察","场景说明","局部展示","使用提示"), extras[:needed])]
+        shots[2:2] = middle
+        cuts = [0,3,10,18,25,30] if duration == 30 else [0,3,10,17,24,31,39,45]
+        for shot, start, end in zip(shots, cuts, cuts[1:]):
+            shot.update(start=start, end=end)
     return shots

@@ -15,6 +15,8 @@ function Connection({ kind, platform, busy, act }) {
   const [probe,setProbe] = useState(null);
   const [probeBusy,setProbeBusy] = useState(false);
   const [pollAttempt,setPollAttempt] = useState(0);
+  const [metadata,setMetadata] = useState({});
+  const [reviewed,setReviewed] = useState("");
   const tested = useRef("");
   const fingerprint = JSON.stringify(form);
   useEffect(() => {
@@ -61,8 +63,14 @@ function Connection({ kind, platform, busy, act }) {
     <p className="fineprint">这里只保存这项能力，不改变其他能力的地址、模型或密钥。保存后还需在上方选为调用连接。</p>
     <div className="model-tests"><button className="primary" disabled={busy||probeBusy||syncing}>保存此能力连接</button><button type="button" className="secondary" disabled={busy||probeBusy||syncing||!form.url||!form.model} onClick={test}>{probeBusy?"正在测试…":kind==="image"?"测试连接 · 生成测试图":kind==="video"?"测试连接 · 生成测试视频":"测试连接"}</button></div>
     <p className="fineprint">测试使用当前表单的连接，不切换正式调用设置。图片和视频测试会真实生成测试素材，按供应商规则计费。</p>
+    <details><summary>正式模型准入 · {(configured.approved && configured.model===form.model && configured.url===form.url && !form.key && !form.clearKey) || reviewed===fingerprint ? "已核验" : "待核验"}</summary>
+      {[["released","发布日期","date"],["source","官方发布依据","url"],["family","模型系列","text"],["version","核实版本","text"],["minimum","系列最低版本","text"],["review","实际输出质量与成本核验记录","text"]].map(([k,l,type])=>
+        <label className="field" key={k}>{l}<input type={type} value={metadata[k]||""} onChange={e=>setMetadata({...metadata,[k]:e.target.value})}/></label>)}
+      <button type="button" className="secondary" disabled={probe?.state!=="complete"||tested.current!==fingerprint} onClick={async()=>{
+        try {await api("/admin/model-admission","POST",{...form,...metadata,probe:probe.id});setReviewed(fingerprint);setError("");} catch(e){setError(e.message);}
+      }}>核准此连接与系列门槛</button></details>
     {err&&<p className="error" role="alert">{err}</p>}
-    {probe && tested.current===fingerprint && <div className="connection-result" role="status"><strong>{probe.state==="complete"?"连接测试通过":probe.state==="failed"?"连接测试失败":"正在等待平台返回"}</strong><p>{probe.model} · {probe.message||probe.error||"测试在后台执行，完成后将在此显示结果。"}{probe.ms!=null&&" · "+(probe.ms/1000).toFixed(1)+" 秒"}</p>{probe.preview&&(kind==="video"?<video src={probe.preview} controls style={{maxWidth:"100%",maxHeight:360}} />:<img src={probe.preview} alt="接口实际返回的测试图" style={{maxWidth:"100%",maxHeight:360}} />)}</div>}
+    {probe && tested.current===fingerprint && <div className="connection-result" role="status"><strong>{probe.state==="complete"?"连接测试通过":probe.state==="failed"?"连接测试失败":"正在等待平台返回"}</strong><p>{probe.model} · {probe.message||probe.error||"测试在后台执行，完成后将在此显示结果。"}{probe.ms!=null&&" · "+(probe.ms/1000).toFixed(1)+" 秒"}</p>{probe.preview&&(kind==="video"?<video src={probe.preview} muted controls style={{maxWidth:"100%",maxHeight:360}} />:<img src={probe.preview} alt="接口实际返回的测试图" style={{maxWidth:"100%",maxHeight:360}} />)}</div>}
   </form>;
 }
 
@@ -95,9 +103,9 @@ export default function ModelPlatforms({config,usage,costs,busy,act}) {
       <h2>按能力选择调用平台</h2>
       <p>所有创作模型统一在这里配置。四项能力可以来自不同平台，各自使用独立的 API 地址、模型和密钥。</p>
       <div className="capability-grid">{kinds.map(([k,label])=><label className="field capability-card" key={k}><strong>{label}</strong><small>{descriptions[k]}</small><select aria-label={label+"调用连接"} value={selection[k]} onChange={e=>select({...selection,[k]:e.target.value})}>
-        <option value="">{config.defaults?.[k]?.model ? "已有配置 · "+config.defaults[k].model : localLabels[k]+"（默认）"}</option>
+        <option value="">{!config.formal&&config.defaults?.[k]?.model ? "已有配置 · "+config.defaults[k].model : localLabels[k]+"（默认）"}</option>
         {(config.defaults?.[k]?.model || selection[k]==="local-rules") && <option value="local-rules">{localLabels[k]}</option>}
-        {platforms.filter(p=>p.supported.includes(k)&&p.connections[k]?.model).map(p=><option value={p.id} key={p.id}>{p.label} · {p.connections[k].model}</option>)}
+        {platforms.filter(p=>p.supported.includes(k)&&p.connections[k]?.model&&(!config.formal||p.connections[k].approved)).map(p=><option value={p.id} key={p.id}>{p.label} · {p.connections[k].model}</option>)}
       </select><small>已生效：{config.effective?.[k]?.model || localLabels[k]}{config.effective?.[k]?.url && <><br />{config.effective[k].url}</>}</small></label>)}</div>
       <p className="fineprint">一键创作会实际使用已保存的调用设置。白底图、透明贴片与样机保留本地制作；云端失败时提示重试。配置模型不代表已完成连接验证。</p>
       {kinds.some(([k])=>!routes[k]&&config.defaults?.[k]?.model)&&<p className="fineprint">「已有配置」沿用之前保存或部署注入的连接。要调整它，请在下方保存独立连接，再在上方选用。</p>}

@@ -1,7 +1,7 @@
 const api = require("../../lib/api");
 const labels = { poster: "营销海报", video: "宣传短片", copy: "推广文案" };
 Page({
-  data: { preview: null, busy: false, error: "" },
+  data: { preview: null, options: [], copyChoice: "", busy: false, error: "" },
   onLoad() {
     const preview = getApp().globalData.preview;
     if (!preview) {
@@ -14,15 +14,32 @@ Page({
     this.setData({ preview, label: labels[preview.kind] });
   },
   copyPosterPrompt() {
-    wx.setClipboardData({ data: this.data.preview.fullPosterPrompt });
+    const chosen = this.data.options.find(o => o.token === this.data.copyChoice);
+    wx.setClipboardData({ data: chosen?.fullPosterPrompt || this.data.preview.fullPosterPrompt });
+  },
+  async loadOptions() {
+    if (this.data.busy) return;
+    this.setData({ busy: true, error: "" });
+    try {
+      const result = await api.request("copy-options", "POST", { quote: this.data.preview.quote, previousTitles: this.data.options.map(o => o.title) });
+      this.setData({ options: result.options, copyChoice: "" });
+    } catch (e) {
+      this.setData({ error: e.message });
+    } finally {
+      this.setData({ busy: false });
+    }
+  },
+  chooseCopy(e) {
+    this.setData({ copyChoice: e.detail.value });
   },
   async submit() {
     const p = this.data.preview;
-    if (!p || this.data.busy) return;
+    if (!p || this.data.busy || (p.requiresCopyChoice && !this.data.copyChoice)) return;
     this.setData({ busy: true, error: "" });
     try {
       const j = await api.request("jobs", "POST", {
         quote: p.quote,
+        copyChoice: this.data.copyChoice,
         confirmed: true,
         confirmedCost: p.cost,
         requestKey: p.requestKey,

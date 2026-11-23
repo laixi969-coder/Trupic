@@ -396,6 +396,30 @@ def draft_copy(plan, variant=0):
     )
 
 
+def unsupported_copy(content, known):
+    guarded = (
+        "免费",
+        "不限量",
+        "无添加",
+        "有机",
+        "纯天然",
+        "现做",
+        "手工",
+        "进口",
+        "包邮",
+        "限量",
+        "当天送达",
+        "医美级",
+        "零糖",
+        "正品保证",
+    )
+    return (
+        RISK.search(content)
+        or any(x not in known for x in NUMCLAIM.findall(content))
+        or any(x in content and x not in known for x in guarded)
+    )
+
+
 def generate_copy(plan, variant=0):
     base = draft_copy(plan, variant)
     if model.engine_name() == "本地创意规则":
@@ -447,27 +471,7 @@ def generate_copy(plan, variant=0):
             + " "
             + json.dumps(plan["profile"], ensure_ascii=False)
         )
-        guarded = (
-            "免费",
-            "不限量",
-            "无添加",
-            "有机",
-            "纯天然",
-            "现做",
-            "手工",
-            "进口",
-            "包邮",
-            "限量",
-            "当天送达",
-            "医美级",
-            "零糖",
-            "正品保证",
-        )
-        if (
-            RISK.search(content)
-            or any(x not in known for x in NUMCLAIM.findall(content))
-            or any(x in content and x not in known for x in guarded)
-        ):
+        if unsupported_copy(content, known):
             return {**base, "reviewFlag": "模型草稿含未经确认的声明"}
         headline_review = (
             " 单独遮住正文和行动号召审主标题：第一眼读懂了吗，商品和这句话有什么关系？"

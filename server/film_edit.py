@@ -6,6 +6,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from .film_timing import frame_count
 from .open_design import archive_project, composition, render_composition
 
 UPSTREAM = "https://github.com/Vincentwei1021/video-shotcraft/tree/59f3e9b9e936ff2bce0e18446226d770a3f2f61f"
@@ -54,14 +55,14 @@ def encode(plates, folder, audio, dims, shots, move, titles, pace, dynamic=False
             "-g",
             "72",
             "-force_key_frames",
-            "0,3,6",
+            ",".join(str(s["start"]) for s in shots),
             "-an",
             str(master),
         ]
         with subprocess.Popen(cmd, stdin=subprocess.PIPE) as encoder:
             try:
                 for index, (bg, fg, _) in sorted(plates.items()):
-                    for tick in range(72):
+                    for tick in range(frame_count(shots[index-1])):
                         encoder.stdin.write(move(bg, fg, index, tick).tobytes())
             finally:
                 encoder.stdin.close()
@@ -69,12 +70,13 @@ def encode(plates, folder, audio, dims, shots, move, titles, pace, dynamic=False
                 raise ValueError("短片净画面编码失败。")
 
         if not rendered:
-            render_master(master, audio, project / "assets", tmp / "video.mp4", ffmpeg, codec)
+            render_master(master, audio, project / "assets", tmp / "video.mp4", ffmpeg, codec, shots)
         timeline = []
         subtitles = []
         edl = ["TITLE: TRUPIC", "FCM: NON-DROP FRAME", ""]
-        for i, (shot, (card, purpose)) in enumerate(zip(shots, RECIPES), 1):
-            start, end = (i - 1) * 3, i * 3
+        for i, shot in enumerate(shots, 1):
+            card, purpose = RECIPES[0 if i == 1 else 2 if i == len(shots) else 1]
+            start, end = shot["start"], shot["end"]
             startcode, endcode = f"00:00:{start:02d}", f"00:00:{end:02d}"
             words = "\n".join(v for v in (shot.get("line"), shot.get("caption")) if v)
             subtitles.append(f"{i}\n{startcode},000 --> {endcode},000\n{words}\n")
@@ -119,7 +121,7 @@ def encode(plates, folder, audio, dims, shots, move, titles, pace, dynamic=False
             )
             archive.writestr(
                 "使用说明.txt",
-                "picture.mp4 为无字无声净画面，soundtrack.wav 为九秒音轨。cuts.edl 记录三个剪辑点，各 title PNG 对齐同编号的三秒镜头。使用字幕轨改字时，可用 captions.srt 替换 PNG。timeline.json 保留逐镜说明与参考卡来源。",
+                "picture.mp4 为无字无声净画面，soundtrack.wav 为独立音轨。cuts.edl 记录剪辑点，各 title PNG 对齐同编号镜头。使用字幕轨改字时，可用 captions.srt 替换 PNG。timeline.json 保留逐镜说明与参考卡来源。",
             )
         if dynamic:
             # Static-source project exports would misrepresent a generated motion plate.
@@ -130,19 +132,19 @@ def encode(plates, folder, audio, dims, shots, move, titles, pace, dynamic=False
     return "HyperFrames" if rendered else "FFmpeg"
 
 
-def render_master(master, audio, assets, output, ffmpeg, codec):
+def render_master(master, audio, assets, output, ffmpeg, codec, shots):
     cmd = ffmpeg + ["-i", str(master), "-i", str(audio)]
     filters = []
-    for n in range(3):
+    for n, shot in enumerate(shots):
         cmd += ["-i", str(assets / f"title-{n + 1}.png")]
         previous = f"v{n}" if n else "0:v"
         filters.append(
-            f"[{previous}][{n + 2}:v]overlay=enable='between(n,{n * 72},{(n + 1) * 72 - 1})'[v{n + 1}]"
+            f"[{previous}][{n + 2}:v]overlay=enable='between(n,{shot['start'] * 24},{shot['end'] * 24 - 1})'[v{n + 1}]"
         )
     subprocess.run(
         cmd + [
-            "-filter_complex", ";".join(filters), "-map", "[v3]", "-map", "1:a",
-            *codec, "-crf", "19", "-c:a", "aac", "-t", "9", "-movflags", "+faststart",
+            "-filter_complex", ";".join(filters), "-map", f"[v{len(shots)}]", "-map", "1:a",
+            *codec, "-crf", "19", "-c:a", "aac", "-t", str(shots[-1]["end"]), "-movflags", "+faststart",
             str(output),
         ],
         check=True,

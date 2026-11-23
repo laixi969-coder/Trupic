@@ -15,8 +15,12 @@ import {
 import { api, Blank, Busy, Field, Modal, PageHead, dateText } from "./ui.jsx";
 import ModelPlatforms from "./ModelPlatforms.jsx";
 import SkillLibrary from "./SkillLibrary.jsx";
+import Merchants from "./Merchants.jsx";
+import { GrowthAdmin } from "./Growth.jsx";
+import { FinanceAdmin } from "./Commerce.jsx";
 import AdminPassword from "./AdminPassword.jsx";
 const tabs = [
+  ["dashboard","仪表盘",History],
   ["works", "作品抽查", ShieldCheck],
   ["visual", "成品视觉审核", ScanLine],
   ["cases", "案例与方法", BookOpen],
@@ -26,6 +30,9 @@ const tabs = [
   ["platforms", "模型平台", Settings2],
   ["settings", "参考素材来源", Settings2],
   ["events", "营销日历", CalendarDays],
+  ["merchants","商家与权限",Settings2],
+  ["growth","渠道与增长",Settings2],
+  ["finance","积分与套餐",Settings2],
   ["password", "管理密码", ShieldCheck],
 ];
 const states = {
@@ -39,7 +46,7 @@ const states = {
 };
 export default function Admin({ tip }) {
   const [d, set] = useState(null),
-    [tab, setTab] = useState("works"),
+    [tab, setTab] = useState("dashboard"),
     [dialog, show] = useState(""),
     [f, form] = useState({}),
     [err, error] = useState(""),
@@ -76,6 +83,9 @@ export default function Admin({ tip }) {
       loading(false);
     }
   }
+  useEffect(()=>{
+    if(d?.allowedTabs && !d.allowedTabs.includes(tab)) setTab(d.allowedTabs[0]);
+  },[d,tab]);
   const field = (n, l, opts = {}) => (
     <Field name={n} label={l} form={f} set={form} {...opts} />
   );
@@ -86,7 +96,7 @@ export default function Admin({ tip }) {
         desc="抽查作品、审核创意方法，管理测试与上线记录。"
       />
       <div className="adminnav">
-        {tabs.map(([k, l, I]) => (
+        {tabs.filter(([k])=>!d?.allowedTabs||d.allowedTabs.includes(k)).map(([k, l, I]) => (
           <button
             key={k}
             className={k === tab ? "sel" : ""}
@@ -101,10 +111,16 @@ export default function Admin({ tip }) {
           </button>
         ))}
       </div>
-      {!d ? (
+      {!d || (d.allowedTabs && !d.allowedTabs.includes(tab)) ? (
         <p>{err || "正在载入…"}</p>
       ) : (
         <>
+          {tab === "dashboard" && <section className="formpanel"><h2>经营概览</h2><div className="datarows">
+            {[["今日注册商家", d.metrics.registrations],["今日发起创作的商家",d.metrics.active],["付费商家",d.metrics.payers],["累计实收（扣除全额退款）","¥"+(d.metrics.revenueCents/100).toFixed(2)],["任务交付成功率",d.metrics.finished?(100*d.metrics.delivered/d.metrics.finished).toFixed(1)+"%":"暂无完成任务"],["注册后第七天创作留存",d.metrics.cohort?d.metrics.retained+" / "+d.metrics.cohort:"暂无到期商家"]].map(([k,v])=><div key={k}><span>{k}</span><b>{v}</b></div>)}
+          </div></section>}
+          {tab === "merchants" && <Merchants role={d.role} tip={tip}/>}
+          {tab === "growth" && <GrowthAdmin tip={tip} />}
+          {tab === "finance" && <FinanceAdmin tip={tip} />}
           {tab === "password" && <AdminPassword config={d.adminAuth} refresh={refresh} tip={tip} />}
           {tab === "skills" && <SkillLibrary skills={d.skills || []} busy={busy} act={act} />}
           {tab === "platforms" && (

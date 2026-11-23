@@ -14,7 +14,7 @@ def shared_copy(spec):
     plan = spec['plan']
     result = copy.deepcopy(spec['replacement'])
     run_id = plan.get('creationRun')
-    if not run_id or not model.route('text')['model']:
+    if spec.get('copySelected') or not run_id or not model.route('text')['model']:
         return result
     # The group uses one approved draft even when image/video jobs start together.
     with COPY_LOCK:

@@ -2487,3 +2487,34 @@ button {
 .capability-card small { font-weight: 400; line-height: 1.7; min-height: 2.5em; }
 .model-tests { display:flex; flex-wrap:wrap; gap:12px; margin-top:16px; }
 @media(max-width:650px) { .capability-grid { grid-template-columns: 1fr; } }
+
+.copy-choices { border: 0; padding: 0; margin: 1rem 0; min-width: 0; }
+.copy-choices legend { font-weight: 650; margin-bottom: .6rem; }
+.copy-choices label { display: flex; align-items: flex-start; gap: .7rem; padding: .75rem; border: 1px solid #d7ddd7; border-radius: 8px; margin-bottom: .5rem; cursor: pointer; }
+.copy-choices label:has(:checked) { border-color: #315744; background: #f3f7f4; }
+.copy-choices input { width: auto; margin-top: .25rem; accent-color: #315744; }
+.copy-choices label span { display: block; overflow-wrap: anywhere; white-space: pre-line; }
+
+.creation-modes,.creation-specs,.spec-picker { display:flex; flex-wrap:wrap; gap:8px; }
+.creation-modes button,.spec-picker button { border:1px solid var(--line,#cfcfc9); border-radius:8px; background:white; padding:9px 12px; display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+.creation-modes button { flex:1; font-size:17px; min-height:48px; font-weight:700; }
+.creation-modes button[aria-pressed=true],.spec-picker button[aria-pressed=true] { background:#203b34; color:white; }
+.spec-picker { padding:0; border:0; margin:10px 0; min-width:0; }
+.spec-picker legend { font-weight:600; font-size:14px; margin:0 0 6px; }
+.spec-picker i { border:1.5px solid currentColor; border-radius:2px; }
+.creation-specs { gap:6px 24px; }
+.brief-facts { margin:4px 0 16px; }
+.brief-facts summary { cursor:pointer; font-size:14px; }
+.history-actions { display:flex; gap:12px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+.workgrid article > .workcard { width:100%; }
+.short-options { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; border:0; padding:8px 0; }
+.short-options label { padding:10px; border:1px solid #ddd; border-radius:6px; }
+@media(max-width:650px) {
+  .homehead + .hero { display:none; }
+  .auto-create { margin-top:12px; }
+  .auto-create .creation-modes button { min-height:52px; }
+  .auto-create .auto-brief textarea { font-size:16px; }
+}
+.interactive-poster { display:inline-block; position:relative; max-width:100%; line-height:0; }
+.interactive-poster img { display:block; max-width:100%; max-height:660px; width:auto; height:auto; }
+.copy-region { position:absolute; border:2px dashed #fff; outline:2px solid #164d3c; background:#abbf9f33; cursor:pointer; }

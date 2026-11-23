@@ -8,12 +8,16 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from flask import abort, jsonify, send_file
 from itsdangerous import BadSignature
 
-from .campaign import LOCKED, storyboard
+from .campaign import LOCKED, OFFER, storyboard
 from .creative import draft_copy
+from .copy_choices import apply_choice, selected_copy
 from .design import visual_requests
-from .formats import output_spec
+from . import pricing, work_history, wallet, commerce
+from .reference_assets import study
+from .design import layout_alternative
+from .formats import output_spec, RATIOS
 from .product_bundle import qualified_cutout
-from .prompt_agent import optimize
+from .prompt_agent import apply_poster_layout, optimize
 from .shot_detail import merchant_detail
 from .skill_library import attach, effective_versions
 from .store import DATA, db, dump, ident, now
@@ -75,7 +79,7 @@ def factual_lines(brief, extra, profile):
                 continue
             if not confirmed and re.search(r"策划|做一份|写一[条份封段]|设计一[次份张]|做[一张套].*(?:宣传|海报|视频|邀约)|面向.*(?:宣传|内容)|请勿|给.*做|仅要|只要|做促销", clause):
                 continue
-            if confirmed or re.search(r"\d|搭配|材质|配料|成分|可拆|冲调|尺寸|规格|开播|仅限|不与|售后|保修|口味|适用|不限|全店|全场|同享|不叠加|无其他限制|今天|明天|本周|周末|长期|买.{1,4}送", clause):
+            if confirmed or OFFER.search(clause) or re.search(r"\d|搭配|材质|配料|成分|可拆|冲调|尺寸|规格|开播|仅限|不与|售后|保修|口味|适用|不限|全店|全场|同享|不叠加|无其他限制|今天|明天|本周|周末|长期|买.{1,4}送", clause):
                 values.append(clause)
     return list(dict.fromkeys(values))
 
@@ -85,8 +89,16 @@ def coordinate(services, c, tenant, v):
     if len(brief) < 2:
         raise ValueError("请用一句话描述想推广什么、希望得到什么。")
     route = route_request(brief)
+    mode = v.get("deliveryMode")
+    if mode is not None and mode not in ("image", "video"):
+        raise ValueError("请选择图文或视频。")
+    count = v.get("imageCount", 1)
+    if mode and (type(count) is not int or count not in (1, 2) or v.get("ratio") not in RATIOS):
+        raise ValueError("请选择有效的数量和画幅。")
     if route.get("unsupported"):
         return dict(ready=False, message=route["unsupported"], questions=[])
+    if mode:
+        route = dict(workflow=None, roles=["copy", "motion"] if mode == "video" else ["copy", "poster", "alternate"][:count + 1])
     asset_id = services["string"](v.get("asset"), 60)
     asset = json.loads(services["owner"](c, "asset", asset_id, tenant)["info"]) if asset_id else {}
     roles = list(route["roles"])
@@ -106,7 +118,7 @@ def coordinate(services, c, tenant, v):
     facts = "；".join(lines)
     questions = []
     if route["workflow"] == "promotion" or re.search(r"促销|优惠|折扣|满减", visual_requests(brief)):
-        if not re.search(r"\d+(?:\.\d+)?\s*(?:元|折)|[￥¥]\s*\d|买.{1,4}送|满.{1,6}减", facts):
+        if not OFFER.search(facts) and not re.search(r"[￥¥]\s*\d|买.{1,4}送|满.{1,6}减", facts):
             questions.append("请补充实际价格或优惠内容。")
         if not re.search(r"\d+月\d+日|\d{4}[-/]\d|周[一二三四五六日末]|今天|明天|本周|长期", facts):
             questions.append("请补充活动有效期。")
@@ -115,33 +127,41 @@ def coordinate(services, c, tenant, v):
     if route["workflow"] == "live" and not re.search(r"\d{1,2}[:：]\d{2}|\d{1,2}点", facts):
         questions.append("请补充直播日期、开播时间与直播内容。")
     if questions:
-        return dict(ready=False, message="补充这些信息后，就可以开始制作。", questions=questions)
+        return dict(ready=False, message="补充这些信息后，就可以开始制作。", questions=questions[:1] if mode else questions)
     kit_row = c.execute("SELECT value FROM brand_kit WHERE tenant=?", (tenant,)).fetchone()
     kit = json.loads(kit_row[0]) if kit_row else {}
     if kit.get("logo"):
         services["owner"](c, "asset", kit["logo"], tenant)
     cutout = False
-    mode = "original"
+    asset_mode = "original"
     if asset and v.get("assetMode") != "original":
         asset["path"] = DATA / tenant / "assets" / asset_id / "subject.png"
         cutout = qualified_cutout(asset, confirmed or bool(asset.get("suppliedTransparency")))
         if cutout:
-            mode = "cutout"
+            asset_mode = "cutout"
         elif asset["file"] == "adjusted.png":
-            mode = "processed"
+            asset_mode = "processed"
     if "white" in roles and not cutout:
         return dict(ready=False, message="制作白底图需要合格的透明底商品图，请更换图片；也可以先制作主图、卖点图或海报。", questions=[])
     if route["workflow"] == "launch" and cutout and all(role in roles for role in ("hero", "benefit", "scene")) and "white" not in roles:
         roles.insert(roles.index("scene") + 1, "white")
     common_request = dict(
         brief=brief, facts=facts, kind="poster" if visual else "copy", asset=asset_id,
-        assetMode=mode, assetConfirmed=confirmed or bool(asset.get("suppliedTransparency") and not fidelity and not v.get("identityRegion")),
-        identityRegion=v.get("identityRegion"), ratio="portrait", resolution=1080,
+        assetMode=asset_mode, assetConfirmed=confirmed or bool(asset.get("suppliedTransparency") and not fidelity and not v.get("identityRegion")),
+        identityRegion=v.get("identityRegion"), ratio=v["ratio"] if mode else "portrait", resolution=1080,
+        promotedItem=v.get("promotedItem"), businessGoal=v.get("businessGoal"),
         lettering=v.get("lettering") or "off", posterStyle=v.get("posterStyle") or "auto",
         fontId=v.get("fontId") or kit.get("font") or "profile",
         topicId=v.get("topicId"), source=v.get("source"), reference=v.get("reference"),
     )
+    refs = study(c,tenant,v.get("references"),services["owner"])
+    if refs:
+        common_request["posterStyle"] = "photo-grid"
     base = services["plan_spec"](c, tenant, common_request)
+    if refs:
+        base["plan"]["references"] = refs
+        base["plan"]["design"]["photoLayout"] = next((r["layout"] for r in refs if r["role"]=="layout"), "framed")
+        base["plan"]["layoutOverride"] = True
     if kit.get("name"):
         base["plan"]["profile"]["name"] = kit["name"]
     # Local creative director writes one brief; the text and visual stages share it.
@@ -157,16 +177,23 @@ def coordinate(services, c, tenant, v):
     if re.search(r"不要行动|不需要行动|不加引导", brief):
         cp["cta"] = ""
     cp["detailLine"] = cp["body"]
-    cp["terms"] = "；".join(line for line in lines if re.search(r"仅限|适用|不与|同享|不叠加|月\d+日|周末|长期", line)) if route["workflow"] == "promotion" else ""
+    promotion = route["workflow"] == "promotion" or bool(re.search(r"半价|买.{1,4}送", visual_requests(brief)))
+    condition = r"仅限|适用|不限|全店|全场|不与|同享|不叠加|无其他限制|月\d+日|\d{4}[-/]\d|今天|明天|本周|周[一二三四五六日末]|长期"
+    cp["terms"] = "；".join(line for line in lines if re.search(condition, line)) if promotion else ""
     cp["offer"] = ""
     price = re.search(r"[¥￥]?\d+(?:\.\d+)?元(?:[/／][^，。；\s·]+)?", facts)
-    if price:
+    if promotion:
+        # Keep the qualifiers in each confirmed offer, including non-numeric deals.
+        offers = [line for line in lines if OFFER.search(line) or re.search(r"[￥¥]\s*\d|买.{1,4}送|满.{1,6}减", line)]
+        cp["offer"] = "；".join(offers)
+    elif price:
         cp["offer"] = price.group()
     cp["review"] = "文案、画面与分镜共用本次商品资料；原图像素和成品文字在导出后复检。"
     shared_id = ident()
     common = dict(id=shared_id, product=product, request=brief, facts=lines, title=cp["title"], body=cp["body"], cta=cp["cta"], terms=cp["terms"], offer=cp["offer"], concept=base["plan"].get("posterArt",{}).get("concept",""), sourceAsset=asset_id, brand=kit, roles=roles)
     specs=[]
     overrides = effective_versions(c, tenant)
+    rates = pricing.current(c)
     for role in roles:
         spec=copy.deepcopy(base)
         kind="copy" if role=="copy" else "video" if role=="motion" else "poster"
@@ -175,35 +202,53 @@ def coordinate(services, c, tenant, v):
         positive=visual_requests(brief)
         for pattern, requested in ((r"1[:：]1|方形", "square"),(r"3[:：]4", "portrait"),(r"9[:：]16|竖屏", "story"),(r"16[:：]9|横版", "landscape")):
             if re.search(pattern,positive): ratio=requested
+        if mode:
+            ratio = v["ratio"]
         spec["ratio"]=ratio
         p=spec["plan"]
         p.update(kind=kind,autoCreation=True,coordination=common,brandKit=kit)
+        if mode and kind == "video" and v.get("references"):
+            raise ValueError("配色与构图参考图当前用于图文作品。")
         if role == "motion" and v.get("visualDetail") is not None:
             p["markedDetail"] = merchant_detail(v, DATA / tenant / "assets" / asset_id / "original.png" if asset_id else None)
         p["output"]=output_spec(kind,ratio,720 if kind=="video" else 1080)
+        if mode == "video" and kind == "video":
+            duration = v.get("duration", 15)
+            if type(duration) is not int or duration not in (15,30,45) or duration > 15 and not commerce.subscription(c,tenant):
+                raise ValueError("当前体验视频支持 15 秒。")
+            p["output"]["duration"] = duration
         attach(p,kind,workflow=route["workflow"], overrides=overrides)
         # Recompile the visual brief for each output, retaining the shared facts
         # and exact copy. No model/API calls are needed for this path.
+        if role == "alternate":
+            spec["variant"] = 1
+            p["design"] = layout_alternative(p, cp, kind)
+            p["layoutOverride"] = True
         optimize(spec,infer=False)
-        if role not in ("copy","poster"):
+        if role not in ("copy","poster","alternate"):
             p["bundleRole"]=role
         spec["replacement"]=copy.deepcopy(cp)
         if role in ("scene","white","livebackground","box","bag","card"):
             spec["replacement"]["title"]=""
-        if role=="price" and price:
-            spec["replacement"]["title"]=price.group()
+        if role=="price" and cp["offer"]:
+            spec["replacement"]["title"]=cp["offer"]
         if role=="closing":
             spec["replacement"]["title"]=cp["cta"] or product
         if role=="motion":
             spec["replacement"]["storyboard"]=storyboard(p,spec["replacement"])
-        specs.append(dict(role=role,label=LABELS[role],spec=spec))
+        if kind == "poster":
+            apply_poster_layout(p, spec["replacement"])
+        seconds = p["output"].get("duration",9)
+        pricing.snapshot(spec, rates, f"video{seconds}" if kind == "video" and seconds > 15 else kind)
+        label = f"{seconds} 秒商品短片" if mode == "video" and role == "motion" else "另一版海报" if role == "alternate" else LABELS[role]
+        specs.append(dict(role=role,label=label,spec=spec))
     from . import model
     notes = ["已采用商家提供的商品图与资料。" if asset else "根据经营需求与已确认资料创作，配图使用示意场景或文字构图。"]
     if model.route("text")["model"]:
         notes.append("文案由后台所选模型制作，并统一用于图片和短片。")
     if "motion" in roles:
-        notes.append("视频使用所选视频接口生成动态环境，再合成商品、字幕与配乐。" if model.route("video")["model"] else "视频使用九秒三镜的本地镜头运动。")
-    return dict(ready=True,title=cp["title"],brief=brief,shared=common,items=specs,cost=sum(services["COST"][row["spec"]["kind"]] for row in specs),notes=notes)
+        notes.append("视频使用所选视频接口生成动态环境，再合成商品、字幕与配乐。" if model.route("video")["model"] else "视频按确认的时长制作，合成字幕与配乐。")
+    return dict(ready=True,deliveryMode=mode,title=cp["title"],brief=brief,shared=common,items=specs,cost=sum(pricing.quoted_cost(row["spec"]) for row in specs),notes=notes)
 
 
 def register(app, services):
@@ -215,6 +260,8 @@ def register(app, services):
         items=[]
         for item in json.loads(row["items"]):
             job=owner(c,"job",item["job"],row["tenant"])
+            if work_history.hidden(c,job["work"]):
+                continue
             spec=json.loads(job["spec"])
             base=f"/api/works/{job['work']}/v/{job['version']}"
             done=job["state"]=="complete"
@@ -224,7 +271,7 @@ def register(app, services):
             else:
                 cp = json.loads(job["copy_checkpoint"]) if job["copy_checkpoint"] else spec["replacement"]
             items.append({**item,"kind":spec["kind"],"state":job["state"],"error":job["error"],"work":job["work"],"preview":base+"/poster" if done and spec["kind"]!="copy" else None,"video":base+"/video" if done and spec["kind"]=="video" else None,"text":"\n\n".join(cp[k] for k in ("title","body","cta") if cp.get(k)) if done and spec["kind"]=="copy" else None,"download":base+"/download" if done else None})
-        complete=all(i["state"]=="complete" for i in items)
+        complete=bool(items) and all(i["state"]=="complete" for i in items)
         return dict(id=row["id"],requestKey=row["request_key"],title=row["title"],brief=row["brief"],created=row["created"],items=items,complete=complete,active=any(i["state"] in ("queued","running") for i in items),download=f"/api/creations/{row['id']}/download",summary=json.loads(row["plan"]))
 
     @app.post("/api/creations/plan")
@@ -234,7 +281,7 @@ def register(app, services):
             result=coordinate(services,c,t,services["body"]())
         if not result["ready"]:
             return jsonify(result)
-        return jsonify(ready=True,title=result["title"],cost=result["cost"],deliveries=[dict(label=i["label"],kind=i["spec"]["kind"]) for i in result["items"]],notes=result["notes"],quote=quotes.dumps({"autoCreation":True,"tenant":t,**result}))
+        return jsonify(ready=True,requiresCopyChoice=not result["deliveryMode"] and any(i["spec"]["kind"] == "poster" for i in result["items"]),title=result["title"],cost=result["cost"],deliveries=[dict(label=i["label"],kind=i["spec"]["kind"]) for i in result["items"]],notes=result["notes"],quote=quotes.dumps({"autoCreation":True,"tenant":t,**result}))
 
     @app.post("/api/creations")
     def auto_create():
@@ -255,6 +302,15 @@ def register(app, services):
                 raise ValueError("创作费用已更新，请查看按钮旁的积分后重试。")
             services["enough"](c, t, q["cost"])
             visuals = [e["spec"] for e in q["items"] if e["spec"]["kind"] != "copy"]
+            if (not q.get("deliveryMode") or v.get("copyChoice")) and any(s["kind"] == "poster" for s in visuals):
+                chosen = selected_copy(quotes, v)
+                copy_fields = {k: chosen[k] for k in ("title", "body", "cta", "offer", "terms")}
+                q["shared"].update(copy_fields)
+                q["title"] = chosen["title"]
+                for entry in q["items"]:
+                    spec = entry["spec"]
+                    spec["plan"]["coordination"].update(copy_fields)
+                    apply_choice(spec, chosen)
             visual_spec = next((s for s in visuals if s["kind"] == "video"), next(iter(visuals), None))
             if visual_spec and visual_spec["asset"]:
                 owner(c, "asset", visual_spec["asset"], t)
@@ -269,16 +325,21 @@ def register(app, services):
             if old:
                 return jsonify(details(c, old))
             services["enough"](c, t, q["cost"])
+            if any(i["spec"]["plan"]["output"].get("duration",9) > 15 for i in q["items"]) and not commerce.subscription(c,t):
+                raise ValueError("当前套餐不支持所选短片时长，请重新报价。")
             services["check_topic"](c, t, q["items"][0]["spec"]["plan"].get("topic"))
             rid=ident(); items=[]
             for entry in q["items"]:
                 spec=entry["spec"]
                 spec["plan"]["creationRun"]=rid
+                for ref in spec["plan"].get("references",[]):
+                    owner(c,"asset",ref["id"],t)
                 if spec["asset"]:
                     owner(c, "asset", spec["asset"], t)
                 jid,wid=ident(),ident()
-                c.execute("INSERT INTO job(id,tenant,request_key,spec,state,cost,work,version,error,created)VALUES(?,?,?,?,?,?,?,?,?,?)",(jid,t,f"auto:{rid}:{entry['role']}",dump(spec),"queued",services["COST"][spec["kind"]],wid,1,None,now()))
+                c.execute("INSERT INTO job(id,tenant,request_key,spec,state,cost,work,version,error,created)VALUES(?,?,?,?,?,?,?,?,?,?)",(jid,t,f"auto:{rid}:{entry['role']}",dump(spec),"queued",pricing.quoted_cost(spec),wid,1,None,now()))
                 items.append(dict(job=jid,role=entry["role"],label=entry["label"]))
+                wallet.reserve(c,t,jid,pricing.quoted_cost(spec))
                 ids.append(jid)
             summary=dict(product=q["shared"]["product"],facts=q["shared"]["facts"],cost=q["cost"],notes=q["notes"])
             c.execute("INSERT INTO creative_run VALUES(?,?,?,?,?,?,?,?)",(rid,t,key,q["title"],q["brief"],dump(summary),dump(items),now()))
@@ -290,7 +351,7 @@ def register(app, services):
     def auto_listing():
         t=tenant()
         with db() as c:
-            return jsonify([details(c,row) for row in c.execute("SELECT * FROM creative_run WHERE tenant=? ORDER BY created DESC,rowid DESC LIMIT 30",(t,)).fetchall()])
+            return jsonify([entry for row in c.execute("SELECT * FROM creative_run WHERE tenant=? ORDER BY created DESC,rowid DESC LIMIT 30",(t,)).fetchall() if (entry := details(c,row))["items"]])
 
     @app.get("/api/creations/<id>")
     def auto_detail(id):

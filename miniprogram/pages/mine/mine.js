@@ -72,7 +72,7 @@ Page({
     if (this.data.saving) return;
     this.setData({ saving: true });
     try {
-      await api.request("profile", "POST", this.data.form);
+      await api.request("profile", "POST", {...this.data.form, industryTags:(this.data.form.industry || "").split(/[、，,]/).map(s=>s.trim()).filter(Boolean)});
       this.setData({ edit: false });
       await this.load();
     } catch (e) {

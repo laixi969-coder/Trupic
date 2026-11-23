@@ -90,6 +90,8 @@ def route(kind):
     named = providers.connection(kind)
     if named:
         return named
+    if providers.model_admission.formal():
+        return dict(provider="local-rules",url="",key="",model="",protocol=providers.PROTOCOLS[kind][0])
     return default_connection(kind)
 
 

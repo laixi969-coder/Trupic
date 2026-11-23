@@ -1,14 +1,14 @@
 """Compose the photographic plate and exact typography as separate film layers."""
 
 import re
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps, ImageStat
+from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFilter, ImageOps, ImageStat
 import numpy as np
 
 from .posters import SCENES, backdrop, extend_edges, luminance
 from .design import DIRECTIONS
 from .poster_composition import LAYOUTS, boxes as reference_boxes, picture_layout
 from .shot_detail import textured_patch
-from .photo_grid import bleed_layout
+from .photo_grid import grid_layout
 
 
 def video_stage(image):
@@ -93,7 +93,10 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts, d
             with Image.open(source) as opened:
                 photo = opened.convert("RGBA" if "A" in opened.getbands() else "RGB")
         return picture_layout(
-            treatment, size, photo, art.get("lighting"), image_layers, photo_area, repair
+            treatment, size, photo, art.get("lighting"), image_layers, photo_area, repair,
+            reference_color=next((r["color"] for r in plan.get("references",[]) if r["role"]=="color"),None),
+            framed=plan.get("design", {}).get("photoLayout", "framed") == "framed" if treatment == "photo-grid" else None,
+            background=background if asset and treatment == "photo-grid" else None,
         )
     if not asset:
         sector = DIRECTIONS.get(plan.get("sector"), DIRECTIONS["general"])
@@ -114,7 +117,7 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts, d
     if not bounds:
         bounds = (0, 0, aw, ah)
     l, t, r, b = bounds
-    factor = (1, 1.12, 1.85, 0.91)[index]
+    factor = (1, 1.12, 1.85, 0.91, 1.32, 1.06, 1.55, 0.96)[index]
     max_w, max_h = (0.56 * w, 0.80 * h) if wide else (0.91 * w, 0.49 * h)
     if art.get("print") and not wide:
         max_w, max_h = 0.54 * w, 0.36 * h
@@ -291,11 +294,21 @@ def campaign_frame(
     treatment = art.get("composition") if not shot else None
     reference_layout = LAYOUTS.get(treatment)
     photo_area = entries = None
-    if treatment == "photo-grid" and plan.get("design", {}).get("photoLayout") == "bleed":
-        brand = plan["profile"].get("name", "")
+    kit = plan.get("brandKit", {})
+    from .skill_render import brand_logo
+    logo_path = brand_logo(asset, kit) if not shot and plan.get("kind") == "poster" else None
+    if treatment == "photo-grid":
+        design = plan.get("design", {})
+        mode = design.get("photoLayout", "framed")
+        first = design.get("readingOrder", {}).get("first", "offer" if mode == "bleed" and copy.get("offer") else "title")
+        brand = kit.get("name") or plan["profile"].get("name", "")
         if not asset and (background or plan.get("scenePhoto")):
             brand = (brand + "  创意场景示意").strip()
-        photo_area, entries = bleed_layout(size, ts, brand, copy, art.get("detail"))
+        photo_area, entries = grid_layout(
+            size, ts, brand, copy, art.get("detail"), mode, first,
+            body=copy.get("body") if plan.get("bundleRole") else "",
+            logo=bool(logo_path), has_picture=bool(asset or background or plan.get("scenePhoto")),
+        )
     scene, box = photograph(
         plan, asset, background, size, index, image_layers, repair, ts,
         (shot or {}).get("evidence") if index == 2 else None, photo_area,
@@ -351,10 +364,26 @@ def campaign_frame(
                 )
                 image_layers.append(("letterforms", patch, bounds[:2]))
         scene = marked
+
+    def place_logo(area):
+        with Image.open(logo_path) as source:
+            logo = ImageOps.contain(source.convert("RGBA"), (area[2] - area[0], area[3] - area[1]))
+        scene.paste(logo, area[:2], logo)
+        if image_layers is not None:
+            image_layers.append(("brand-logo", logo, area[:2]))
+
     if entries is not None:
         for value, role, points, area in entries:
+            if role == "logo":
+                place_logo(area)
+                continue
             tone = scene.crop(area).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
             ink = "#181417" if luminance(tone) > 0.22 else "#fffaf1"
+            if kit.get("color") and role in ("display", "numeric"):
+                brand_luma = luminance(ImageColor.getrgb(kit["color"]))
+                light = luminance(tone)
+                if (max(light, brand_luma) + 0.05) / (min(light, brand_luma) + 0.05) >= 4.5:
+                    ink = kit["color"]
             ts.draw(draw, value, area, points, role, ink)
         return scene, layer, box
     if wide:
@@ -417,7 +446,13 @@ def campaign_frame(
 
         ts.draw(draw, text, area, min_edge * points / 1080, role, ink)
 
-    brand_name = plan["profile"].get("name", "")
+    if logo_path:
+        left, top, right, bottom = brand
+        edge = round(h * (bottom - top))
+        pos = round(w * left), round(h * top)
+        place_logo((*pos, pos[0] + edge, pos[1] + edge))
+        brand = (left + (edge + min_edge * 0.016) / w, top, right, bottom)
+    brand_name = kit.get("name") or plan["profile"].get("name", "")
     if not asset and (background or plan.get("scenePhoto")):
         brand_name = (brand_name + "  创意场景示意").strip()
     if not shot or (index == 3 and shot.get("line") != brand_name):
@@ -445,6 +480,10 @@ def campaign_frame(
             or art.get("detail")
             or ("" if food_type or art.get("composition") == "material" else re.split(r"[。！？]", copy.get("body", ""))[0])
         )
+        if plan.get("bundleRole") and plan.get("kind") == "poster":
+            support_text = copy.get("body") or support_text
+            if copy.get("offer") and copy["offer"] not in support_text:
+                support_text = copy["offer"] + "  " + support_text
         if copy.get("terms") and copy["terms"] not in support_text:
             support_text += "  " + copy["terms"]
         line(support_text, support, 44, "body")
@@ -467,6 +506,9 @@ def camera_window(size, shot, tick, pace="steady"):
         zoom, ax, ay = 1.20 - 0.17 * ease, 0.28 + 0.20 * ease, 0.56
     elif shot == 2:
         zoom, ax, ay = 1.04 + 0.12 * ease, 0.73 if w > h else 0.50, 0.55
+    elif shot >= 4:
+        strength = (0.10, 0.05, 0.14, 0.065)[shot - 4]
+        zoom, ax, ay = 1 + strength * (1 - ease), 0.30 + 0.4 * ease, 0.50
     else:
         zoom, ax, ay = 1.055 - 0.055 * ease, 0.55, 0.58
     travel = {"quiet": 0.55, "brisk": 1.22}.get(pace, 1.0)

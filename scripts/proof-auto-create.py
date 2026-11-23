@@ -26,10 +26,12 @@ with source.open('rb') as f:
 assert response.status_code == 200, response.json
 asset = response.json['id']
 brief = '春山抹茶粉新品上市，净含量100g，48元/罐，可搭配牛奶冲调。帮我做一套上新图片，再配一条9秒短视频，主标题写成「给牛奶加一点春山」。'
-with patch.object(studio.model, 'chat_request', side_effect=AssertionError('This flow must stay local')):
-    q = client.post('/api/creations/plan', json=dict(asset=asset, brief=brief)).json
-    assert q.get('ready'), q
-    payload = dict(quote=q['quote'], confirmedCost=q['cost'], requestKey=uuid.uuid4().hex)
+q = client.post('/api/creations/plan', json=dict(asset=asset, brief=brief)).json
+assert q.get('ready'), q
+selection = client.post('/api/copy-options', json={'quote':q['quote']}).json
+assert len(selection.get('options', [])) >= 2, selection
+payload = dict(quote=q['quote'], copyChoice=selection['options'][1]['token'], confirmedCost=q['cost'], requestKey=uuid.uuid4().hex)
+with patch.object(studio.model, 'chat_request', side_effect=AssertionError('选稿后应直接制作')):
     result = client.post('/api/creations', json=payload).json
     assert 'id' in result, result
     assert client.post('/api/creations', json=payload).json['id'] == result['id']

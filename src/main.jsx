@@ -1,3 +1,4 @@
+import CopyChoices from "./CopyChoices.jsx";
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -57,6 +58,11 @@ import {
   dateText,
 } from "./ui.jsx";
 import Admin from "./Admin.jsx";
+import { RatioPicker } from "./CreationSpecs.jsx";
+import IndustryPicker from "./IndustryPicker.jsx";
+import { Promotion } from "./Growth.jsx";
+import { MerchantShop } from "./Commerce.jsx";
+import WorkHistory from "./WorkHistory.jsx";
 import AutoCreate from "./AutoCreate.jsx";
 import ProductRegion from "./ProductRegion.jsx";
 import {
@@ -73,6 +79,7 @@ const navs = [
   ["works", "我的作品", Images],
   ["assets", "素材库", FolderOpen],
   ["inspiration", "灵感广场", Compass],
+  ["promotion","邀请与推广", Store],
   ["profile", "商家档案", Store],
 ];
 const route = () => {
@@ -144,15 +151,22 @@ function App() {
     [bootError, setBootError] = useState("");
   const [draft, setDraft] = useState(savedDraft),
     [showParams, setParams] = useState(false),
+    [chosenCopy, setChosenCopy] = useState(null),
     [preview, setPreview] = useState(null),
     [work, setWork] = useState(null),
     [version, setVersion] = useState(null),
+    [pickRegion,setPickRegion] = useState(false),
     [detailTab, setDetailTab] = useState("copy"),
     [caseItem, setCase] = useState(null),
     [assetItem, setAssetItem] = useState(null),
     [filter, setFilter] = useState("全部"),
     [search, setSearch] = useState(""),
     [job, setJob] = useState(null);
+  const [revisionQuote, setRevisionQuote] = useState(null);
+  const [editText,setEditText] = useState("");
+  const [editField,setEditField] = useState("");
+  const [duplicate,setDuplicate] = useState(false);
+  const [shortChoice, setShortChoice] = useState(0);
   const [profile, setProfile] = useState({}),
     [auth, setAuth] = useState({ login: "", password: "" }),
     [accountMode, setAccountMode] = useState("register");
@@ -190,6 +204,9 @@ function App() {
     refresh()
       .then((d) => {
         setProfile(d.profile);
+        const invite = new URLSearchParams(location.search).get("invite");
+        if (invite && !d.login) setModal("account");
+        if (invite && d.login) api("/promotion/claim","POST",{code:invite}).catch(e=>tip(e.message));
         setBootError("");
         const j = d.jobs.find((j) => !j.autoCreation && ["queued", "running"].includes(j.state));
         if (j) {
@@ -227,7 +244,7 @@ function App() {
         if (active) {
           setWork(w);
           setVersion(w.current);
-          setDetailTab("copy");
+          setDetailTab("copy");setPickRegion(false);setEditText("");setEditField("");setDuplicate(false);
         }
       })
       .catch((e) => {
@@ -381,6 +398,13 @@ function App() {
       open("preview");
     });
   }
+  async function quoteRevision(action, ratio) {
+    await run("quote", async () => {
+      const q = await api("/works/" + work.id + "/revision-quote", "POST", {base:version,action,ratio,...(action==="edit"?{instruction:editText,field:editField,duplicate}:{})});
+      token.current = crypto.randomUUID();
+      setRevisionQuote(q); setShortChoice(0); open("revisionQuote");
+    });
+  }
   async function launch(kind = "new") {
     await run("generate", async () => {
       const req =
@@ -390,9 +414,10 @@ function App() {
               confirmed: true,
               confirmedCost: preview.cost,
               quote: preview.quote,
+              copyChoice: chosenCopy?.quote === preview.quote ? chosenCopy.token : "",
               requestKey: token.current,
             }
-          : { base: version, action: kind, requestKey: crypto.randomUUID() };
+          : { quote:revisionQuote.quote, option:shortChoice, confirmed:true, confirmedCost:revisionQuote.cost, requestKey:token.current };
       const j = await api(
         kind === "new" ? "/jobs" : "/works/" + work.id + "/revise",
         "POST",
@@ -495,10 +520,7 @@ function App() {
         <div className="nav-label second">品牌与灵感</div>
         <nav>{navs.slice(3).map(navItem)}</nav>
         <div className="sidebottom">
-          <button className="navitem subdued" onClick={() => open("guide")}>
-            <HelpCircle size={17} />
-            使用指南
-          </button>
+
           <button className="navitem subdued" onClick={navAdmin}>
             <Settings2 size={17} />
             运营管理
@@ -576,7 +598,7 @@ function App() {
                   <p>为你的生意，创作文案、海报与短片。</p>
                 </div>
               </div>
-              <AutoCreate assets={data.assets} draft={draft} patch={patch} refresh={refresh} textRef={textarea}
+              <AutoCreate durations={data.videoDurations} prices={data.prices} profile={data.profile} assets={data.assets} draft={draft} patch={patch} refresh={refresh} textRef={textarea}
                 checkAsset={(asset) => { setAssetItem(asset); open("checkAsset"); }}
                 options={<details open={showParams} onToggle={(e) => setParams(e.currentTarget.open)}>
                   <summary>版式与字体</summary>
@@ -750,17 +772,9 @@ function App() {
                   </button>
                 </div>
               ))}
-              {currentWorks.length ? (
-                <div className="workgrid">
-                  {currentWorks.map((w) => (
-                    <WorkCard
-                      work={w}
-                      key={w.id}
-                      onClick={() => go("work/" + w.id)}
-                    />
-                  ))}
-                </div>
-              ) : (
+              <WorkHistory works={currentWorks} total={data.works.length} refresh={refresh}
+                renderCard={w => <WorkCard work={w} onClick={() => go("work/" + w.id)} />} />
+              {!currentWorks.length && (
                 <Blank
                   icon={Layers}
                   title={
@@ -779,6 +793,7 @@ function App() {
               )}
             </>
           )}
+          {page === "promotion" && <Promotion onLogin={showAccount}/>}
           {page === "assets" && (
             <>
               <PageHead
@@ -851,34 +866,12 @@ function App() {
                 <div className="fieldgrid">
                   <Field
                     name="name"
-                    label="商家名称"
-                    required
+                    label="商家名称（选填）"
                     form={profile}
                     set={setProfile}
                     placeholder="例如：山野茶事"
                   />
-                  <Field
-                    name="industry"
-                    label="所属行业"
-                    form={profile}
-                    set={setProfile}
-                    options={[
-                      "茶饮咖啡",
-                      "餐饮火锅",
-                      "烘焙甜品",
-                      "休闲娱乐",
-                      "美容护理",
-                      "健身运动",
-                      "零售服务",
-                      "电商数码",
-                      "生活用品",
-                      "家化洗护",
-                      "百货零售",
-                      "汽车",
-                      "美妆香氛",
-                      "其他",
-                    ]}
-                  />
+                  <IndustryPicker profile={profile} setProfile={setProfile}/>
                   <Field
                     name="product"
                     label="主要商品或服务"
@@ -1003,7 +996,7 @@ function App() {
                     {work.kind === "video" ? (
                       <video
                         key={versionData.video}
-                        controls
+                        controls muted
                         playsInline
                         src={versionData.video}
                         poster={versionData.poster}
@@ -1016,7 +1009,13 @@ function App() {
                         <b>{versionData.cta}</b>
                       </article>
                     ) : (
-                      <img src={versionData.poster} alt={versionData.title} />
+                      <div className="interactive-poster"><img src={versionData.poster} alt={versionData.title} />
+                        {pickRegion && versionData.editRegions?.map((r,i)=><button key={i} className="copy-region"
+                          style={{left:(r.box[0]*100)+"%",top:(r.box[1]*100)+"%",width:((r.box[2]-r.box[0])*100)+"%",height:((r.box[3]-r.box[1])*100)+"%"}}
+                          aria-label={"修改"+({title:"标题",body:"正文",cta:"行动句"})[r.field]} onClick={()=>{
+                            setEditField(r.field);setEditText(versionData[r.field]);setPickRegion(false);
+                            document.getElementById("revision-text")?.focus();
+                          }}/>)}</div>
                     )}
                   </div>
                   <div className="resultside">
@@ -1136,6 +1135,15 @@ function App() {
                         </div>
                       )}
                     </div>
+                    <section className="formpanel"><h3>修改作品</h3>
+                      {!!versionData.editRegions?.length && <button className="secondary" onClick={()=>{setPickRegion(!pickRegion);document.querySelector(".interactive-poster")?.scrollIntoView({block:"center"});}}>{pickRegion?"退出选区":"点选海报文字修改"}</button>}
+                      <label className="field">修改位置<select value={editField} onChange={e=>setEditField(e.target.value)}>
+                        <option value="">按一句话要求修改</option><option value="title">标题</option><option value="body">正文</option><option value="cta">行动句</option>
+                      </select></label>
+                      <label className="field">{editField?"替换文字":"修改要求"}<textarea id="revision-text" maxLength={400} value={editText} onChange={e=>setEditText(e.target.value)} placeholder={editField?"写下新的文字":"例如：48元改成38元；换一张"}/></label>
+                      <label><input type="checkbox" checked={duplicate} onChange={e=>setDuplicate(e.target.checked)}/> 照这个再做，另存作品</label>
+                      <button className="secondary" disabled={!editText.trim()||!!busy} onClick={()=>quoteRevision("edit")}>查看修改与积分</button>
+                    </section>
                     <div className="advice">
                       <span>
                         <Sparkles size={16} />
@@ -1154,7 +1162,7 @@ function App() {
                       <button
                         className="secondary"
                         disabled={!!busy || !!job}
-                        onClick={() => launch(densePosterAdvice ? "layout" : "revision")}
+                        onClick={() => quoteRevision(densePosterAdvice ? "layout" : "revision")}
                       >
                         <Check size={14} />
                         一键应用建议
@@ -1165,7 +1173,7 @@ function App() {
                           <button
                             className="textbtn rethink"
                             disabled={!!busy || !!job}
-                            onClick={() => launch("layout")}
+                            onClick={() => quoteRevision("layout")}
                           >
                             {versionData.layoutSuggestion.buttonLabel || `应用${versionData.layoutSuggestion.name}版式`}
                           </button>
@@ -1174,12 +1182,16 @@ function App() {
                       <button
                         className="textbtn rethink"
                         disabled={!!busy || !!job}
-                        onClick={() => launch("redesign")}
+                        onClick={() => quoteRevision("redesign")}
                       >
                         <RefreshCw size={14} />
                         换个创意
                       </button>
-                      <small className="suggestnote">体验版修改免费</small>
+                      <button className="textbtn" disabled={!!busy || !!job} onClick={()=>quoteRevision("shorten")}>文案短一点</button>
+                      {work.kind !== "copy" && <>
+                        <button className="textbtn" disabled={!!busy || !!job} onClick={()=>quoteRevision("image")}>换一张，保留文案</button>
+                        <details><summary>照这个再做 · 换画幅</summary><RatioPicker value={versionData.ratio} onChange={r=>r !== versionData.ratio && quoteRevision("ratio",r)} /></details>
+                      </>}
                     </div>
                     <details className="original">
                       <summary>原始需求与创意依据</summary>
@@ -1500,9 +1512,10 @@ function App() {
               <b className="price">{preview.cost} 体验积分</b>
             </div>
           </div>
+          {preview.requiresCopyChoice && <CopyChoices key={preview.quote} quote={preview.quote} value={chosenCopy?.quote === preview.quote ? chosenCopy.token : ""} onChange={setChosenCopy} disabled={!!busy} />}
           <OptimizedBrief
             plan={preview.plan}
-            fullPosterPrompt={preview.fullPosterPrompt}
+            fullPosterPrompt={preview.requiresCopyChoice ? (chosenCopy?.quote === preview.quote && chosenCopy.fullPosterPrompt) : preview.fullPosterPrompt}
           />
           <p className="fineprint">
             当前余额 {data.credits} 积分。作品生成成功后结算，失败可免费重试。
@@ -1513,7 +1526,7 @@ function App() {
               返回修改
             </button>
             <button
-              disabled={!!busy || data.credits < preview.cost}
+              disabled={!!busy || data.credits < preview.cost || (preview.requiresCopyChoice && chosenCopy?.quote !== preview.quote)}
               className="primary"
               onClick={() => launch()}
             >
@@ -1529,6 +1542,14 @@ function App() {
           </div>
         </Modal>
       )}
+      {modal === "revisionQuote" && revisionQuote && <Modal title="确认修改" onClose={close}>
+        {revisionQuote.changes && <article><b>{revisionQuote.changes.title}</b><p>{revisionQuote.changes.body}</p><p>{revisionQuote.changes.cta}</p></article>}
+        {revisionQuote.options.length > 0 && <fieldset className="short-options"><legend>没选就用短版，可随时修改</legend>
+          {revisionQuote.options.map((text,i)=><label key={i}><input type="radio" name="short-copy" checked={shortChoice===i} onChange={()=>setShortChoice(i)}/>{text}</label>)}</fieldset>}
+        <p>本次共 {revisionQuote.cost} 积分，原作品会保留。</p>
+        {error && <p role="alert">{error}</p>}
+        <div className="modalfoot"><button className="secondary" onClick={close}>取消</button><button className="primary" disabled={!!busy} onClick={()=>launch("revision")}>确认修改</button></div>
+      </Modal>}
       {modal === "progress" && (
         <Modal title="正在制作作品" onClose={close}>
           <div className="progressbox">
@@ -1549,7 +1570,7 @@ function App() {
       {modal === "jobError" && (
         <Modal title="制作暂时中断" onClose={close}>
           <p>{error}</p>
-          <p className="fineprint">本次未扣积分，原始需求已保存。</p>
+          <p className="fineprint">生成失败，预占积分已退回。</p>
           <button className="primary" onClick={() => go("works")}>
             查看任务
           </button>
@@ -1571,8 +1592,12 @@ function App() {
             ))}
           </div>
           <p className="fineprint">
-            当前为本地体验计费。主题推荐、预览方案及建议替换免费。
+            修改作品前会显示本次总积分。主题推荐与预览免费。
           </p>
+          <details><summary>任务积分记录</summary>{data.reservations.map((r,i)=><p key={i}>
+            {({reserve:"预占",consume:"结算",release:"失败退回"})[r.action]} {r.amount} 积分 · {dateText(r.created)} · {r.job.slice(0,8)}
+          </p>)}</details>
+          <MerchantShop />
           <h4>积分明细</h4>
           <div className="transactions">
             {data.ledger.map((l, i) => (
@@ -1585,42 +1610,6 @@ function App() {
                   {l.delta > 0 ? "+" : ""}
                   {l.delta}
                 </b>
-              </div>
-            ))}
-          </div>
-        </Modal>
-      )}
-      {modal === "guide" && (
-        <Modal title="工作台使用指南" onClose={close}>
-          <div className="guide">
-            {[
-              [
-                MessageSquare,
-                "写下经营需求",
-                "告诉响指出片你想宣传什么，以及希望吸引谁。",
-              ],
-              [
-                Camera,
-                "使用真实素材",
-                "上传一张商品图，系统会检查清晰度并保留商品原貌。",
-              ],
-              [
-                Sparkles,
-                "一键开始制作",
-                "查看预计成品与积分后点击一键创作，系统自动安排文案、图片和需要的短片。",
-              ],
-              [
-                Layers,
-                "下载或调整作品",
-                "结果中预览图片、播放短片、复制文案；失败项单独重试，全部完成后整套下载。",
-              ],
-            ].map(([I, t, s]) => (
-              <div key={t}>
-                <I size={20} />
-                <section>
-                  <b>{t}</b>
-                  <p>{s}</p>
-                </section>
               </div>
             ))}
           </div>
@@ -1673,7 +1662,7 @@ function App() {
                 onSubmit={(e) => {
                   e.preventDefault();
                   run("account", async () => {
-                    await api("/account/" + accountMode, "POST", auth);
+                    await api("/account/" + accountMode, "POST", {...auth, invite:new URLSearchParams(location.search).get("invite") || ""});
                     const d = await refresh();
                     setProfile(d.profile);
                     if (accountMode === "login") {

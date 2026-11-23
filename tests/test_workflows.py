@@ -25,6 +25,30 @@ def post(client, path, **data):
     return client.post("/api/" + path, json=data)
 
 
+def submit_revision(client, path, **data):
+    quote = post(client, path.removesuffix("/revise")+"/revision-quote", **data)
+    assert quote.status_code == 200, quote.json
+    return post(client, path, **data, quote=quote.json["quote"], confirmed=True, confirmedCost=quote.json["cost"])
+
+
+def submit_with_copy(client, path, **data):
+    """Select a deterministic fixture when testing the downstream rendering pipeline."""
+    from server.copy_choices import proposal_specs
+
+    token = data.get("quote")
+    if token and "copyChoice" not in data:
+        q = studio.quotes.loads(token)
+        spec = next((s for s in proposal_specs(q) if s["kind"] == "poster"), None)
+        if spec:
+            base = {**studio.draft_copy(spec["plan"]), **spec.get("replacement", {})}
+            import hashlib
+            data["copyChoice"] = studio.quotes.dumps(
+                {"quoteId": hashlib.sha256(token.encode()).hexdigest(), "draft": base},
+                salt="trupic-copy-choice",
+            )
+    return post(client, path, **data)
+
+
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.c = studio.app.test_client()
@@ -74,13 +98,223 @@ class WorkflowTests(unittest.TestCase):
         q = response.json
         return q, dict(quote=q["quote"], confirmed=True, confirmedCost=q["cost"], requestKey=uuid.uuid4().hex)
 
+    def test_v3_signed_specs_balance_reservations_and_trash(self):
+        self.admin()
+        self.assertEqual(post(self.c,"profile",industryTags=["台球","休闲"],name="").status_code,200)
+        q = post(self.c,"creations/plan",brief="宣传周末台球组局",promotedItem="双人台球",deliveryMode="image",imageCount=2,ratio="square").json
+        self.assertEqual([i["kind"] for i in q["deliveries"]],["copy","poster","poster"])
+        rates=self.c.get("/api/admin/pricing").json
+        try:
+            post(self.c,"admin/pricing",**{**rates,"poster":9})
+            with patch.object(studio.pool,"submit"):
+                run=post(self.c,"creations",quote=q["quote"],confirmedCost=8,requestKey="v3").json
+                self.assertEqual(self.state()["credits"],112)
+                for i in run["items"]:
+                    studio.produce(i["job"])
+            self.assertEqual(self.state()["credits"],112)
+            works=self.state()["works"]
+            poster=next(w for w in works if w["kind"]=="poster")
+            path="works/"+poster["id"]
+            v=self.c.get("/api/"+path).json["versions"][0]
+            self.assertEqual(v["plan"]["industryTags"],["台球","休闲"])
+            self.assertEqual(v["plan"]["promotedItem"],"双人台球")
+            self.assertEqual(v["plan"]["output"]["width"],v["plan"]["output"]["height"])
+            self.assertEqual(post(self.c,path+"/revise",requestKey="no-quote").status_code,400)
+            quote=post(self.c,path+"/revision-quote",action="ratio",ratio="landscape").json
+            with patch.object(studio.pool,"submit"):
+                j=post(self.c,path+"/revise",quote=quote["quote"],confirmedCost=quote["cost"],confirmed=True,requestKey="resize").json
+                studio.produce(j["id"])
+            self.assertNotEqual(j["work"],poster["id"])
+            self.assertEqual(self.c.get("/api/jobs/"+j["id"]).json["state"],"complete")
+            self.assertEqual(self.c.get("/api/"+path).json["current"],1)
+            other=studio.app.test_client()
+            self.assertEqual(post(other,"works/trash",ids=[poster["id"]]).status_code,404)
+            batch=post(self.c,"works/trash",ids=[poster["id"]]).json["batch"]
+            self.assertEqual(self.c.get("/api/"+path).status_code,404)
+            group=self.c.get("/api/creations/"+run["id"]).json
+            self.assertNotIn(poster["id"],[i["work"] for i in group["items"]])
+            self.assertEqual(post(other,"works/trash/"+batch+"/undo").json["count"],0)
+            self.assertEqual(post(self.c,"works/trash/"+batch+"/undo").json["count"],1)
+            self.assertEqual(self.c.get("/api/"+path).status_code,200)
+        finally:
+            post(self.c,"admin/pricing",**{**rates,"version":self.c.get("/api/admin/pricing").json["version"]})
+
+    def test_v3_signed_payments_and_invite_milestones(self):
+        import hashlib,hmac
+        self.admin()
+        who=uuid.uuid4().hex
+        post(self.c,"account/register",login=who,password="fixture-account")
+        rules=self.c.get("/api/admin/growth").json["rules"]
+        post(self.c,"admin/growth",**{**rules,"action":"rules","paidOwner":7,"generateGuest":3})
+        code=self.c.get("/api/promotion").json["codes"]["merchant"]
+        guest=studio.app.test_client()
+        login=uuid.uuid4().hex
+        post(guest,"account/register",login=login,password="fixture-account",invite=code)
+        for name in (who,login):
+            post(self.c,"admin/growth",action="verify",login=name,identity=name)
+        q=post(guest,"creations/plan",brief="周末台球组局",deliveryMode="image",ratio="square").json
+        with patch.object(studio.pool,"submit"):
+            run=post(guest,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey="first").json
+            for item in run["items"]:
+                studio.produce(item["job"])
+        self.assertEqual(guest.get("/api/state").json["credits"],119)
+        offer=post(self.c,"admin/offers",cycle="year",name="测试年费",cents=1000,credits=50,bonus=5).json[0]
+        with patch.dict(os.environ,{"TRUPIC_CHECKOUT_URL":"https://checkout.invalid","TRUPIC_PAYMENT_SECRET":"test-key"}):
+            oid=post(guest,"orders",offer=offer["id"],cents=1000,credits=50,bonus=5,requestKey="order1").json["id"]
+            data=json.dumps(dict(order=oid,status="paid",currency="CNY",cents=1000,receipt=uuid.uuid4().hex)).encode()
+            stamp=str(int(time.time()))
+            sig=hmac.new(b"test-key",stamp.encode()+b"."+data,hashlib.sha256).hexdigest()
+            self.assertEqual(guest.post("/api/payments/webhook",data=data,content_type="application/json").status_code,403)
+            for _ in range(3):
+                self.assertEqual(guest.post("/api/payments/webhook",data=data,content_type="application/json",headers={"X-Payment-Timestamp":stamp,"X-Payment-Signature":sig}).status_code,200)
+        self.assertEqual(guest.get("/api/state").json["credits"],174)
+        self.assertEqual(self.state()["credits"],127)
+        self.assertEqual(guest.get("/api/state").json["videoDurations"],[15,30,45])
+        self.assertEqual(post(self.c,"creations/plan",brief="周末组局",deliveryMode="video",ratio="square",duration=45).status_code,400)
+        post(self.c,"admin/growth",action="rules",**rules)
+
+    def test_v3_channel_coupon_refund_and_staff_isolation(self):
+        from server import commerce, coupons, growth
+        self.admin()
+        login=uuid.uuid4().hex
+        agent=studio.app.test_client()
+        post(agent,"account/register",login=login,password="channel-fixture")
+        post(self.c,"admin/growth",action="agent",login=login,role="区县代理")
+        rule=self.c.get("/api/admin/growth").json["rules"]
+        post(self.c,"admin/growth",action="rules",**{**rule,"firstBps":1000})
+        promo=agent.get("/api/promotion").json
+        code=promo["codes"]["agent"]
+        with agent.get("/api/promotion/"+code+"/qr") as qr:
+            self.assertEqual(qr.mimetype,"image/png")
+        guest=studio.app.test_client()
+        guest_login=uuid.uuid4().hex
+        post(guest,"account/register",login=guest_login,password="guest-fixture",invite=code)
+        self.assertEqual(agent.get("/api/promotion").json["clients"][0]["login"],guest_login)
+        self.assertEqual(agent.get("/api/admin/merchants").status_code,403)
+        self.assertEqual(self.c.get("/api/promotion").json["clients"],[])
+        offer=post(self.c,"admin/offers",name="测试套餐",cycle="month",cents=1000,credits=10,bonus=2).json[0]
+        coupon=post(self.c,"admin/coupons",offer=offer["id"],discount=120,threshold=500,quantity=1,per_user=1,
+                    starts=studio.now()[:10],ends=studio.now()[:10],agent=login).json[0]["code"]
+        self.assertEqual(post(agent,"orders/price",offer=offer["id"],coupon=coupon).status_code,400)
+        self.assertEqual(post(guest,"orders/price",offer=offer["id"],coupon=coupon).json["cents"],880)
+        with patch.dict(os.environ,{"TRUPIC_CHECKOUT_URL":"https://pay.invalid","TRUPIC_PAYMENT_SECRET":"test"}):
+            oid=post(guest,"orders",offer=offer["id"],credits=10,bonus=2,cents=880,coupon=coupon,requestKey="first").json["id"]
+            self.assertEqual(post(guest,"orders/price",offer=offer["id"],coupon=coupon).status_code,400)
+        with studio.db(True) as c:
+            row=c.execute("SELECT * FROM purchase WHERE id=?",(oid,)).fetchone()
+            commerce.fulfill(c,row,"receipt-"+oid)
+        sale=agent.get("/api/promotion").json["commissions"][0]
+        self.assertEqual(sale["amount"],88)
+        self.assertEqual(guest.get("/api/state").json["credits"],132)
+        self.assertEqual(post(agent,"admin/growth",action="settle",order=oid).status_code,403)
+        post(self.c,"admin/growth",action="settle",order=oid)
+        with studio.db(True) as c:
+            for _ in range(2):
+                row=c.execute("SELECT * FROM purchase WHERE id=?",(oid,)).fetchone()
+                commerce.refund(c,row,"receipt-"+oid)
+        self.assertEqual(guest.get("/api/state").json["credits"],120)
+        self.assertEqual(agent.get("/api/promotion").json["commissions"][0]["status"],"recovery_due")
+        post(self.c,"admin/staff",login=login,role="support")
+        self.assertEqual(agent.get("/api/admin").json["allowedTabs"],["merchants"])
+        self.assertEqual(agent.get("/api/admin/merchants").status_code,200)
+        self.assertEqual(agent.get("/api/admin/pricing").status_code,403)
+        post(self.c,"admin/growth",action="rules",**rule)
+
+    def test_v3_formal_model_release_gate(self):
+        from server import model_tools as mt, providers
+        self.admin()
+        cfg=dict(id="custom-"+uuid.uuid4().hex,capability="text",label="fixture",url="https://model.invalid/v1/chat/completions",model="opaque-id",protocol="chat")
+        post(self.c,"admin/model-platform",**cfg)
+        with patch.object(mt.PROBES,"submit",side_effect=lambda fn,*args: fn(*args)), patch.object(mt.model,"chat_request",return_value={"ok":True}):
+            probe=post(self.c,"admin/probes",**cfg).json["id"]
+        meta=dict(**cfg,probe=probe,family="v3-test",version="2.10",minimum="2.2",released="2026-01-01",source="https://model.invalid/release",review="隔离测试记录")
+        with patch.dict(os.environ,{"TRUPIC_MODEL_STAGE":"production"}):
+            self.assertEqual(post(self.c,"admin/model-routes",text=cfg["id"]).status_code,400)
+            for changes in (dict(released="2025-01-01"),dict(released=""),dict(minimum="2.11"),dict(probe="0"*32)):
+                self.assertEqual(post(self.c,"admin/model-admission",**{**meta,**changes}).status_code,400)
+            self.assertEqual(post(self.c,"admin/model-admission",**meta).status_code,200)
+            self.assertEqual(post(self.c,"admin/model-routes",text=cfg["id"]).status_code,200)
+            self.assertEqual(studio.model.route("text")["model"],"opaque-id")
+            post(self.c,"admin/model-routes",text="local-rules")
+        post(self.c,"admin/model-routes",text="")
+
+    def test_v3_expiry_reserve_release_uses_same_lot(self):
+        from server import wallet
+        with self.c.session_transaction() as sess: tenant=sess["tenant"]
+        with studio.db(True) as c:
+            wallet.grant(c,tenant,"付费积分包","paid-"+tenant,20)
+            wallet.reserve(c,tenant,"hold",5)
+            c.execute("UPDATE credit_lot SET expires='2020-01-01' WHERE tenant=? AND source='开通工作室体验积分'",(tenant,))
+            wallet.finish(c,tenant,"hold",False)
+            wallet.finish(c,tenant,"hold",False)
+            self.assertEqual(c.execute("SELECT credits FROM merchant WHERE id=?",(tenant,)).fetchone()[0],20)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM credit_event WHERE tenant=? AND action='release'",(tenant,)).fetchone()[0],1)
+
+    def test_v3_export_all_advertised_durations(self):
+        with self.c.session_transaction() as sess: tenant=sess["tenant"]
+        with studio.db(True) as c:
+            starts=studio.now()
+            c.execute("INSERT INTO subscription VALUES(?,?,?,?,?,?)",(uuid.uuid4().hex,tenant,starts,studio.commerce.month_after(starts,1),1,100))
+        for duration in (15,30,45):
+            with self.subTest(duration=duration), patch.dict(os.environ,{"TRUPIC_VIDEO_RENDERER":"ffmpeg"}):
+                q=post(self.c,"creations/plan",brief="给台球室做活动短片",facts="店里有大桌；可借球杆；提供巧粉；前台登记；可自带球杆；周五可预约",
+                       deliveryMode="video",ratio="portrait",duration=duration).json
+                with patch.object(studio.pool,"submit"):
+                    row=post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
+                    for item in row["items"]: studio.produce(item["job"])
+                result=self.c.get("/api/creations/"+row["id"]).json
+                self.assertTrue(result["complete"],[(i["state"],i["error"]) for i in result["items"]])
+                video=result["items"][-1]
+                folder=studio.DATA/tenant/"works"/video["work"]/"1"
+                meta=json.loads(subprocess.check_output(["ffprobe","-v","error","-select_streams","v","-show_entries","stream=duration,nb_frames","-of","json",str(folder/"video.mp4")]))
+                self.assertEqual(float(meta["streams"][0]["duration"]),duration)
+                self.assertEqual(int(meta["streams"][0]["nb_frames"]),duration*24)
+                with zipfile.ZipFile(folder/"edit.zip") as z:
+                    shots=json.loads(z.read("timeline.json"))["shots"]
+                    self.assertEqual(shots[-1]["endFrameExclusive"],duration*24)
+                    self.assertEqual(len(shots),{15:3,30:5,45:7}[duration])
+                    self.assertIn(f"00:00:{duration:02d},000",z.read("captions.srt").decode())
+
+    def test_v3_reference_assets_and_scoped_edit(self):
+        ids=[]
+        for name in ("matcha","hotpot","retail"):
+            with Image.open("server/scenes/"+name+".webp") as image:
+                stream=io.BytesIO(); image.convert("RGB").save(stream,"PNG"); stream.seek(0)
+                with patch.dict(os.environ,{"TRUPIC_CUTOUT":"/missing"}):
+                    ids.append(self.c.post("/api/assets",data={"image":(stream,name+".png")}).json["id"])
+        refs=[dict(id=ids[1],role="color",authorized=True),dict(id=ids[2],role="layout",authorized=True)]
+        payload=dict(brief="抹茶饮品周末到店尝鲜",facts="抹茶拿铁48元；仅限周末",deliveryMode="image",ratio="portrait",imageCount=1,
+                     asset=ids[0],assetConfirmed=True,assetMode="original",references=refs)
+        self.assertEqual(post(self.c,"creations/plan",**{**payload,"references":[{**refs[0],"authorized":False}]}).status_code,400)
+        q=post(self.c,"creations/plan",**payload).json
+        with patch.object(studio.pool,"submit"):
+            run=post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey="reference").json
+            for item in run["items"]: studio.produce(item["job"])
+        work="works/"+run["items"][-1]["work"]
+        v=self.c.get("/api/"+work).json["versions"][0]
+        self.assertEqual(v["asset"],ids[0])
+        self.assertEqual(v["plan"]["posterArt"]["composition"],"photo-grid")
+        self.assertEqual([r["id"] for r in v["plan"]["references"]],ids[1:])
+        self.assertEqual(self.c.delete("/api/assets/"+ids[2]).status_code,400)
+        revision=post(self.c,work+"/revision-quote",base=1,action="edit",instruction="48元改成38元；标题改为周末来一杯").json
+        self.assertEqual(revision["cost"],1)
+        self.assertIn("38元",revision["changes"]["body"])
+        with patch.object(studio.pool,"submit"):
+            job=post(self.c,work+"/revise",quote=revision["quote"],confirmed=True,confirmedCost=1,requestKey="edit").json
+            studio.produce(job["id"])
+        latest=self.c.get("/api/"+work).json["versions"]
+        self.assertEqual(len(latest),2)
+        self.assertEqual(latest[0]["title"],"周末来一杯")
+        self.assertIn("38元",latest[0]["body"])
+        self.assertIn("48元",latest[1]["body"])
+
     def test_home_brief_without_photo_revision_and_adoption(self):
         q = post(self.c, "creations/plan", brief="帮我宣传台球室").json
         self.assertTrue(q["ready"], q)
         self.assertEqual(q["cost"], 4)
         topic = self.state()["recs"][0]
         q = post(self.c, "creations/plan", brief=topic["brief"], topicId=topic["topicId"]).json
-        run = post(self.c, "creations", confirmedCost=q["cost"], quote=q["quote"], requestKey=uuid.uuid4().hex).json
+        run = submit_with_copy(self.c, "creations", confirmedCost=q["cost"], quote=q["quote"], requestKey=uuid.uuid4().hex).json
         for item in run["items"]:
             self.assertEqual(self.finish(item["job"])["state"], "complete")
         poster = run["items"][1]["work"]
@@ -88,7 +322,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(initial["plan"]["topic"]["id"], topic["topicId"])
         self.assertNotIn("商品规格", initial["cta"])
         for action in ("revision", "layout", "redesign"):
-            result = post(self.c, "works/" + poster + "/revise", base=1, action=action, requestKey=uuid.uuid4().hex)
+            result = submit_revision(self.c, "works/" + poster + "/revise", base=1, action=action, requestKey=uuid.uuid4().hex)
             done = self.finish(result.json["id"])
             self.assertEqual(done["state"], "complete", done)
             latest = self.c.get("/api/works/" + poster).json["versions"][0]
@@ -101,19 +335,19 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(downloaded.status_code, 200)
         with studio.db() as c:
             self.assertTrue(all(c.execute("SELECT count FROM downloads WHERE work=?", (i["work"],)).fetchone()[0] == 1 for i in run["items"]))
-        self.assertEqual(self.state()["credits"], 116)
+        self.assertEqual(self.state()["credits"], 113)
 
     def test_dense_poster_can_apply_layout_without_losing_original_or_copy(self):
         brief = "给台球室做一张满屏字海报，约朋友下班组局。"
         quote = post(self.c, "creations/plan", brief=brief).json
-        run = post(self.c, "creations", quote=quote["quote"], confirmedCost=quote["cost"], requestKey=uuid.uuid4().hex).json
+        run = submit_with_copy(self.c, "creations", quote=quote["quote"], confirmedCost=quote["cost"], requestKey=uuid.uuid4().hex).json
         poster = next(item for item in run["items"] if item["role"] == "poster")
         self.assertEqual(self.finish(poster["job"])["state"], "complete")
         url = "works/" + poster["work"]
         version = self.c.get("/api/" + url).json["versions"][0]
         with self.c.get(version["poster"]) as response:
             before = response.data
-        revision = post(self.c, url + "/revise", base=1, action="layout", requestKey=uuid.uuid4().hex).json
+        revision = submit_revision(self.c, url + "/revise", base=1, action="layout", requestKey=uuid.uuid4().hex).json
         self.assertEqual(self.finish(revision["id"])["state"], "complete")
         latest, original = self.c.get("/api/" + url).json["versions"]
         self.assertEqual((latest["title"], latest["body"]), (original["title"], original["body"]))
@@ -142,7 +376,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(q["ready"],q)
         self.assertEqual(studio.quotes.loads(q["quote"])["items"][-1]["spec"]["identityRegion"],region)
         with patch.object(studio,"preflight",side_effect=ValueError("关键标识已遮挡")):
-            response = post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex)
+            response = submit_with_copy(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex)
         self.assertEqual(response.status_code,400)
         self.assertFalse(self.state()["jobs"])
         self.assertEqual(self.state()["credits"],120)
@@ -232,7 +466,7 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(event_sources,"read_calendar",return_value=[{**event,"eventStatus":"EventCancelled"}]):
             self.assertEqual(post(self.c,"admin/event-sync",id=sid).json["count"],0)
         self.assertNotIn(event["name"],[r["title"] for r in self.state()["recs"]])
-        self.assertEqual(post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).status_code,400)
+        self.assertEqual(submit_with_copy(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).status_code,400)
         self.assertEqual(post(self.c,"creations/plan",brief=topic["brief"],topicId=topic["topicId"]).status_code,400)
         self.assertEqual(post(outsider,"admin/event-sync",id=sid).status_code,403)
         self.assertEqual(self.state()["credits"],120)
@@ -361,7 +595,7 @@ class WorkflowTests(unittest.TestCase):
             q = post(self.c,"creations/plan",brief="给台球室写一条邀约文案").json
             rejected = dict(title="虚构的标题",reviewFlag="模型草稿复核未通过")
             with patch("server.auto_pipeline.generate_copy",return_value=rejected):
-                run = post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
+                run = submit_with_copy(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
                 done = self.finish(run["items"][0]["job"])
             self.assertEqual(done["state"],"complete",done)
             work = self.c.get("/api/works/"+done["work"]).json["versions"][0]
@@ -532,14 +766,17 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(payload['model'],'fixture-image')
                 return io.BytesIO(json.dumps(dict(data=[dict(b64_json=base64.b64encode(stream.getvalue()).decode())])).encode())
             draft=dict(title='一口清新',body='抹茶饮品，48元/罐',cta='试试这杯',engine='fixture-text',review={})
-            with patch('server.auto_pipeline.generate_copy',return_value=draft) as text_call, patch('urllib.request.urlopen',side_effect=remote) as images:
-                response=post(self.c,'creations',quote=q['quote'],confirmedCost=q['cost'],requestKey=uuid.uuid4().hex)
+            reference = studio.quotes.loads(q["quote"])["items"][0]["spec"]["replacement"]
+            with patch("server.copy_choices.write_options", return_value=[{**reference, **draft}, reference]):
+                chosen = post(self.c, "copy-options", quote=q["quote"]).json["options"][0]["token"]
+            with patch('server.auto_pipeline.generate_copy',side_effect=AssertionError("selected copy must be reused")) as text_call, patch('urllib.request.urlopen',side_effect=remote) as images:
+                response=post(self.c,'creations',copyChoice=chosen,quote=q['quote'],confirmedCost=q['cost'],requestKey=uuid.uuid4().hex)
                 self.assertEqual(response.status_code,200,response.json)
                 group=response.json
                 for item in group['items']:
                     finished=self.finish(item['job'])
                     self.assertEqual(finished['state'],'complete',finished)
-            self.assertEqual(text_call.call_count,1)
+            text_call.assert_not_called()
             self.assertEqual(images.call_count,3)
             result=self.c.get('/api/creations/'+group['id']).json
             self.assertEqual(result['title'],'一口清新')
@@ -566,7 +803,7 @@ class WorkflowTests(unittest.TestCase):
                 def respond(cfg,url,payload=None):
                     return dict(id='task-render') if payload else dict(status='succeeded',content=dict(video_url='https://cdn.example/video.mp4'))
                 with patch.object(video,'request_json',side_effect=respond), patch.object(video,'download',side_effect=lambda url,dest:shutil.copy(source,dest)):
-                    group=post(self.c,'creations',quote=q['quote'],confirmedCost=q['cost'],requestKey=uuid.uuid4().hex).json
+                    group=submit_with_copy(self.c,'creations',quote=q['quote'],confirmedCost=q['cost'],requestKey=uuid.uuid4().hex).json
                     for item in group['items']:
                         done=self.finish(item['job'])
                         self.assertEqual(done['state'],'complete',done)
@@ -614,6 +851,43 @@ class WorkflowTests(unittest.TestCase):
             with studio.db(True) as c:
                 c.execute("DELETE FROM admin_auth")
 
+    def test_merchant_selects_reviewed_poster_copy_before_any_job(self):
+        brief = "给璟澜院厨房发朋友圈，周末想看样板间可以找我约个时间，做张海报。"
+        q = post(self.c, "creations/plan", brief=brief).json
+        self.assertTrue(q["requiresCopyChoice"])
+        payload = dict(quote=q["quote"], confirmedCost=q["cost"], requestKey=uuid.uuid4().hex)
+        options = [
+            dict(title="你切菜，我摆盘", body="璟澜院样板间厨房。", cta="周末找我约时间。", shareTo="一起做饭的人", reply="那洗碗归谁？"),
+            dict(title="晚饭做好前，先陪我聊会儿", body="璟澜院的厨房。", cta="周末约个时间来看。", shareTo="伴侣", reply="我正好想跟你说件事。"),
+            dict(title="免费送厨房", body="不实的优惠", cta="", shareTo="朋友", reply="真的？"),
+        ]
+        def ask(prompt, inputs, tokens):
+            self.assertIn("社交货币", prompt)
+            self.assertIn("高端、奢侈品、地产", prompt)
+            if "独立审稿人" in prompt:
+                self.assertEqual(len(inputs["候选"]), 2)
+                return {"approved": [0, 1]}, "test-writer"
+            return {"options": options}, "test-writer"
+        with patch("server.model.route", return_value=dict(model="test-writer", url="", provider="test")), patch("server.model.ask", side_effect=ask) as writer:
+            choices = post(self.c, "copy-options", quote=q["quote"]).json["options"]
+        self.assertEqual(writer.call_count, 2)
+        self.assertEqual(len(choices), 2)
+        self.assertEqual(post(self.c, "creations", **payload).status_code, 400)
+        self.assertEqual(post(self.c, "creations", **payload, copyChoice="invented").status_code, 400)
+        other = post(self.c, "creations/plan", brief=brief + "用横版。").json
+        self.assertEqual(post(self.c, "creations", **{**payload, "quote":other["quote"]}, copyChoice=choices[1]["token"]).status_code, 400)
+        self.assertFalse(self.state()["jobs"])
+        self.assertEqual(self.state()["credits"], 120)
+        with patch("server.auto_pipeline.generate_copy", side_effect=AssertionError("selection must be final")):
+            group = post(self.c, "creations", **payload, copyChoice=choices[1]["token"]).json
+            for item in group["items"]:
+                self.assertEqual(self.finish(item["job"])["state"], "complete")
+                version = self.c.get("/api/works/" + item["work"]).json["versions"][0]
+                for field in ("title", "body", "cta"):
+                    self.assertEqual(version[field], choices[1][field])
+        repeat = post(self.c, "creations", **payload, copyChoice=choices[1]["token"]).json
+        self.assertEqual(repeat["id"], group["id"])
+
     def test_auto_creation_routing_and_shared_facts(self):
         from server.auto_creation import route_request, factual_lines
         self.assertEqual(route_request('只要文案，不要视频')['roles'], ['copy'])
@@ -659,9 +933,9 @@ class WorkflowTests(unittest.TestCase):
                 raise ValueError('测试独立重试')
             return real(folder, plan, *args, **kwargs)
         with patch.object(studio, 'render', side_effect=fail_benefit), patch.object(studio.model, 'chat_request', side_effect=AssertionError('No API')):
-            pack = post(self.c, 'creations', **payload).json
+            pack = submit_with_copy(self.c, 'creations', **payload).json
             self.assertEqual(pack['requestKey'], payload['requestKey'])
-            self.assertEqual(post(self.c, 'creations', **payload).json['id'], pack['id'])
+            self.assertEqual(submit_with_copy(self.c, 'creations', **payload).json['id'], pack['id'])
             states = [self.finish(item['job'])['state'] for item in pack['items']]
         self.assertEqual(states, ['complete', 'complete', 'failed', 'complete'])
         self.assertEqual(self.state()['credits'], 112)
@@ -690,8 +964,8 @@ class WorkflowTests(unittest.TestCase):
                 raise ValueError("测试单张失败")
             return real_render(folder, plan, *args, **kwargs)
         with patch.object(studio, "render", side_effect=fail_benefit), patch.object(studio.model, "chat_request", side_effect=AssertionError("素材包不应调用 API")):
-            pack = post(self.c, "bundles", **payload).json
-            self.assertEqual(post(self.c, "bundles", **payload).json["id"], pack["id"])
+            pack = submit_with_copy(self.c, "bundles", **payload).json
+            self.assertEqual(submit_with_copy(self.c, "bundles", **payload).json["id"], pack["id"])
             states = [self.finish(i["job"]) for i in pack["items"]]
         self.assertEqual([s["state"] for s in states], ["complete", "failed", "complete"], states)
         self.assertEqual(self.state()["credits"], 112)
@@ -710,13 +984,13 @@ class WorkflowTests(unittest.TestCase):
         other = studio.app.test_client()
         self.assertEqual(other.get('/api/bundles/' + pack['id']).status_code, 404)
         self.assertEqual(other.get(pack['download']).status_code, 404)
-        self.assertEqual(post(other, 'bundles', **{**payload, 'requestKey': uuid.uuid4().hex}).status_code, 403)
+        self.assertEqual(submit_with_copy(other, 'bundles', **{**payload, 'requestKey': uuid.uuid4().hex}).status_code, 403)
 
     def test_bundle_cutout_white_background(self):
         q, payload = self.bundle_plan(cutout=True)
         self.assertEqual(q['roles'][-1], '白底图')
         self.assertEqual(q['cost'], 16)
-        pack = post(self.c, 'bundles', **payload).json
+        pack = submit_with_copy(self.c, 'bundles', **payload).json
         for item in pack['items']:
             result = self.finish(item['job'])
             self.assertEqual(result['state'], 'complete', result)
@@ -739,7 +1013,7 @@ class WorkflowTests(unittest.TestCase):
                 q = post(self.c,"bundles/preview",**request).json
                 self.assertIn("quote",q,q)
                 with patch.object(studio.model,"chat_request",side_effect=AssertionError("技能不应调用 API")):
-                    pack = post(self.c,"bundles",quote=q["quote"],confirmed=True,confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
+                    pack = submit_with_copy(self.c,"bundles",quote=q["quote"],confirmed=True,confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
                     for item in pack["items"]:
                         result=self.finish(item["job"])
                         self.assertEqual(result["state"],"complete",(skill,item,result))
@@ -758,7 +1032,7 @@ class WorkflowTests(unittest.TestCase):
                 if skill == "motion":
                     source=self.c.get('/api/jobs/'+pack['items'][-1]['job']).json['work']
                     q=post(self.c,'bundles/preview',**{**request,'skill':'remake','template':source}).json
-                    repack=post(self.c,'bundles',quote=q['quote'],confirmed=True,confirmedCost=q['cost'],requestKey=uuid.uuid4().hex).json
+                    repack=submit_with_copy(self.c,'bundles',quote=q['quote'],confirmed=True,confirmedCost=q['cost'],requestKey=uuid.uuid4().hex).json
                     result=self.finish(repack['items'][0]['job'])
                     self.assertEqual(result['state'],'complete',result)
 
@@ -776,7 +1050,7 @@ class WorkflowTests(unittest.TestCase):
             for stage in ('copy', 'image'):
                 for instruction in plan['skillPlan']['instructions'][stage]:
                     self.assertIn(instruction, plan['promptBrief']['prompts'][stage])
-            job = post(self.c, 'jobs', quote=q['quote'], confirmed=True, confirmedCost=q['cost'], requestKey=uuid.uuid4().hex).json
+            job = submit_with_copy(self.c, 'jobs', quote=q['quote'], confirmed=True, confirmedCost=q['cost'], requestKey=uuid.uuid4().hex).json
             result = self.finish(job['id'])
             self.assertEqual(result['state'], 'complete', result)
         with studio.db() as c:
@@ -791,14 +1065,14 @@ class WorkflowTests(unittest.TestCase):
     def test_consent_and_concurrent_replay(self):
         payload = self.plan()
         self.assertEqual(
-            post(self.c, "jobs", **{**payload, "confirmed": False}).status_code, 400
+            submit_with_copy(self.c, "jobs", **{**payload, "confirmed": False}).status_code, 400
         )
         cookie = self.c.get_cookie("trupic_workspace").value
 
         def submit(_):
             c = studio.app.test_client()
             c.set_cookie("trupic_workspace", cookie)
-            return post(c, "jobs", **payload).json["id"]
+            return submit_with_copy(c, "jobs", **payload).json["id"]
 
         with ThreadPoolExecutor(max_workers=3) as ex:
             ids = list(ex.map(submit, range(3)))
@@ -810,11 +1084,11 @@ class WorkflowTests(unittest.TestCase):
         other = studio.app.test_client()
         other.get("/api/state")
         self.assertEqual(other.get("/api/works/" + state["work"]).status_code, 404)
-        self.assertEqual(post(other, "jobs", **payload).status_code, 403)
+        self.assertEqual(submit_with_copy(other, "jobs", **payload).status_code, 403)
 
     def test_failure_retry_only_charges_on_success(self):
         with patch.object(studio, "render", side_effect=ValueError("测试制作中断")):
-            j = post(self.c, "jobs", **self.plan()).json
+            j = submit_with_copy(self.c, "jobs", **self.plan()).json
             self.assertEqual(self.finish(j["id"])["state"], "failed")
         self.assertEqual(self.state()["credits"], 120)
         with patch.object(
@@ -826,18 +1100,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.state()["credits"], 116)
 
     def test_suggestion_and_versions(self):
-        job = post(self.c, "jobs", **self.plan()).json
+        job = submit_with_copy(self.c, "jobs", **self.plan()).json
         self.finish(job["id"])
         url = "works/" + job["work"]
         one = self.c.get("/api/" + url).json["versions"][0]
-        j = post(self.c, url + "/revise", base=1, requestKey=uuid.uuid4().hex).json
+        j = submit_revision(self.c, url + "/revise", base=1, requestKey=uuid.uuid4().hex).json
         self.assertEqual(self.finish(j["id"])["state"], "complete")
         versions = self.c.get("/api/" + url).json["versions"]
         self.assertEqual(versions[0]["title"], one["suggestion"]["title"])
         self.assertNotEqual(versions[0]["title"], versions[1]["title"])
         post(self.c, url + "/restore/1")
         self.assertEqual(self.state()["works"][0]["current"], 1)
-        self.assertEqual(self.state()["credits"], 116)
+        self.assertEqual(self.state()["credits"], 115)
 
     def test_unclear_material_and_private_access(self):
         stream = io.BytesIO()
@@ -868,7 +1142,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_export_real_video_and_text(self):
         for kind in ["video", "copy"]:
-            j = post(self.c, "jobs", **self.plan(kind)).json
+            j = submit_with_copy(self.c, "jobs", **self.plan(kind)).json
             self.assertEqual(self.finish(j["id"])["state"], "complete")
             w = self.c.get("/api/works/" + j["work"]).json["versions"][0]
             out = self.c.get(w["download"])
@@ -924,11 +1198,78 @@ class WorkflowTests(unittest.TestCase):
             out.close()
         self.assertEqual(self.state()["credits"], 108)
 
+    def test_one_click_auto_grid_and_layout_revision_share_the_same_renderer(self):
+        quote, _ = self.bundle_plan(cutout=True)
+        asset = studio.quotes.loads(quote["quote"])["specs"][0]["asset"]
+        for brief, facts, first, mode in (
+            ("抹茶粉新品上新，做一张海报", "净含量100g", "product", "bleed"),
+            ("抹茶粉促销，做一张海报", "第二件半价，本周末，仅限到店", "offer", "bleed"),
+        ):
+            with self.subTest(brief=brief):
+                quote = post(self.c, "creations/plan", asset=asset, brief=brief, facts=facts).json
+                group = submit_with_copy(self.c, "creations", quote=quote["quote"], confirmedCost=quote["cost"],
+                             requestKey=uuid.uuid4().hex).json
+                item = next(i for i in group["items"] if i["kind"] == "poster")
+                self.assertEqual(self.finish(item["job"])["state"], "complete")
+                url = "works/" + item["work"]
+                old = self.c.get("/api/" + url).json["versions"][0]
+                self.assertEqual(old["plan"]["design"]["photoLayout"], mode)
+                self.assertEqual(old["plan"]["design"]["readingOrder"]["first"], first)
+                job = submit_revision(self.c, url + "/revise", base=1, action="layout", requestKey=uuid.uuid4().hex).json
+                self.assertEqual(self.finish(job["id"])["state"], "complete")
+                new = self.c.get("/api/" + url).json["versions"][0]
+                self.assertNotEqual(new["plan"]["design"]["photoLayout"], mode)
+                self.assertEqual(new["plan"]["design"]["readingOrder"], old["plan"]["design"]["readingOrder"])
+                for version in (old, new):
+                    self.assertEqual(version["plan"]["posterArt"]["composition"], "photo-grid")
+                    with self.c.get(version["designSource"]) as svg:
+                        self.assertIn(b'id="source-photo"', svg.data)
+                        self.assertEqual(b'id="picture-frame"' in svg.data, version["plan"]["design"]["photoLayout"] == "framed")
+                for field in ("title", "body", "cta", "offer", "terms", "asset"):
+                    self.assertEqual(old[field], new[field])
+
+    def test_first_draft_uses_both_photo_and_business_intent(self):
+        # Real renderable fixtures; hold the words fixed, then hold the photo fixed.
+        assets = {}
+        for name in ("hotpot", "beauty", "retail"):
+            path = studio.ROOT / "server" / "scenes" / (name + ".webp")
+            with path.open("rb") as f, patch.dict(os.environ, TRUPIC_CUTOUT="/missing"):
+                assets[name] = self.c.post("/api/assets", data={"image": (f, path.name)}).json["id"]
+        ordinary = "店里刚上新了，帮我做一张海报发朋友圈。"
+        for name, brief, style, mode in (
+            ("hotpot", ordinary, "photo-grid", "bleed"),
+            ("beauty", ordinary, "quiet-light", None),
+            ("retail", ordinary, "photo-grid", "bleed"),
+            ("hotpot", "这款上新了，周末去市集摆摊，路过就能看见，做一张海报。", "riso", None),
+            ("hotpot", "这款上新了，周末去市集摆摊，做一张海报，不要孔版。", "photo-grid", "bleed"),
+            ("hotpot", "周末去市集，做一张全图海报。", "photo-grid", "bleed"),
+            ("hotpot", "周末去市集，做一张海报，不要取景框。", "riso", None),
+            ("beauty", "新品上架，要一张取景框海报。", "photo-grid", "framed"),
+        ):
+            with self.subTest(name=name, brief=brief):
+                quote = post(self.c, "creations/plan", asset=assets[name], assetMode="original",
+                             assetConfirmed=True, brief=brief).json
+                self.assertTrue(quote["ready"], quote)
+                spec = next(item["spec"] for item in studio.quotes.loads(quote["quote"])["items"]
+                            if item["spec"]["kind"] == "poster")
+                design = spec["plan"]["design"]
+                self.assertEqual((design["id"], design.get("photoLayout")), (style, mode))
+                self.assertIn(design["readingOrder"]["layoutReason"], spec["plan"]["promptBrief"]["prompts"]["image"])
+                if style == "riso":
+                    group = submit_with_copy(self.c, "creations", quote=quote["quote"], confirmedCost=quote["cost"],
+                                 requestKey=uuid.uuid4().hex).json
+                    item = next(row for row in group["items"] if row["kind"] == "poster")
+                    self.assertEqual(self.finish(item["job"])["state"], "complete")
+                    version = self.c.get("/api/works/" + item["work"]).json["versions"][0]
+                    self.assertEqual(version["plan"]["design"], design)
+                    with self.c.get(version["designSource"]) as svg:
+                        self.assertIn(b'id="primary-ink"', svg.data)
+
     def test_reference_poster_layouts_export_editable_photos_and_copy(self):
         for style, brief, photo, ratio in (
             ("food-motion", "为牛肉火锅制作日式美食海报，居酒屋暗调。", "hotpot", "portrait"),
             ("quiet-light", "为木质香水做留白光影海报，标题写「闻见安静」。", "beauty", "square"),
-            ("photo-grid", "用照片编排展示试驾，标题写「照片里，握不到方向盘」。", "auto", "landscape"),
+            ("photo-grid", "用取景框照片编排展示试驾，标题写「照片里，握不到方向盘」。", "auto", "landscape"),
         ):
             with self.subTest(style=style):
                 original = studio.ROOT / "server" / "scenes" / f"{photo}.webp"
@@ -944,7 +1285,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(quote["plan"]["posterArt"]["composition"], style)
                 if style == "food-motion":
                     self.assertEqual(quote["plan"]["posterArt"]["lighting"], "dark")
-                job = post(
+                job = submit_with_copy(
                     self.c, "jobs", **req, confirmed=True, confirmedCost=quote["cost"],
                     quote=quote["quote"], requestKey=uuid.uuid4().hex,
                 ).json
@@ -960,7 +1301,7 @@ class WorkflowTests(unittest.TestCase):
                 if style == "photo-grid":
                     url = "works/" + job["work"]
                     for base, mode in ((1, "bleed"), (2, "framed")):
-                        j = post(self.c, url + "/revise", base=base, action="layout", requestKey=uuid.uuid4().hex).json
+                        j = submit_revision(self.c, url + "/revise", base=base, action="layout", requestKey=uuid.uuid4().hex).json
                         done = self.finish(j["id"])
                         self.assertEqual(done["state"], "complete", done)
                         versions = self.c.get("/api/" + url).json["versions"]
@@ -1019,7 +1360,7 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertFalse(adopted())
         with patch.object(studio, "render", side_effect=ValueError("测试制作中断")):
-            job = post(
+            job = submit_with_copy(
                 self.c, "jobs", quote=preview["quote"], requestKey=uuid.uuid4().hex
             ).json
             self.assertEqual(self.finish(job["id"])["state"], "failed")
@@ -1127,9 +1468,10 @@ class WorkflowTests(unittest.TestCase):
             return layout
 
         self.admin()
+        req["quote"] = post(self.c, "preview", **req).json["quote"]
         for always in (False, True):
             with patch.object(studio, "render", side_effect=overwrite):
-                job = post(
+                job = submit_with_copy(
                     self.c,
                     "jobs",
                     **req,
@@ -1166,7 +1508,7 @@ class WorkflowTests(unittest.TestCase):
             quote = post(self.c, "preview", kind="poster", brief=direction + "海报，标题「茶与光」。不要行动号召。",
                          asset=asset["id"], assetConfirmed=True, resolution=720, lettering="both").json
             self.assertEqual(quote["plan"]["design"]["id"], "riso")
-            job = post(self.c, "jobs", quote=quote["quote"], confirmed=True,
+            job = submit_with_copy(self.c, "jobs", quote=quote["quote"], confirmed=True,
                        confirmedCost=quote["cost"], requestKey=uuid.uuid4().hex).json
             result = self.finish(job["id"])
             self.assertEqual(result["state"], "complete", result)
@@ -1199,7 +1541,7 @@ class WorkflowTests(unittest.TestCase):
                      brief="冰抹茶拿铁，食材大字与实物穿插。标题「把春天搅开」。不要行动号召。",
                      asset=asset["id"], assetMode="processed", assetConfirmed=True, resolution=720).json
         self.assertEqual(quote["plan"]["posterArt"]["composition"], "ingredient")
-        job = post(self.c, "jobs", quote=quote["quote"], confirmed=True,
+        job = submit_with_copy(self.c, "jobs", quote=quote["quote"], confirmed=True,
                    confirmedCost=quote["cost"], requestKey=uuid.uuid4().hex).json
         self.assertEqual(self.finish(job["id"])["state"], "complete")
         version = self.c.get("/api/works/" + job["work"]).json["versions"][0]
@@ -1216,7 +1558,7 @@ class WorkflowTests(unittest.TestCase):
             art = q["plan"]["posterArt"]
             self.assertEqual(art["composition"], expected)
             self.assertFalse(art["modelMark"])
-            task = post(self.c, "jobs", quote=q["quote"], confirmed=True,
+            task = submit_with_copy(self.c, "jobs", quote=q["quote"], confirmed=True,
                         confirmedCost=q["cost"], requestKey=uuid.uuid4().hex).json
             self.assertEqual(self.finish(task["id"])["state"], "complete")
             result = self.c.get("/api/works/" + task["work"]).json["versions"][0]
@@ -1275,7 +1617,7 @@ class WorkflowTests(unittest.TestCase):
 
         self.admin()
         with patch.object(studio, "render", side_effect=damage):
-            job = post(self.c, "jobs", **self.plan("video")).json
+            job = submit_with_copy(self.c, "jobs", **self.plan("video")).json
             result = self.finish(job["id"])
         self.assertEqual(result["state"], "complete", result)
         import zipfile
@@ -1318,7 +1660,7 @@ class WorkflowTests(unittest.TestCase):
             patch.dict(os.environ, TRUPIC_VISION_MODEL="视觉测试"),
             patch("server.model.chat_request", side_effect=replies) as remote,
         ):
-            job = post(self.c, "jobs", **req).json
+            job = submit_with_copy(self.c, "jobs", **req).json
             result = self.finish(job["id"])
         self.assertEqual(result["state"], "complete", result)
         self.assertEqual(remote.call_count, 2)
@@ -1329,7 +1671,7 @@ class WorkflowTests(unittest.TestCase):
             patch.dict(os.environ, TRUPIC_VISION_MODEL="视觉测试"),
             patch("server.model.chat_request", side_effect=OSError("offline")),
         ):
-            j = post(self.c, "jobs", **{**req, "requestKey": uuid.uuid4().hex}).json
+            j = submit_with_copy(self.c, "jobs", **{**req, "requestKey": uuid.uuid4().hex}).json
             self.assertEqual(self.finish(j["id"])["state"], "failed")
         self.assertEqual(self.state()["credits"], 108)
 
@@ -1342,7 +1684,7 @@ class WorkflowTests(unittest.TestCase):
         ranked = recommendations(profile, [{"preferredTag": favorite}])
         self.assertEqual(ranked[0]["tag"], favorite)
         self.admin()
-        job = post(self.c, "jobs", **self.plan("copy")).json
+        job = submit_with_copy(self.c, "jobs", **self.plan("copy")).json
         self.finish(job["id"])
         resp = post(
             self.c,
@@ -1820,7 +2162,8 @@ class WorkflowTests(unittest.TestCase):
         }
         quote = post(self.c, "preview", **req).json
         self.assertEqual(quote["plan"]["brandType"]["id"], font["id"])
-        self.assertEqual(quote["plan"]["design"]["id"], "swiss")
+        self.assertEqual(quote["plan"]["design"]["id"], "photo-grid")
+        self.assertEqual(quote["plan"]["design"]["readingOrder"]["first"], "offer")
         other = studio.app.test_client()
         self.assertEqual(other.get("/api/state").json["fonts"], [])
         self.assertEqual(other.get(specimen).status_code, 404)
@@ -1833,7 +2176,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn(
             "brandType", post(self.c, "preview", **req, fontId="builtin").json["plan"]
         )
-        job = post(
+        job = submit_with_copy(
             self.c,
             "jobs",
             **req,
@@ -1906,7 +2249,7 @@ class WorkflowTests(unittest.TestCase):
                 resolution=edge,
                 dpi=150,
             ).json
-            job = post(
+            job = submit_with_copy(
                 self.c,
                 "jobs",
                 confirmed=True,
@@ -2115,7 +2458,7 @@ class WorkflowTests(unittest.TestCase):
             "server.app.optimize",
             side_effect=AssertionError("signed preview must be reused"),
         ):
-            job = post(
+            job = submit_with_copy(
                 self.c,
                 "jobs",
                 quote=q["quote"],

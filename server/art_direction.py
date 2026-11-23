@@ -1,7 +1,7 @@
 """Product-specific art direction adapted from hiccai-poster, revision 46994ee."""
 
 import re
-from .design import visual_requests
+from .design import requested_style, visual_requests
 
 REVISION = "46994ee264893a0d22608b78cda2333bcfbb6ce2"
 
@@ -46,13 +46,13 @@ def direct(plan, style, product, focus):
         reference = "本地 03《竹间观云》用侧光和小瓶组织尺度，16 让天空成为留白。"
     elif style == "photo-grid":
         composition = style
+        methods.append("layout-grid")
         mechanism, feature, detail = "原片取景与编辑线", "原图边缘、视线或运动方向", ""
         concept = "完整保留原片，用真实的取景框边缘对齐标题与边注。选择一处结构线延伸阅读，边角让信息区与照片保持联系。"
         reference = "本地 24→25、32→33、34→35 分别借实物边、建筑边和道路方向组织图文。"
         if plan.get("design", {}).get("photoLayout") == "bleed":
-            methods.append("layout-grid")
             mechanism = "原片延色与关系网格"
-            concept = "原片贴近画幅边缘，延续边缘光色。按实际标题行数给字区留量，横幅从照片读向文字，有优惠时把数字与适用条件成组。"
+            concept = "原片贴近画幅边缘，延续边缘光色。按实际标题行数给字区留量，横幅按照片和文字的分栏重新排印。"
     elif style == "riso":
         methods += ["mono-color", "photo-riso-poster"]
         brief = positive
@@ -155,6 +155,10 @@ def direct(plan, style, product, focus):
         mechanism = "原片取景"
         concept = "保留整张原片的真实环境与光线，从照片边缘延续色调，在画外余量安排准确标题，让顾客看清原片里的商品。"
         reference = "本地 34→35 保留骑行轴线，在空旷的环境安排字。"
+    reading = plan.get("design", {}).get("readingOrder")
+    if reading:
+        methods.append("hiccai-poster-taste")
+        concept += reading["direction"] + reading.get("layoutReason", "")
     return {
         "skill": "hiccai-poster",
         "methods": methods,
@@ -172,3 +176,80 @@ def direct(plan, style, product, focus):
         "feature": detail or focus or feature,
         "detail": detail,
     }
+
+
+def poster_reading(plan, copy):
+    """Choose the first read from the approved copy and available source."""
+    brief = visual_requests(plan["original"])
+    role = plan.get("bundleRole")
+    if role not in (None, "hero", "cover", "campaign", "promotion", "price", "banner"):
+        return None
+    design = plan.get("design", {})
+    selected = design.get("selection", "auto")
+    if plan.get("layoutOverride") or selected not in ("auto", "photo-grid"):
+        return None
+    requested = requested_style(plan["original"])
+    if requested not in (None, "photo-grid") or "满屏字" in brief:
+        return None
+    if plan.get("posterArt", {}).get("composition") in ("material", "ingredient", "projection", "riso", "ipscene"):
+        return None
+    if re.search(r"(?:不要|不用|避免|不使用)(?:使用)?照片编排", plan["original"]):
+        return None
+    if re.search(r"标题优先|文字优先|先读标题", brief):
+        return dict(first="title", direction="先读标题，原片与标题共享边线。")
+    suppress_price = re.search(r"(?:不要|避免|不用|别)(?:突出|放大|强调)(?:优惠|折扣|价格|售价|数字)", plan["original"])
+    picture_first = re.search(r"照片优先|商品优先|先看商品|先看照片", brief)
+    promotion = role in ("campaign", "promotion", "price") or re.search(r"促销|优惠|满减|折扣|半价|买.{1,4}送|价目", brief)
+    if copy.get("offer") and promotion and not (suppress_price or picture_first):
+        return dict(first="offer", direction="先读已确认的优惠，适用条件紧接优惠，标题保留在独立读区。")
+    if plan.get("photoFeatures") or picture_first or role == "hero" or re.search(r"上新|新品|上市|上架|首发|全图|满版摄影", brief):
+        observed = (plan.get("sourceReview") or {}).get("visualDetail") or {}
+        if plan.get("visualSource") in ("cutout", "photograph"):
+            subject = "原图中的「" + observed["label"] + "」" if observed.get("label") else "原图商品的完整轮廓"
+        else:
+            subject = "与商品相关的示意主视觉"
+        return dict(first="product", direction="先看" + subject + "，为主体留出连续图幅，再读标题；售价和条件作辅助信息。")
+    if suppress_price or "取景框" in brief or "photo-grid" in (selected, requested, design.get("id")):
+        return dict(first="title", direction="标题先交代主题，整张照片与标题共享边线。")
+    return None
+
+
+def first_draft_treatment(plan, reading):
+    """Choose a rendering treatment without changing the approved reading order."""
+    original = plan["original"]
+    brief = visual_requests(original)
+    negative = r"(?:不要|不用|避免|别用|不使用|不想要)(?:再|使用|做成|用)?"
+    no_bleed = bool(re.search(negative + r"(?:全图|满版)", original))
+    no_frame = bool(re.search(negative + "取景框", original))
+    if "取景框" in brief and not no_frame:
+        return "photo-grid", "framed", "保留取景框，将文字和原片分区。"
+    if not no_bleed and re.search(r"全图|满版摄影|照片铺满|原图铺满|铺满整张", brief):
+        return "photo-grid", "bleed", "用完整照片和延展边色铺开主画面。"
+    if no_bleed:
+        return "quiet-light", None, "按要求缩小商品照片，周围留出连续字区。"
+    if reading["first"] != "product":
+        return "photo-grid", "bleed", "保留完整画面，首要文字与说明在照片延展区成组排印。"
+
+    photo = plan.get("photoFeatures")
+    if not photo:
+        return "photo-grid", "bleed", "由满版画面承载品名和说明，按实际素材安排图文空间。"
+    grid_requested = plan["design"].get("selection") == "photo-grid" or requested_style(original) == "photo-grid"
+    output = plan.get("output") or {}
+    aspect = output.get("width", 1080) / output.get("height", 1440)
+    fit = min(aspect / photo["aspect"], photo["aspect"] / aspect)
+    calm = photo["calmArea"]
+    detailed = photo["edgeDensity"] >= 0.14 and photo["tonalRange"] >= 65
+    energetic = re.search(r"市集|摊位|快闪|派对|联名|乐队|复古|热闹|抢眼|醒目|有劲|年轻人", brief)
+    quiet = re.search(r"慢下来|慢一点|安静|清静|放松|独处|歇一会|坐一会|喘口气|清晨|午后|温柔|克制", brief)
+    natural = re.search(r"原色|真实颜色|自然一点|日常|实拍感|不要.{0,4}(?:滤镜|改色|花哨|太花|网点|印刷|孔版)", original)
+    if not grid_requested:
+        if detailed and energetic and not natural and not quiet and not re.search(negative + r"(?:双[色墨]|孔版|网点|印刷)", original):
+            return "riso", None, "活动需要远看醒目，原片的明暗和边缘适合提取双色网点，旁边保留原色商品。"
+        if not re.search(negative + r"(?:留白|暗调|暗底|黑底|深色)", original):
+            if quiet and (calm >= 0.12 or photo["tonalRange"] >= 80):
+                return "quiet-light", None, "给安静的场景留出空间，借原片的光色承托缩小后的商品。"
+            if calm >= 0.48 and photo["brightness"] < 92 and plan.get("visualSource") != "cutout":
+                return "quiet-light", None, "原片有大块平静暗部，延续原有明暗，在主体周围留白。"
+    if plan.get("visualSource") != "cutout" and (calm < 0.23 or fit < 0.58):
+        return "photo-grid", "bleed", "保留完整原片，沿照片边缘延展底色排字，让标题避开密集细节。"
+    return "photo-grid", "bleed", "原片主体可完整放大，标题沿照片边缘另排。"

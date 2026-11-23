@@ -10,8 +10,10 @@ from flask import jsonify, send_file, abort
 from itsdangerous import BadSignature
 from PIL import Image
 
+from . import pricing, work_history, wallet
 from .store import db, DATA, ident, now, dump
 from .skill_catalog import SKILLS, ROLE_NAMES, VIDEO_ROLES
+from .copy_choices import selected_copy, apply_choice
 from .formats import output_spec
 from .skill_library import attach as attach_skills, effective_versions
 
@@ -96,6 +98,8 @@ def register(app, services):
         for item in json.loads(row["items"]):
             job = owner(c, "job", item["job"], row["tenant"])
             skill = json.loads(job["spec"])["plan"].get("bundleSkill", "launch")
+            if work_history.hidden(c, job["work"]):
+                continue
             base = f"/api/works/{job['work']}/v/{job['version']}"
             items.append(
                 {
@@ -119,7 +123,7 @@ def register(app, services):
             skill=skill,
             skillName=SKILLS[skill]["name"],
             items=items,
-            complete=all(i["state"] == "complete" for i in items),
+            complete=bool(items) and all(i["state"] == "complete" for i in items),
             download=f"/api/bundles/{row['id']}/download",
         )
 
@@ -134,6 +138,7 @@ def register(app, services):
         if not title or not benefits or not v.get("asset"):
             raise ValueError("请填写商品名称、已确认卖点，并选择商品照片。")
         with db() as c:
+            rates = pricing.current(c)
             kit_row = c.execute(
                 "SELECT value FROM brand_kit WHERE tenant=?", (t,)
             ).fetchone()
@@ -282,10 +287,11 @@ def register(app, services):
                 if white
                 else "白底图需边缘完整、通过检查并已确认的透明抠图。当前交付三张，场景图保留原照片环境。"
             )
-        cost = sum(services["COST"][spec["kind"]] for spec in specs)
+        cost = sum(pricing.snapshot(spec, rates) for spec in specs)
         return jsonify(
             title=title,
             roles=[ROLE_NAMES[r] for r in roles],
+            requiresCopyChoice=any(s["kind"] == "poster" for s in specs),
             cost=cost,
             note=note,
             quote=quotes.dumps(
@@ -315,6 +321,10 @@ def register(app, services):
                 abort(403)
             if v.get("confirmed") is not True or v.get("confirmedCost") != q["cost"]:
                 raise ValueError("请确认整套素材的积分用量。")
+            if any(s["kind"] == "poster" for s in q["specs"]):
+                chosen = selected_copy(quotes, v)
+                for spec in q["specs"]:
+                    apply_choice(spec, chosen)
             services["enough"](c, t, q["cost"])
             bid, items = ident(), []
             for spec in q["specs"]:
@@ -329,13 +339,14 @@ def register(app, services):
                         f"bundle:{bid}:{role}",
                         dump(spec),
                         "queued",
-                        services["COST"][spec["kind"]],
+                        pricing.quoted_cost(spec),
                         wid,
                         1,
                         None,
                         now(),
                     ),
                 )
+                wallet.reserve(c,t,jid,pricing.quoted_cost(spec))
                 ids.append(jid)
                 items.append(dict(role=role, label=ROLE_NAMES[role], job=jid))
             c.execute(
@@ -353,11 +364,11 @@ def register(app, services):
         with db() as c:
             return jsonify(
                 [
-                    details(c, r)
+                    entry
                     for r in c.execute(
                         "SELECT * FROM product_bundle WHERE tenant=? ORDER BY created DESC,rowid DESC",
                         (t,),
-                    ).fetchall()
+                    ).fetchall() if (entry := details(c, r))["items"]
                 ]
             )
 

@@ -92,8 +92,10 @@ def run(args):
             assetConfirmed=True,
             identityRegion=args.region,
         )
+        choice = post("copy-options", quote=quote["quote"])["options"][0]["token"] if quote["requiresCopyChoice"] else ""
         job = post(
             "jobs",
+            copyChoice=choice,
             quote=quote["quote"],
             confirmed=True,
             confirmedCost=quote["cost"],
