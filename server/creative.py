@@ -329,6 +329,8 @@ def generate_copy(plan, variant=0, *, revision_note=""):
         )
         if unsupported_copy(content, known):
             return {**base, "reviewFlag": "模型草稿含未经确认的声明"}
+        if cliché := wenan.cliche_error(content, plan["original"]):
+            return {**base, "reviewFlag": "文案含空泛AI套话", "revisionNote": cliché}
         headline_review = (
             " 单独遮住正文和行动号召审主标题：第一眼读懂了吗，商品和这句话有什么关系？"
             "请在心里指出哪条已知卖点或产品用途让哪种顾客情绪成立；移除卖点后若同一句还成立，退稿。资料不足时只允许有根据的用途。核对目标受众与情绪是否相符。"

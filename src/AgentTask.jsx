@@ -189,7 +189,7 @@ export default function AgentTask({
               }
             >
               <span className="agent-choice-head">
-                <small>方案 {i + 1}</small>
+                <small>方案 {i + 1}{o.angle ? ` · ${o.angle}` : ""}</small>
                 <em>点此选用</em>
               </span>
               <b>{o.title}</b>

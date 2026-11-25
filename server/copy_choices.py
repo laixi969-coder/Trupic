@@ -288,6 +288,9 @@ def write_options(spec, tenant, previous=()):
                 if error := wenan.poster_length_error(title, body, locked):
                     draft_error = error
                     continue
+                if error := wenan.cliche_error(f"{title} {body} {cta}", plan["original"]):
+                    draft_error = error
+                    continue
                 if creative_title and wenan.copied_headline(title, plan["original"]):
                     draft_error = "主标题照搬了需求，请从画面细节或顾客动机另写标题，品名和条件放副标题"
                     continue
@@ -310,7 +313,21 @@ def write_options(spec, tenant, previous=()):
                     continue
                 sharing.append({k: row[k] for k in ("shareTo", "reply") if k in row})
                 seen.add(key)
-                drafts.append({"title": title, "body": body, "cta": cta})
+                default_angles = ("画面切入", "顾客邀约", "卖点理由")
+                angle_tag = (
+                    row.get("angle", "").strip()[:12]
+                    if isinstance(row.get("angle"), str) and row.get("angle").strip()
+                    else default_angles[len(drafts) % len(default_angles)]
+                )
+                visual_idea = (
+                    row.get("visualIdea", "").strip()[:120]
+                    if isinstance(row.get("visualIdea"), str)
+                    else ""
+                )
+                draft_item = {"title": title, "body": body, "cta": cta, "angle": angle_tag}
+                if visual_idea:
+                    draft_item["visualIdea"] = visual_idea
+                drafts.append(draft_item)
             if not drafts:
                 inputs["改写要求"] = (draft_error or "缺少不同角度的合规候选") + "。请生成三组新的候选。"
                 continue
@@ -346,6 +363,8 @@ def write_options(spec, tenant, previous=()):
             feedback = str(review.get("feedback", ""))[:240]
             inputs["改写要求"] = (feedback or draft_error or "依据商家原话写明商品、价格，避免补充未经证实的描述。") + " 请改写为三个新标题。"
             inputs["已写过的标题"] = [draft["title"] for draft in drafts]
+        if approved:
+            return approved[:3]
         reason = feedback or draft_error
         raise ValueError("通过复核的不同文案不足两组。" + (reason + "。" if reason else "") + "请检查需求中的商品名和卖点后重试。")
     except model.InvalidModelOutput as exc:

@@ -535,3 +535,42 @@ class PersonalAgentTests(TestCase):
             self.assertIn("timeoutSeconds", cap)
             self.assertIn("costCap", cap)
             self.assertIn(cap["health"], ("healthy", "degraded"))
+
+    def test_agent_quality_cliche_guard_duration_pacing_and_frictionless_promo(self):
+        from server import prompt_agent, wenan
+
+        # 1. Deterministic AI-cliché guard (0ms, respects merchant literal brief)
+        self.assertIn("匠心打造", wenan.cliche_error("匠心打造这杯好茶", "做一张茶饮海报"))
+        self.assertEqual(wenan.cliche_error("匠心打造这杯好茶", "我们要写匠心打造"), "")
+
+        # 2. Simple price+time promo in Personal Agent skips bureaucratic terms interrogation
+        promo = self.card("做一张周末促销海报，招牌抹茶19元，文案用「周末来喝招牌抹茶」")
+        self.assertEqual(promo["status"], "quoted", promo)
+
+        # 3. Video prompt adapts to 15s / 30s / 45s with explicit 0-2s scroll-stopping hook
+        video = self.card("做一条15秒茶馆短片，文案用「下班来喝茶」", action="new")
+        self.assertEqual(video["status"], "quoted", video)
+        with studio.db() as c:
+            q = c.execute("SELECT quote FROM agent_task WHERE id=?", (video["id"],)).fetchone()[0]
+        vspec = next(i["spec"] for i in studio.quotes.loads(q)["items"] if i["spec"]["kind"] == "video")
+        vprompt = vspec["plan"]["promptBrief"]["prompts"]["video"]
+        self.assertIn("0–2 秒", vprompt)
+        self.assertIn("15 秒", vprompt)
+        self.assertIn("10–15 秒", vprompt)
+        vspec30 = {**vspec, "duration": 30, "plan": {**vspec["plan"], "output": {**vspec["plan"]["output"], "duration": 30}}}
+        prompt_agent.optimize(vspec30, infer=False)
+        self.assertIn("30 秒", vspec30["plan"]["promptBrief"]["prompts"]["video"])
+        self.assertIn("23–30 秒", vspec30["plan"]["promptBrief"]["prompts"]["video"])
+
+        # 4. Poster prompt adapts composition to ratio and injects anti-slop guardrails
+        poster = self.card("做一张16:9横版茶饮海报，文案用「午后这一杯」", action="new")
+        with studio.db() as c:
+            q = c.execute("SELECT quote FROM agent_task WHERE id=?", (poster["id"],)).fetchone()[0]
+        pspec = next(i["spec"] for i in studio.quotes.loads(q)["items"] if i["spec"]["kind"] == "poster")
+        full = prompt_agent.full_poster_prompt(
+            pspec["plan"],
+            {**pspec["replacement"], "title": "午后这一杯", "visualIdea": "热气升起与侧光茶汤"},
+        )
+        self.assertIn("16:9 横版", full)
+        self.assertIn("塑料磨皮", full)
+        self.assertIn("热气升起与侧光茶汤", full)

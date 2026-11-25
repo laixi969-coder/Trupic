@@ -53,10 +53,20 @@ def apply_poster_layout(plan, copy):
     plan["posterArt"] = art
 
 
+RATIO_COMPOSITION = {
+    "landscape": "采用 16:9 横版左右分区构图：一侧清晰展示商品主体与真实环境光影，另一侧留出干净负空间排布标题与价格，避免横向拉扯或遮挡主体。",
+    "story": "采用 9:16 竖屏构图：主标题与核心卖点避开顶部与底部 15% 社媒界面遮挡区，视觉重心落在中上黄金位。",
+    "square": "采用 1:1 方形紧凑构图：主体居中偏下稳住重心，标题紧贴主体上方留白形成一眼聚焦。",
+    "portrait": "采用 3:4 竖版海报构图：从上到下建立主标题→商品视觉焦点→副标题与条件的清晰阅读顺序。",
+    "feed": "采用 4:5 信息流构图：首眼突出商品材质与主标题对比，边缘保留舒适呼吸留白。",
+}
+
+
 def full_poster_prompt(plan, copy):
     """Hand off the approved concept and literal final copy to a reference-image model."""
     art = plan["posterArt"]
     output = plan["output"]
+    ratio_key = output.get("ratio") or plan.get("ratio") or "portrait"
     words = list(dict.fromkeys(filter(None, (
         plan["profile"].get("name"), copy["title"], copy.get("offer"),
         copy.get("terms"), copy.get("posterDeck", copy.get("body")), copy.get("cta"),
@@ -64,10 +74,14 @@ def full_poster_prompt(plan, copy):
     brief = [
         f"为「{plan.get('promptBrief', {}).get('reading', {}).get('product') or plan['subject']}」生成一张 {output['width']} × {output['height']} 的满幅商业海报。",
         art.get("modelConcept") or art["concept"],
+        RATIO_COMPOSITION.get(ratio_key, RATIO_COMPOSITION["portrait"]),
         "附商品原图作为外形、颜色和标识的依据。" if plan.get("visualSource") in ("cutout", "photograph") else "以无品牌概念画面表现主题。",
         "设计字形、字距与位置，让标题与主体共用一道轮廓或明暗边界。主标题逐字写作「" + copy["title"] + "」。",
         "画面文案逐字使用 " + " / ".join("「" + w + "」" for w in words) + "。保留实物原有标识。",
+        "商业摄影级真实质感：自然接触阴影与环境反射，严禁塑料磨皮感、假光影、变形商品、错字乱码、多余水印及廉价模板拼贴感。",
     ]
+    if visual_idea := copy.get("visualIdea"):
+        brief.append("与文案协同的画面构思：" + visual_idea)
     if copy.get("writingSkill", {}).get("posterHeadings"):
         if subtitle := copy.get("posterDeck", copy.get("body")):
             brief.append("副标题逐字写作「" + subtitle + "」，小于主标题。")
@@ -328,9 +342,31 @@ def optimize(spec, *, infer=True, previous=None):
         focus = "原图中的「" + located["label"] + "」" if located else "原图里能支撑卖点的一处可见细节"
         if not spec.get("asset"):
             focus = "与已确认信息相关的示意场景"
-        prompts["video"] = (
-            f"以「{product}」为主体。0–3 秒建立{art_direction['mechanism']}的画面关系，3–6 秒切近{focus}，停一拍后缓慢推进，字幕只说这一点。6–9 秒回到全景并给出行动。镜头节奏采用{PACE[reading['pace']]}。"
-        )
+        dur = int((plan.get("output") or {}).get("duration") or spec.get("duration") or 15)
+        if dur >= 45:
+            beat = (
+                f"0–2 秒用强视觉反差与首句钩子停住划屏并建立{art_direction['mechanism']}关系，"
+                f"2–12 秒展示顾客真实场景痛点或需求，12–28 秒多角度切近{focus}验证真实细节与卖点，"
+                "28–38 秒交代已确认价格/活动或门店体验，38–45 秒回到全景并给出清晰行动。"
+            )
+        elif dur >= 30:
+            beat = (
+                f"0–2 秒用强视觉动作与首句钩子停住划屏并建立{art_direction['mechanism']}关系，"
+                f"2–12 秒切近{focus}停一拍后缓慢推进呈现核心卖点，"
+                "12–23 秒交代使用场景与已确认条件，23–30 秒回到全景并给出行动。"
+            )
+        elif dur >= 15:
+            beat = (
+                f"0–2 秒用首句钩子与主体近景停住划屏并建立{art_direction['mechanism']}关系，"
+                f"2–10 秒切近{focus}，停一拍后缓慢推进，字幕只说最打动人的那一点，"
+                "10–15 秒回到全景并给出行动。"
+            )
+        else:
+            beat = (
+                f"0–3 秒建立{art_direction['mechanism']}的画面关系，3–6 秒切近{focus}，停一拍后缓慢推进，字幕只说这一点。"
+                "6–9 秒回到全景并给出行动。"
+            )
+        prompts["video"] = f"以「{product}」为主体，总时长 {dur} 秒。{beat}不得用重复镜头填时长。镜头节奏采用{PACE[reading['pace']]}。"
     if "video" in prompts and action:
         prompts["video"] += "末镜清楚显示本次" + action["goal"] + "行动。"
     if "video" in prompts and wenan.no_cta(plan):

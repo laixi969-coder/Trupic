@@ -176,7 +176,7 @@ def task_view(c, services, row):
         cost=row["cost"],
         quoteId=row["quote_id"],
         options=[
-            {k: v.get(k, "") for k in ("title", "body", "cta")}
+            {k: v.get(k, "") for k in ("title", "body", "cta", "angle")}
             for v in json.loads(row["options"])
         ],
         concept=brief.get("concept", ""),

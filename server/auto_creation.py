@@ -126,7 +126,11 @@ def coordinate(services, c, tenant, v, *, agent_context=None):
             questions.append("请补充实际价格或优惠内容。")
         if not re.search(r"\d+月\d+日|\d{4}[-/]\d|周[一二三四五六日末]|今天|明天|本周|长期", facts):
             questions.append("请补充活动有效期。")
-        if not re.search(r"仅限|适用|不限|全店|全场|不与|同享|不叠加|无其他限制", facts):
+        needs_terms = (
+            agent_context is None
+            or bool(re.search(r"满减|折扣|打折|买.{1,3}送|优惠券|半价", visual_requests(brief)))
+        )
+        if needs_terms and not re.search(r"仅限|适用|不限|全店|全场|不与|同享|不叠加|无其他限制", facts):
             questions.append("请补充适用条件，没有额外限制也可说明。")
     if route["workflow"] == "live" and not re.search(r"\d{1,2}[:：]\d{2}|\d{1,2}点", facts):
         questions.append("请补充直播日期、开播时间与直播内容。")

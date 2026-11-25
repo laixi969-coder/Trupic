@@ -33,6 +33,20 @@ def poster_length_error(title, subtitle, locked):
     return ""
 
 
+AI_CLICHE = re.compile(
+    r"匠心打造|震撼来袭|重磅来袭|不容错过|极致体验|重新定义|引领潮流|开启.{0,8}之旅|解锁.{0,8}新体验|绝绝子|天花板|闭眼冲|颜值爆表|治愈瞬间|精彩呈现"
+)
+
+
+def cliche_error(text, brief=""):
+    """Deterministic 0ms AI-slop guard (PRD §6). Never blocks phrases explicitly in brief."""
+    for match in AI_CLICHE.finditer(text or ""):
+        phrase = match.group(0)
+        if phrase not in (brief or ""):
+            return f"避免空泛AI套话「{phrase}」，请用具体画面、动作或真实卖点表达"
+    return ""
+
+
 SHARING = "社交货币与自发传播"
 CLOSING = (
     ROOT.parent / "trupic-commercial-poster/references/closing-copy.md"
