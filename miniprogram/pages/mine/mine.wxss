@@ -13,3 +13,9 @@
 }
 
 .sheet input.field { height: 48px; }
+.ratio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin: 12rpx 0;
+}

@@ -1,4 +1,9 @@
-<view wx:if="{{!studio}}" class="page moment-page">
+<view wx:if="{{personalAgent && !studio && !legacyMoment}}" class="page">
+  <view class="title">营销助理</view><view class="panel"><view class="heading">今天想为店里做点什么？</view>
+    <button class="primary" bindtap="agent">进入我的对话</button></view><button class="link" bindtap="showLegacy">实拍朋友圈与原创作台</button>
+</view>
+<view wx:elif="{{!studio}}" class="page moment-page">
+  <button wx:if="{{personalAgent}}" class="link" bindtap="agent">进入营销助理</button>
   <view class="title">今天的朋友圈</view>
   <view class="panel">
     <button class="moment-photo" aria-label="{{momentAsset?'更换照片':'拍照或从相册选图'}}" bindtap="takeMomentPhoto" disabled="{{busy || momentCost===null}}">
@@ -9,12 +14,16 @@
     <view class="label">补一句话 <text class="sub">（选填）</text></view>
     <textarea class="moment-note" aria-label="补一句话，选填" maxlength="140" value="{{momentNote}}" bindinput="momentInput" disabled="{{busy || momentCost===null}}" placeholder="比如：今天多烤了 10 个可颂，下午 4 点能取。"/>
     <view class="row moment-format"><text class="sub">画幅</text>
-      <button class="chip {{momentRatio==='portrait'?'active':''}}" aria-pressed="{{momentRatio==='portrait'}}" data-ratio="portrait" bindtap="momentFormat" disabled="{{busy || momentCost===null}}">3:4</button>
-      <button class="chip {{momentRatio==='story'?'active':''}}" aria-pressed="{{momentRatio==='story'}}" data-ratio="story" bindtap="momentFormat" disabled="{{busy || momentCost===null}}">9:16</button>
+      <button class="chip ratio-chip {{momentRatio==='portrait'?'active':''}}" aria-pressed="{{momentRatio==='portrait'}}" data-ratio="portrait" bindtap="momentFormat" disabled="{{busy || momentCost===null}}"><view class="ratio-shape" style="{{shapeStyles[0]}}" aria-hidden="true"/><text>3:4</text></button>
+      <button class="chip ratio-chip {{momentRatio==='story'?'active':''}}" aria-pressed="{{momentRatio==='story'}}" data-ratio="story" bindtap="momentFormat" disabled="{{busy || momentCost===null}}"><view class="ratio-shape" style="{{shapeStyles[2]}}" aria-hidden="true"/><text>9:16</text></button>
     </view>
     <view wx:if="{{momentError}}" class="error" aria-live="polite">{{momentError}}</view>
     <button wx:if="{{momentCost===null && momentError}}" class="secondary" bindtap="loadMoment">重新连接</button>
     <button wx:else class="primary" disabled="{{busy || !momentAsset || momentCost===null}}" loading="{{busy}}" bindtap="makeMoment">{{momentJob?'查看这条朋友圈':'做好今天这条朋友圈'}}{{momentCost!==null && !momentJob?' · '+momentCost+' 积分':''}}</button>
+  </view>
+  <view class="row quick-entries">
+    <button class="quick-entry" bindtap="quick" data-mode="image" disabled="{{busy}}">图片文字一键</button>
+    <button class="quick-entry" bindtap="quick" data-mode="video" disabled="{{busy}}">视频文字一键</button>
   </view>
   <button class="link" bindtap="toggleStudio" disabled="{{busy}}">其他创作 ›</button>
 </view>
@@ -46,7 +55,7 @@
   <view class="sheet">
     <view class="between"><view class="heading">{{sheet==='asset'?'核对商品图':'输出规格'}}</view><button class="close" bindtap="close">关闭</button></view>
     <block wx:if="{{sheet==='format'}}">
-      <picker range="{{ratios}}" value="{{ratioIndex}}" data-key="ratio" bindchange="selectFormat"><view class="line between"><text>画幅</text><text>{{format.ratio}}　›</text></view></picker>
+      <view class="line"><text>画幅</text><view class="ratio-row"><button wx:for="{{ratios}}" wx:key="*this" class="chip ratio-chip {{format.ratio===item?'active':''}}" aria-pressed="{{format.ratio===item}}" data-index="{{index}}" bindtap="pickRatio"><view class="ratio-shape" style="{{shapeStyles[index]}}" aria-hidden="true"/><text>{{item}}</text></button></view></view>
       <picker range="{{resolutions}}" value="{{resolutionIndex}}" data-key="resolution" bindchange="selectFormat"><view class="line between"><text>短边分辨率</text><text>{{format.resolution}} px　›</text></view></picker>
       <picker wx:if="{{kind==='poster'}}" range="{{dpis}}" value="{{dpiIndex}}" data-key="dpi" bindchange="selectFormat"><view class="line between"><text>印刷精度</text><text>{{format.dpi}} DPI　›</text></view></picker>
       <button class="primary spaced" bindtap="close">完成</button>

@@ -1,0 +1,19 @@
+<view class="page"><view class="title">确认制作</view>
+<block wx:if="{{plan}}">
+  <view class="panel">
+    <view class="heading">将为你制作</view>
+    <view wx:for="{{plan.deliveries}}" wx:key="label" class="line">{{item.label}}</view>
+    <view class="line between"><text>本次用量</text><text>{{cost}} 积分</text></view>
+    <view wx:for="{{plan.notes}}" wx:key="*this" class="note">{{item}}</view>
+  </view>
+  <view wx:if="{{plan.requiresCopyChoice}}" class="panel"><view class="heading">选择海报文案</view>
+    <view class="note">海报会使用选中的这一组文案。</view>
+    <radio-group bindchange="choose"><label wx:for="{{options}}" wx:key="token" class="line copy-option"><radio value="{{item.token}}" checked="{{choice===item.token}}" disabled="{{busy}}"/><view><view>{{item.title}}</view><view class="sub">{{item.body}}</view><view wx:if="{{item.cta}}">{{item.cta}}</view></view></label></radio-group>
+    <button class="secondary" bindtap="loadOptions" loading="{{busy}}" disabled="{{busy}}">{{options.length?'换一组文案':'生成候选文案'}}</button>
+  </view>
+  <button class="primary" loading="{{busy}}" disabled="{{busy || (plan.requiresCopyChoice && !choice)}}" bindtap="submit">确认制作 · {{cost}} 积分</button>
+  <button class="secondary spaced" bindtap="back" disabled="{{busy}}">返回修改</button>
+</block>
+<view wx:if="{{error}}" class="error">{{error}}</view>
+<button wx:if="{{!plan}}" class="secondary" bindtap="back">返回创作</button>
+</view>

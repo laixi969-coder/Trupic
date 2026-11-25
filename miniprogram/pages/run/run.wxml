@@ -1,0 +1,26 @@
+<view class="page"><view class="title">制作进度</view>
+<view wx:if="{{error}}" class="error">{{error}}<button class="link" bindtap="refresh">重新加载</button></view>
+<block wx:if="{{run}}">
+  <view class="panel">
+    <view class="heading">{{run.title}}</view>
+    <view class="note">{{run.brief}}</view>
+    <view aria-live="polite">{{done}} / {{items.length}} 项完成{{run.active?' · 正在制作':run.complete?'':' · 有项目需要重试'}}</view>
+  </view>
+  <view wx:for="{{items}}" wx:key="job" class="panel">
+    <view class="heading">{{item.label}}</view>
+    <view wx:if="{{item.text}}" class="spaced"><text selectable>{{item.text}}</text></view>
+    <image wx:if="{{item.preview && item.media}}" class="poster" src="{{item.media}}" mode="widthFix"/>
+    <video wx:if="{{item.video && item.media}}" class="movie" src="{{item.media}}" controls muted/>
+    <view wx:if="{{item.state!=='complete'}}" class="note" aria-live="polite">{{item.error?('生成失败，预占积分已退回。'+item.error):(item.stage||item.statusText)}}</view>
+    <view class="between spaced">
+      <button wx:if="{{item.text}}" class="link" data-text="{{item.text}}" bindtap="copy">复制文案</button>
+      <button wx:if="{{(item.preview || item.video) && item.media}}" class="secondary" data-job="{{item.job}}" bindtap="save" disabled="{{!!busy}}" loading="{{busy===item.job}}">保存到相册</button>
+    </view>
+    <button wx:if="{{item.state==='failed'}}" class="secondary spaced" data-job="{{item.job}}" bindtap="retry" disabled="{{!!busy}}">重试此项</button>
+    <button wx:if="{{item.work && item.state==='complete'}}" class="link" data-work="{{item.work}}" bindtap="open">查看建议与版本 ›</button>
+  </view>
+  <view class="panel"><view class="label">本次商品资料</view><view class="note">{{run.summary.facts.join('；') || '未补充商品参数。'}}</view><view wx:for="{{run.summary.notes}}" wx:key="*this" class="note">{{item}}</view></view>
+</block>
+<button wx:if="{{!run || !run.active}}" class="link" bindtap="redo" disabled="{{again}}">用同一需求重新制作</button>
+<button class="link" bindtap="mine">我的作品</button>
+</view>

@@ -56,6 +56,7 @@ import {
   formats,
   imageUrl,
   dateText,
+  copyText,
 } from "./ui.jsx";
 import Admin from "./Admin.jsx";
 import { RatioPicker } from "./CreationSpecs.jsx";
@@ -63,6 +64,7 @@ import IndustryPicker from "./IndustryPicker.jsx";
 import { Promotion } from "./Growth.jsx";
 import { MerchantShop } from "./Commerce.jsx";
 import WorkHistory from "./WorkHistory.jsx";
+import PersonalAgent from "./PersonalAgent.jsx";
 import AutoCreate from "./AutoCreate.jsx";
 import {Support} from "./Support.jsx";
 import ProductRegion from "./ProductRegion.jsx";
@@ -173,6 +175,7 @@ function App() {
     [filter, setFilter] = useState("全部"),
     [search, setSearch] = useState(""),
     [job, setJob] = useState(null);
+  const [agentSeed, setAgentSeed] = useState(null);
   const [revisionQuote, setRevisionQuote] = useState(null);
   const [editBox,setEditBox] = useState(null);
   const [editText,setEditText] = useState("");
@@ -277,6 +280,7 @@ function App() {
       try {
         const j = await api("/jobs/" + job.id);
         if (!active) return;
+        if (j.stage) setJob((current) => (current?.id === job.id && current.stage !== j.stage ? { ...current, stage: j.stage } : current));
         if (j.state === "complete") {
           setJob(null);
           setModal(null);
@@ -336,8 +340,14 @@ function App() {
     reference = "",
     source = "灵感广场",
     topicId = "",
+    options = {},
   ) {
-    go("home");
+    if (data?.personalAgent && page !== "studio") {
+      setAgentSeed({workspace:data.workspace, brief, options:{reference,source,topicId,...options}});
+      go("home");
+      return;
+    }
+    go(page === "studio" ? "studio" : "home");
     patch({ brief, reference, source, topicId, extraFacts: "" });
     setTimeout(() => {
       textarea.current?.focus();
@@ -463,7 +473,7 @@ function App() {
         }}
       >
         <Icon size={18} />
-        <span>{label}</span>
+        <span>{id === "home" && data.personalAgent ? "营销助理" : label}</span>
         {id === "works" && data?.works.length > 0 && (
           <small>{data.works.length}</small>
         )}
@@ -565,7 +575,7 @@ function App() {
             <PanelLeft size={16} className="desktopicon" />
             <span className="crumb-parent">商家工作空间</span>
             <span className="slash">/</span>
-            <b>{page.startsWith("work/") ? "作品详情" : pageName}</b>
+            <b>{page.startsWith("work/") ? "作品详情" : page === "home" && data.personalAgent ? "营销助理" : pageName}</b>
           </div>
           <div className="topactions">
             <button className="credit" onClick={() => open("credits")}>
@@ -583,7 +593,8 @@ function App() {
           </div>
         </div>
         <div className="content" key={section}>
-          {(page === "home" || page === "bundles") && (
+          {page === "home" && data.personalAgent && <PersonalAgent key={data.workspace} data={data} refresh={refresh} tip={tip} seed={agentSeed} clearSeed={()=>setAgentSeed(null)}/>}
+          {(page === "studio" || (page === "home" && !data.personalAgent) || page === "bundles") && (
             <>
               <div className="homehead">
                 <h1>创作工作台</h1>
@@ -717,7 +728,7 @@ function App() {
               <IndustryGallery
                 examples={data.posterExamples}
                 onChoose={(s) => {
-                  chooseBrief(s.brief, "", "行业海报 · " + s.name);
+                  chooseBrief(s.brief, "", "行业海报 · " + s.name, "", {kind:"poster",posterStyle:s.style});
                   patch({ kind: "poster", posterStyle: s.style });
                 }}
               />
@@ -727,6 +738,10 @@ function App() {
               <StyleGallery
                 styles={data.posterStyles}
                 onChoose={(s) => {
+                  if (data.personalAgent) {
+                    chooseBrief("", "", "海报版式", "", {kind:"poster",posterStyle:s.id});
+                    return;
+                  }
                   go("home");
                   patch({ kind: "poster", posterStyle: s.id });
                   setParams(true);
@@ -1079,18 +1094,19 @@ function App() {
                           )}
                           <button
                             className="toolbtn"
-                            onClick={() =>
-                              run("copy", async () => {
-                                await navigator.clipboard.writeText(
-                                  [
-                                    versionData.title,
-                                    versionData.body,
-                                    versionData.cta,
-                                  ].join("\n\n"),
-                                );
-                                tip("文案已复制");
-                              })
-                            }
+                          onClick={() =>
+                            run("copy", async () => {
+                              if (!(await copyText(
+                                [
+                                  versionData.title,
+                                  versionData.body,
+                                  versionData.cta,
+                                ].join("\n\n"),
+                              )))
+                                throw new Error("复制未成功，请长按文案手动复制。");
+                              tip("文案已复制");
+                            })
+                          }
                           >
                             <Copy size={14} />
                             复制文案
@@ -1253,7 +1269,7 @@ function App() {
             ))}
           {!navs.some((n) => n[0] === page) &&
             !page.startsWith("work/") &&
-            page !== "admin" && (
+            page !== "admin" && page !== "studio" && (
               <Blank
                 title="页面不存在"
                 desc="返回工作台继续创作。"
@@ -1410,6 +1426,10 @@ function App() {
                 <button
                   className="primary"
                   onClick={() => {
+                    if (data.personalAgent) {
+                      chooseBrief("", "", "素材库", "", {asset:assetItem.id,assetMode:"original"});
+                      return;
+                    }
                     go("home");
                     patch({
                       asset: assetItem.id,
@@ -1535,7 +1555,7 @@ function App() {
             </div>
             <div>
               <span>本次用量</span>
-              <b className="price">{preview.cost} 体验积分</b>
+              <b className="price">{preview.cost} 积分</b>
             </div>
           </div>
           {preview.requiresCopyChoice && <CopyChoices key={preview.quote} quote={preview.quote} value={chosenCopy?.quote === preview.quote ? chosenCopy.token : ""} onChange={setChosenCopy} disabled={!!busy} />}
@@ -1583,7 +1603,7 @@ function App() {
               <Sparkles size={29} />
             </div>
             <h3>把创意整理成成品</h3>
-            <p>正在编排文案与画面，并检查导出文件。</p>
+            <p role="status">{job?.stage || "正在编排文案与画面，并检查导出文件。"}</p>
             <div className="progressbar">
               <i />
             </div>
@@ -1603,17 +1623,25 @@ function App() {
         </Modal>
       )}
       {modal === "credits" && (
-        <Modal title="体验积分" onClose={close}>
+        <Modal title="积分余额" onClose={close}>
           <div className="balance">
             <Zap size={23} />
             <b>{data.credits}</b>
             <span>可用积分</span>
           </div>
+          {data.trialNote && <p className="fineprint">{data.trialNote}</p>}
           <div className="datarows">
-            {Object.entries(formats).map(([k, f]) => (
+            {[
+              ["copy", "推广文案"],
+              ["poster", "每张图片"],
+              ["video", "15 秒短片"],
+              ["video30", "30 秒短片"],
+              ["video45", "45 秒短片"],
+              ["revision", "每次修改"],
+            ].map(([k, label]) => (
               <div key={k}>
-                <span>{f.name}</span>
-                <b>{data.prices[k]} 积分 / 次</b>
+                <span>{label}</span>
+                <b>{data.prices[k]} 积分</b>
               </div>
             ))}
           </div>

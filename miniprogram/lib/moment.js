@@ -11,10 +11,11 @@ module.exports = {
         const price = await api.request("moments/price");
         if (this.momentWorkspace !== price.workspace) {
           this.momentWorkspace = price.workspace;
+          this.adoptWorkspace(price.workspace);
           const saved = wx.getStorageSync("trupic.moment." + price.workspace);
           this.setData({ ...emptyDraft, ...saved, momentPhoto: "", momentError: "" });
         }
-        this.setData({ momentCost: price.cost, momentError: "" });
+        this.setData({ momentCost: price.cost, personalAgent: !!price.personalAgent, momentError: "" });
         const asset = this.data.momentAsset;
         if (asset && !this.data.momentPhoto) {
           const photo = await api.download(asset.original);

@@ -1,4 +1,5 @@
 const api = require("../../lib/api");
+const { saveToAlbum } = require("../../lib/album");
 Page({
   data: {
     state: "loading",
@@ -40,7 +41,7 @@ Page({
         const j = await api.request("jobs/" + this.job);
         if (epoch !== this.epoch) return;
         if (j.state !== "complete") {
-          this.setData({ state: j.state, error: j.error || "" });
+          this.setData({ state: j.state, error: j.error || "", stage: j.stage || "" });
           if (j.state !== "failed")
             this.timer = setTimeout(() => this.refresh(), 1200);
           return;
@@ -75,6 +76,7 @@ Page({
     this.setData({
       state: "complete",
       error: "",
+      stage: "",
       version,
       isMoment: !!version.plan.moment,
       copyMenu: null,
@@ -191,18 +193,7 @@ Page({
     this.setData({ busy: true });
     try {
       const path = await api.download(this.data.version.download);
-      const method =
-        this.data.work.kind === "video"
-          ? "saveVideoToPhotosAlbum"
-          : "saveImageToPhotosAlbum";
-      await new Promise((resolve, reject) =>
-        wx[method]({
-          filePath: path,
-          success: resolve,
-          fail: () => reject(new Error("保存失败，请检查相册权限后重试")),
-        }),
-      );
-      wx.showToast({ title: "已保存到相册" });
+      wx.showToast({ title: await saveToAlbum(path, this.data.work.kind === "video"), icon: "none" });
     } catch (e) {
       api.message(e);
     } finally {

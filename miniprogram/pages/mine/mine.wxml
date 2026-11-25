@@ -1,8 +1,33 @@
 <view class="page"><view class="title">我的作品</view><view wx:if="{{error}}" class="error">{{error}}<button class="link" bindtap="load">重新加载</button></view>
 <view wx:if="{{!loaded && !error}}" class="note">正在加载作品…</view>
-<block wx:if="{{loaded}}"><view class="panel"><view class="between"><view class="heading">{{profile.name || '商家档案'}}</view><button class="link" bindtap="edit">编辑档案</button></view><view class="sub">可用积分　{{credits}}</view></view>
+<block wx:if="{{loaded}}">
+<view class="panel"><view class="between"><view class="heading">{{profile.name || '商家档案'}}</view><button class="link" bindtap="edit">编辑档案</button></view>
+<view class="sub">可用积分　{{credits}}</view>
+<view wx:if="{{trialNote}}" class="note">{{trialNote}}</view>
+<button class="link" bindtap="toggleLedger">{{showLedger?'收起积分明细':'积分明细'}}</button>
+<block wx:if="{{showLedger && ledger.length}}"><view wx:for="{{ledger}}" wx:key="id" class="line between"><text>{{item.note}}<view class="sub">{{item.created}}</view></text><text>{{item.delta>0?'+'+item.delta:item.delta}}</text></view></block>
+<button class="link" bindtap="shop">套餐与积分 ›</button></view>
+<view class="panel">
+<block wx:if="{{account}}"><view class="between"><view class="heading">{{account}}</view><button class="link" bindtap="logout" disabled="{{saving}}">退出账号</button></view></block>
+<block wx:else><view class="label">绑定账号后，作品与积分会保存在账号里</view>
+<view class="between"><button class="link" data-mode="register" bindtap="mode">绑定当前工作室</button><button class="link" data-mode="login" bindtap="mode">登录已有账号</button></view>
+<input class="field" placeholder="账号" value="{{login}}" maxlength="64" data-key="login" bindinput="field"/>
+<input class="field" placeholder="密码（至少 8 位）" password value="{{password}}" maxlength="160" data-key="password" bindinput="field"/>
+<button class="primary" loading="{{saving}}" disabled="{{saving}}" bindtap="bind">{{mode==='register'?'绑定账号':'登录工作室'}}</button></block>
+</view>
+<button class="primary spaced" bindtap="create">图片文字一键 / 视频文字一键</button>
+<view wx:if="{{runs.length}}" class="section"><view class="heading">一键创作</view>
+<button wx:for="{{runs}}" wx:key="id" class="work" bindtap="openRun" data-id="{{item.id}}"><view class="sub">{{item.complete?'已完成':item.active?'正在制作':'有项目需要重试'}} · {{item.done}}/{{item.items.length}} 项</view><view class="name">{{item.title}}</view></button></view>
 <navigator url="/pages/promotion/promotion" class="work">邀请与推广 ›</navigator>
-<button wx:for="{{jobs}}" wx:key="id" class="work" bindtap="open" data-key="job" data-id="{{item.id}}">{{item.state==='failed'?'制作未完成 · 查看并重试':'制作中 · 查看进度'}}</button>
-<button wx:for="{{works}}" wx:key="id" class="work" bindtap="open" data-key="id" data-id="{{item.id}}"><view class="sub">{{item.label}}</view><view class="name">{{item.title}}</view></button>
-<block wx:if="{{!works.length && !jobs.length}}"><view class="note">第一份作品，从一句推广需求开始。</view><button class="primary" bindtap="create">去创作</button></block></block></view>
-<block wx:if="{{edit}}"><view class="sheetmask" bindtap="close"></view><view class="sheet"><view class="between"><view class="heading">商家档案</view><button class="close" bindtap="close">关闭</button></view><block wx:for="{{profileFields}}" wx:key="key"><view class="label">{{item.label}}</view><input class="field" maxlength="80" data-key="{{item.key}}" value="{{form[item.key]}}" bindinput="field"/></block><view class="label">已确认的商品卖点</view><textarea class="field" maxlength="400" data-key="facts" value="{{form.facts}}" bindinput="field"/><button class="primary spaced" bindtap="save" loading="{{saving}}" disabled="{{saving}}">{{saving?'正在保存':'保存档案'}}</button></view></block>
+<block wx:if="{{works.length || jobs.length}}"><view class="between section"><view class="heading">作品</view><view class="between"><button wx:if="{{!managing}}" class="link" bindtap="manage">管理</button><block wx:else><button class="link" bindtap="selectAll">{{selected.length===works.length?'取消全选':'全选'}}</button><button class="link" bindtap="removeSelected" disabled="{{!selected.length}}">删除所选</button><button class="link" bindtap="removeAll">全部删除</button><button class="link" bindtap="manage">完成</button></block></view></view>
+<view wx:if="{{trash}}" class="note between"><text>已删除 {{trash.count}} 项作品</text><button class="link" bindtap="undo">撤销</button></view>
+<button wx:if="{{!managing}}" wx:for="{{jobs}}" wx:key="id" class="work" bindtap="open" data-key="job" data-id="{{item.id}}">{{item.state==='failed'?'制作未完成 · 查看并重试':'制作中 · 查看进度'}}</button>
+<block wx:if="{{!managing}}"><button wx:for="{{works}}" wx:key="id" class="work" bindtap="open" data-key="id" data-id="{{item.id}}"><view class="sub">{{item.label}}</view><view class="name">{{item.title}}</view></button></block>
+<block wx:else><button wx:for="{{works}}" wx:key="id" class="work row" bindtap="toggle" data-id="{{item.id}}"><text class="sub">{{item.checked?'☑':'☐'}}</text><view><view class="sub">{{item.label}}</view><view class="name">{{item.title}}</view></view></button></block>
+</block>
+<block wx:if="{{!works.length && !jobs.length && !runs.length}}"><view class="note">第一份作品，从一句推广需求开始。</view><button class="primary" bindtap="create">去创作</button></block></block>
+<block wx:if="{{edit}}"><view class="sheetmask" bindtap="close"></view><view class="sheet"><view class="between"><view class="heading">商家档案</view><button class="close" bindtap="close">关闭</button></view>
+<view class="label">经营行业（可多选）</view><view class="ratio-row"><button wx:for="{{industryRows}}" wx:key="name" class="chip {{item.on?'active':''}}" aria-pressed="{{item.on}}" data-name="{{item.name}}" bindtap="toggleIndustry">{{item.name}}</button></view>
+<view class="between"><input class="field" placeholder="自定义行业" maxlength="24" data-key="customIndustry" value="{{form.customIndustry}}" bindinput="field"/><button class="link" bindtap="addIndustry">添加</button></view>
+<block wx:for="{{profileFields}}" wx:key="key"><view class="label">{{item.label}}</view><input class="field" maxlength="80" data-key="{{item.key}}" value="{{form[item.key]}}" bindinput="field"/></block><view class="label">已确认的商品卖点</view><textarea class="field" maxlength="400" data-key="facts" value="{{form.facts}}" bindinput="field"/><button class="primary spaced" bindtap="save" loading="{{saving}}" disabled="{{saving}}">{{saving?'正在保存':'保存档案'}}</button></view></block>
+</view>

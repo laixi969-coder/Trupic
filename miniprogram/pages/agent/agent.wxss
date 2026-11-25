@@ -1,0 +1,22 @@
+.turn {
+  padding: 22rpx 24rpx;
+  margin: 16rpx 0;
+  background: white;
+  border: 1rpx solid #dce5d9;
+  border-radius: 18rpx;
+  white-space: pre-line;
+}
+.turn.user {
+  background: #e7efde;
+  margin-left: 42rpx;
+}
+.turn button {
+  margin: 10rpx 0;
+}
+.panel textarea {
+  width: 100%;
+  min-height: 120rpx;
+}
+.heading {
+  flex: 1;
+}

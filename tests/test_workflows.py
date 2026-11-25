@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 from unittest.mock import patch
 
+from pathlib import Path
+
 from PIL import Image
 
 workspace = tempfile.TemporaryDirectory()
@@ -273,6 +275,39 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(self.c.get("/api/"+path).status_code,200)
         finally:
             post(self.c,"admin/pricing",**{**rates,"version":self.c.get("/api/admin/pricing").json["version"]})
+
+    def test_trial_credits_are_capped_per_network_and_loopback_is_not_pooled(self):
+        from server import store
+
+        def opened(headers=None):
+            client = studio.app.test_client()
+            state = client.get("/api/state", headers=headers or {}).json
+            return client, state["credits"], state["trialNote"]
+
+        with patch.dict(os.environ, {"TRUPIC_TRUST_PROXY": "1"}), patch.object(store, "TRIAL_LIMIT", 2):
+            net = {"X-Forwarded-For": "203.0.113.9"}
+            first = [opened(net) for _ in range(3)]
+            self.assertEqual([c for _, c, _ in first], [120, 120, 0])
+            self.assertEqual([bool(n) for _, _, n in first], [False, False, True])
+            # Another network, and an unforwarded same-host proxy, keep their own quota.
+            self.assertEqual(opened({"X-Forwarded-For": "203.0.113.10"})[1], 120)
+            self.assertEqual(opened()[1], 120)
+            # Registering a withheld workspace does not bypass the cap.
+            blocked, _, _ = first[2]
+            who = uuid.uuid4().hex
+            self.assertEqual(blocked.post("/api/account/register", json=dict(login=who, password="fixture-account"), headers=net).status_code, 200)
+            self.assertEqual(blocked.get("/api/state", headers=net).json["credits"], 0)
+            with studio.db(True) as c:
+                c.execute("UPDATE trial_grant SET created='2000-01-01T00:00:00'")
+            self.assertEqual(opened(net)[1], 120)
+            # A withheld account receives its trial at the next sign-in once the quota recovers.
+            sign_in = dict(login=who, password="fixture-account")
+            post(blocked, "account/logout")
+            blocked.post("/api/account/login", json=sign_in, headers=net)
+            self.assertEqual(blocked.get("/api/state", headers=net).json["credits"], 120)
+            post(blocked, "account/logout")
+            blocked.post("/api/account/login", json=sign_in, headers=net)
+            self.assertEqual(blocked.get("/api/state", headers=net).json["credits"], 120)
 
     @with_text_model
     def test_v3_signed_payments_and_invite_milestones(self):
@@ -991,7 +1026,7 @@ class WorkflowTests(unittest.TestCase):
             commerce.refund(c,c.execute("SELECT * FROM purchase WHERE id=?",(oid,)).fetchone(),"receipt-"+oid)
             self.assertEqual(c.execute("SELECT SUM(remaining) FROM credit_lot WHERE tenant=? AND ref LIKE ?",(tenant,oid+"%")).fetchone()[0],0)
 
-    def test_v3_formal_model_review_without_release_date_gate(self):
+    def test_formal_model_review_requires_verified_release_and_version(self):
         from server import model_tools as mt, providers
         self.admin()
         cfg=dict(id="custom-"+uuid.uuid4().hex,capability="text",label="fixture",url="https://model.invalid/v1/chat/completions",model="opaque-id",protocol="chat")
@@ -1003,8 +1038,9 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(post(self.c,"admin/model-routes",text=cfg["id"]).status_code,400)
             for changes in (dict(released="invalid"),dict(minimum="2.11"),dict(probe="0"*32)):
                 self.assertEqual(post(self.c,"admin/model-admission",**{**meta,**changes}).status_code,400)
-            for metadata in (meta, {**meta,"released":"2025-01-01"}, {**meta,"released":"","source":""}):
-                self.assertEqual(post(self.c,"admin/model-admission",**metadata).status_code,200)
+            for changes in (dict(released="2025-01-01"),dict(released=""),dict(source=""),dict(released="9999-12-31")):
+                self.assertEqual(post(self.c,"admin/model-admission",**{**meta,**changes}).status_code,400)
+            self.assertEqual(post(self.c,"admin/model-admission",**meta).status_code,200)
             self.assertEqual(post(self.c,"admin/model-routes",text=cfg["id"]).status_code,200)
             self.assertEqual(studio.model.route("text")["model"],"opaque-id")
             post(self.c,"admin/model-routes",text="local-rules")
@@ -1021,6 +1057,181 @@ class WorkflowTests(unittest.TestCase):
             wallet.finish(c,tenant,"hold",False)
             self.assertEqual(c.execute("SELECT credits FROM merchant WHERE id=?",(tenant,)).fetchone()[0],20)
             self.assertEqual(c.execute("SELECT COUNT(*) FROM credit_event WHERE tenant=? AND action='release'",(tenant,)).fetchone()[0],1)
+
+    @with_text_model
+    def test_longer_films_open_and_close_differently_when_the_text_model_is_usable(self):
+        from server import campaign
+
+        self.admin()
+        with self.c.session_transaction() as sess: tenant=sess["tenant"]
+        with studio.db(True) as c:
+            starts=studio.now()
+            c.execute("INSERT INTO subscription VALUES(?,?,?,?,?,?)",(uuid.uuid4().hex,tenant,starts,studio.commerce.month_after(starts,1),1,100))
+        brief=dict(brief="给台球室做活动短片",facts="店里有大桌；可借球杆；提供巧粉；前台登记；可自带球杆；周五可预约",
+                   deliveryMode="video",ratio="portrait",duration=30)
+        routed=dict(model="fixture-writer",url="https://text.invalid/v1/chat/completions",key="",provider="fixture")
+        asked, routed_kind = studio.model.ask, studio.model.route
+        def route(kind):
+            return routed if kind == "text" else routed_kind(kind)
+        for draft, opening in (
+            ({"opening":"下班后想松一松筋骨？","closing":"周五来打一局"}, "下班后想松一松筋骨？"),
+            # An unconfirmed price is dropped; the shared title stays as the opening.
+            ({"opening":"全场只要 9 元","closing":"周五来打一局"}, None),
+        ):
+            def ask(prompt, inputs, *args, **kwargs):
+                if isinstance(inputs, dict) and "商家已确认的信息" in inputs: return draft, "fixture-writer"
+                return asked(prompt, inputs, *args, **kwargs)
+            with self.subTest(draft=draft), patch.object(studio.model,"route",side_effect=route), \
+                    patch.object(studio.model,"ask",side_effect=ask), patch.object(studio.pool,"submit"):
+                q=post(self.c,"creations/plan",**brief).json
+                row=post(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey=uuid.uuid4().hex).json
+                for item in row["items"]: studio.produce(item["job"])
+                result=self.c.get("/api/creations/"+row["id"]).json
+                self.assertTrue(result["complete"],[(i["state"],i["error"]) for i in result["items"]])
+                video=result["items"][-1]
+                with studio.db() as c:
+                    cp=json.loads(c.execute("SELECT copy FROM version WHERE work=? AND n=1",(video["work"],)).fetchone()[0])
+                self.assertEqual(cp["storyboard"][-1]["line"], "周五来打一局")
+                self.assertEqual(cp["storyboard"][0]["line"], opening or cp["title"])
+                self.assertEqual(cp["longForm"]["opening"] if opening else None, opening)
+        self.assertEqual(campaign.long_form({"output":{"duration":15}}, {}), {})
+
+    @with_text_model
+    def test_swap_image_on_a_scene_only_poster_draws_a_new_scene_and_keeps_the_copy(self):
+        import base64
+        with self.c.session_transaction() as sess: tenant=sess["tenant"]
+        calls = []
+        def urlopen(req, timeout=None):
+            calls.append(json.loads(req.data)["prompt"])
+            rendered = io.BytesIO()
+            Image.new("RGB", (1024, 1365), (30 * len(calls) % 255, 90, 120)).save(rendered, format="PNG")
+            return io.BytesIO(json.dumps({"data": [{"b64_json": base64.b64encode(rendered.getvalue()).decode()}]}).encode())
+        image_env = {"TRUPIC_IMAGE_URL": "https://images.example/v1/images/generations", "TRUPIC_IMAGE_MODEL": "fixture-image"}
+        with patch.dict(os.environ, image_env), patch("server.background.urllib.request.urlopen", side_effect=urlopen):
+            q = post(self.c,"creations/plan",brief="宣传周末台球组局",deliveryMode="image",imageCount=1,ratio="portrait").json
+            with patch.object(studio.pool,"submit"):
+                run = submit_with_copy(self.c,"creations",quote=q["quote"],confirmedCost=q["cost"],requestKey="scene").json
+                for item in run["items"]: studio.produce(item["job"])
+            poster = next(i for i in run["items"] if i["kind"] == "poster")
+            path = "works/" + poster["work"]
+            first = (studio.DATA/tenant/"works"/poster["work"]/"1"/"poster.png").read_bytes()
+            before = self.c.get("/api/"+path).json["versions"][0]
+            self.assertEqual(len(calls), 1)
+            quote = post(self.c,path+"/revision-quote",action="layout").json
+            with patch.object(studio.pool,"submit"):
+                job = post(self.c,path+"/revise",quote=quote["quote"],confirmedCost=quote["cost"],confirmed=True,requestKey="swap").json
+                studio.produce(job["id"])
+            self.assertEqual(self.c.get("/api/jobs/"+job["id"]).json["state"], "complete")
+            second = (studio.DATA/tenant/"works"/poster["work"]/"2"/"poster.png").read_bytes()
+            self.assertNotEqual(first, second)
+            self.assertEqual(len(calls), 2)
+            after = self.c.get("/api/"+path).json["versions"][0]
+            self.assertEqual((after["title"], after["body"], after["cta"]), (before["title"], before["body"], before["cta"]))
+            self.assertNotEqual(after["plan"]["design"]["id"], before["plan"]["design"]["id"])
+
+    def test_breaker_rests_a_failing_platform_on_its_backup_until_the_cooldown_passes(self):
+        self.admin()
+        ids = ["custom-" + uuid.uuid4().hex for _ in range(2)]
+        for i, platform in enumerate(ids):
+            self.assertEqual(post(self.c, "admin/model-platform", id=platform, label="验收连接", capability="text",
+                                  model="model-" + str(i), url="https://fixture.invalid/chat").status_code, 200)
+        self.assertEqual(post(self.c, "admin/model-routes", text=ids[0], backups={"text": ids[1]}).status_code, 200)
+        self.assertEqual(studio.model.route("text")["provider"], ids[0])
+        self.assertEqual(studio.model.route("text")["backup"]["provider"], ids[1])
+
+        def history(rows):
+            with studio.db(True) as c:
+                c.execute("DELETE FROM model_call WHERE platform IN (?,?)", ids)
+                for ok, age in rows:
+                    stamp = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=age)).strftime("%Y-%m-%d %H:%M:%S")
+                    c.execute("INSERT INTO model_call(day,kind,platform,model,ok,ms,created) VALUES(?,?,?,?,?,?,?)",
+                              (studio.now()[:10], "text", ids[0], "model-0", ok, 10, stamp))
+
+        history([(0, 5), (0, 20)])
+        self.assertEqual(studio.model.route("text")["provider"], ids[0], "two failures are not enough")
+        history([(0, 5), (0, 20), (0, 30)])
+        self.assertEqual(studio.model.route("text")["provider"], ids[1])
+        self.assertNotIn("backup", studio.model.route("text"))
+        self.assertEqual(self.c.get("/api/admin").json["modelPlatforms"]["resting"], {"text": ids[0]})
+        history([(0, 5), (0, 20), (1, 30)])
+        self.assertEqual(studio.model.route("text")["provider"], ids[0], "one success resets the count")
+        history([(0, 200), (0, 230), (0, 260)])
+        self.assertEqual(studio.model.route("text")["provider"], ids[0], "the platform is tried again after resting")
+        history([(0, 5), (0, 20), (0, 30)])
+        with studio.db(True) as c:
+            c.execute("DELETE FROM model_backup")
+        self.assertEqual(studio.model.route("text")["provider"], ids[0], "without a backup the main connection stays")
+        # Leave the shared test database routed as the other tests expect.
+        post(self.c, "admin/model-routes", text="")
+        with studio.db(True) as c:
+            c.execute("DELETE FROM model_call WHERE platform IN (?,?)", ids)
+
+    def test_provider_keys_are_sealed_on_disk_only_when_a_secret_key_is_set(self):
+        import sqlite3
+        from server import sealing
+
+        self.admin()
+        platform = "custom-" + uuid.uuid4().hex
+        plain = "sk-live-secret-123"
+        with patch.dict(os.environ, {"TRUPIC_SECRET_KEY": "first-key"}):
+            self.assertEqual(post(self.c,"admin/model-platform",id=platform,label="加密连接",capability="text",
+                                  model="model-x",url="https://fixture.invalid/chat",key=plain).status_code,200)
+            # The whole-platform form goes through the second write path.
+            whole = post(self.c,"admin/model-platform",id=platform,label="加密连接",url="https://fixture.invalid/chat",
+                                  text="model-x",vision="",key=plain)
+            self.assertEqual(whole.status_code,200, whole.json)
+            self.assertEqual(post(self.c,"admin/model-routes",text=platform).status_code,200)
+            with studio.db() as c:
+                raw = dict(c.execute("SELECT key,connections FROM model_provider_sealed WHERE id=?",(platform,)).fetchone())
+            self.assertTrue(all(value.startswith("sealed:") for value in raw.values()), raw)
+            self.assertNotIn(plain, " ".join(raw.values()))
+            self.assertEqual(studio.model.route("text")["key"], plain)
+            shown = self.c.get("/api/admin").json["modelPlatforms"]
+            self.assertNotIn(plain, json.dumps(shown))
+            self.assertTrue(next(p for p in shown["platforms"] if p["id"] == platform)["hasKey"])
+            # The default connection's file is sealed as well.
+            with tempfile.TemporaryDirectory() as folder:
+                with patch.object(studio.model,"SETTINGS",Path(folder)/"integrations.json"):
+                    studio.model.save_settings({"url":"https://fixture.invalid/chat","key":plain,"imageKey":"sk-image-9"})
+                    self.assertNotIn(plain, (Path(folder)/"integrations.json").read_text())
+                    self.assertNotIn("sk-image-9", (Path(folder)/"integrations.json").read_text())
+                    self.assertEqual(studio.model.saved_settings()["key"], plain)
+                    self.assertEqual(studio.model.saved_settings()["imageKey"], "sk-image-9")
+        with patch.dict(os.environ, {"TRUPIC_SECRET_KEY": "another-key"}):
+            with self.assertRaisesRegex(ValueError, "TRUPIC_SECRET_KEY"):
+                studio.model.route("text")
+            refused = self.c.get("/api/admin")
+            self.assertEqual(refused.status_code, 400, refused.json)
+            self.assertIn("TRUPIC_SECRET_KEY", refused.json["error"])
+        with patch.dict(os.environ), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TRUPIC_SECRET_KEY", None)
+            with self.assertRaisesRegex(ValueError, "未设置 TRUPIC_SECRET_KEY"):
+                studio.model.route("text")
+        post(self.c, "admin/model-routes", text="")
+        with studio.db(True) as c:
+            # Sealed rows need the key; the shared database must stay readable for the other tests.
+            c.execute("DELETE FROM model_provider_sealed WHERE id=?", (platform,))
+        # A database written before sealing existed keeps working, and is sealed from then on.
+        with sqlite3.connect(":memory:") as old:
+            old.row_factory = sqlite3.Row
+            sealing.register(old)
+            old.executescript("""CREATE TABLE model_provider(id TEXT PRIMARY KEY,url TEXT NOT NULL,key TEXT NOT NULL,
+                text TEXT NOT NULL,vision TEXT NOT NULL,label TEXT NOT NULL DEFAULT '',connections TEXT NOT NULL DEFAULT '{}');
+                INSERT INTO model_provider(id,url,key,text,vision) VALUES('legacy','https://legacy.invalid/chat','legacy-plain','m','');""")
+            old.commit()
+            sealing.open_provider_table(old)
+            sealing.open_provider_table(old)
+            old.commit()
+            self.assertEqual(old.execute("SELECT key FROM model_provider WHERE id='legacy'").fetchone()[0], "legacy-plain")
+            with patch.dict(os.environ, {"TRUPIC_SECRET_KEY": "first-key"}):
+                old.execute("UPDATE model_provider SET label='改名' WHERE id='legacy'")
+                old.commit()
+                stored = old.execute("SELECT key FROM model_provider_sealed WHERE id='legacy'").fetchone()[0]
+                self.assertTrue(stored.startswith("sealed:"))
+                self.assertEqual(old.execute("SELECT key,label FROM model_provider WHERE id='legacy'").fetchone()[0], "legacy-plain")
+                old.execute("INSERT INTO model_provider(id,url,key,text,vision,label) VALUES('new','https://n.invalid/chat','new-plain','','','')")
+                old.commit()
+                self.assertTrue(old.execute("SELECT key FROM model_provider_sealed WHERE id='new'").fetchone()[0].startswith("sealed:"))
 
     @with_text_model
     def test_v3_export_all_advertised_durations(self):
@@ -3687,3 +3898,291 @@ class WorkflowTests(unittest.TestCase):
         cp = copy_inputs(prepare("宣传葡萄，标题用「葡萄到家」，仅限本店。", {}, [], rule))
         self.assertEqual(cp["title"], "葡萄到家")
         self.assertIn("仅限本店", cp["terms"])
+
+    def test_login_keeps_workspace_when_promotion_link_is_rejected(self):
+        name = uuid.uuid4().hex
+        post(self.c, "account/register", login=name, password="fixture-account")
+        friend = studio.app.test_client()
+        post(friend, "account/register", login=uuid.uuid4().hex, password="fixture-account")
+        code = friend.get("/api/promotion").json["codes"]["merchant"]
+        device, device_name = studio.app.test_client(), uuid.uuid4().hex
+        post(device, "account/register", login=device_name, password="fixture-account")
+        rejected = post(device, "account/login", login=name, password="fixture-account",
+                        invite=code, channel="channel-that-no-longer-matches")
+        self.assertEqual(rejected.status_code, 400, rejected.json)
+        # A rejected link must not sign the merchant out of the account already on this device.
+        self.assertEqual(device.get("/api/state").json["login"], device_name)
+        self.assertEqual(post(device, "account/login", login=name, password="fixture-account",
+                              invite=code).status_code, 200)
+        self.assertEqual(device.get("/api/state").json["login"], name)
+
+    def test_repeated_password_failures_are_throttled(self):
+        wrong = dict(login="missing-account", password="wrong-password")
+        try:
+            with patch.object(studio, "SIGNIN_LIMIT", 3):
+                for _ in range(3):
+                    self.assertEqual(post(self.c, "account/login", **wrong).status_code, 401)
+                limited = post(self.c, "account/login", **wrong)
+                self.assertEqual(limited.status_code, 429)
+                self.assertIn("尝试次数过多", limited.json["error"])
+                # Another account from the same source is not affected.
+                self.assertEqual(post(self.c, "account/login", login="another-account",
+                                      password="wrong-password").status_code, 401)
+                for _ in range(3):
+                    self.assertEqual(post(self.c, "account/admin", password="wrong-password").status_code, 403)
+                self.assertEqual(post(self.c, "account/admin", password=studio.ADMIN).status_code, 429)
+        finally:
+            studio.SIGNIN_FAILURES.clear()
+
+    @with_text_model
+    def test_orphaned_running_job_is_recovered_without_a_second_reservation(self):
+        q = post(self.c, "creations/plan", brief="周末台球组局", deliveryMode="image",
+                 ratio="square").json
+        with patch.object(studio.pool, "submit"):
+            run = submit_with_copy(self.c, "creations", quote=q["quote"], confirmedCost=q["cost"],
+                                   requestKey="orphan").json
+            copy_job, poster_job = (item["job"] for item in run["items"][:2])
+            held = 120 - q["cost"]
+            self.assertEqual(self.state()["credits"], held)
+
+            def reservations():
+                with studio.db() as c:
+                    return {job: c.execute("SELECT COUNT(*) FROM credit_event WHERE job=? AND action='reserve'",
+                                           (job,)).fetchone()[0] for job in (copy_job, poster_job)}
+
+            before = reservations()
+            self.assertEqual(before, {copy_job: 0, poster_job: 1})
+            with studio.db(True) as c:
+                c.execute("UPDATE job SET state='running',worker_pid=NULL,stage='正在准备素材和文案' WHERE id=?",
+                          (copy_job,))
+                c.execute("UPDATE job SET state='running',worker_pid=? WHERE id=?",
+                          (os.getpid(), poster_job))
+            # The stage is real server state, so the merchant can be shown what is happening.
+            self.assertEqual(self.c.get("/api/jobs/" + copy_job).json["stage"], "正在准备素材和文案")
+            with studio.ACTIVE_LOCK:
+                studio.ACTIVE.update({copy_job, poster_job})
+            self.assertEqual(studio.recover_jobs(), [])
+            with studio.ACTIVE_LOCK:
+                studio.ACTIVE.clear()
+            self.assertIn(copy_job, studio.recover_jobs())
+            self.assertEqual(studio.recover_jobs(), [])
+            self.assertEqual(self.c.get("/api/jobs/" + copy_job).json["state"], "queued")
+            self.assertEqual(self.state()["credits"], held)
+            # The lost worker had already reserved once; recovery must not reserve again.
+            self.assertEqual(reservations(), before)
+        studio.produce(copy_job)
+        self.assertEqual(self.c.get("/api/jobs/" + copy_job).json["state"], "complete")
+        # A job that keeps losing its worker must not loop forever: release and report it.
+        self.assertEqual(studio.RECOVERIES[poster_job], 1)
+        with patch.object(studio.pool, "submit"):
+            for _ in range(2):
+                with studio.db(True) as c:
+                    c.execute("UPDATE job SET state='running',worker_pid=NULL WHERE id=?", (poster_job,))
+                studio.recover_jobs()
+        with studio.db() as c:
+            row = c.execute("SELECT state,error,cost FROM job WHERE id=?", (poster_job,)).fetchone()
+            released = c.execute("SELECT COALESCE(SUM(amount),0) FROM credit_event WHERE job=? AND action='release'",
+                                 (poster_job,)).fetchone()[0]
+        self.assertEqual(row["state"], "failed")
+        self.assertIn("积分已退回", row["error"])
+        self.assertEqual(released, row["cost"])
+        self.assertEqual(self.state()["credits"], 120)
+        self.assertNotIn(poster_job, studio.RECOVERIES)
+
+    def test_existing_merchant_invitation_is_reviewed_and_can_be_approved(self):
+        from server import growth
+
+        self.admin()
+        inviter, inviter_name = studio.app.test_client(), uuid.uuid4().hex
+        post(inviter, "account/register", login=inviter_name, password="fixture-account")
+        merchant, merchant_name = studio.app.test_client(), uuid.uuid4().hex
+        post(merchant, "account/register", login=merchant_name, password="fixture-account")
+        with merchant.session_transaction() as sess:
+            guest = sess["tenant"]
+        with inviter.session_transaction() as sess:
+            owner = sess["tenant"]
+        code = inviter.get("/api/promotion").json["codes"]["merchant"]
+        self.assertEqual(post(merchant, "promotion/claim", code=code).status_code, 200)
+        pending = next(r for r in self.c.get("/api/admin/growth").json["reviews"]
+                       if r["guest"] == merchant_name)
+        self.assertEqual(pending["kind"], "merchant")
+        approved = post(self.c, "admin/growth", action="approve-transfer", id=pending["id"])
+        self.assertEqual(approved.status_code, 200, approved.json)
+        with studio.db() as c:
+            self.assertEqual(growth.attribution(c, guest), {"merchant": owner})
+        # An invitation cannot loop back: the inviter joining its own invitee is refused.
+        self.assertEqual(post(inviter, "promotion/claim", code=merchant.get("/api/promotion").json["codes"]["merchant"]).status_code, 200)
+        loop = next(r for r in self.c.get("/api/admin/growth").json["reviews"] if r["guest"] == inviter_name)
+        refused = post(self.c, "admin/growth", action="approve-transfer", id=loop["id"])
+        self.assertEqual(refused.status_code, 400)
+        with studio.db() as c:
+            self.assertEqual(growth.attribution(c, owner), {})
+
+    def test_finance_staff_cannot_adjust_their_own_credits(self):
+        self.admin()
+        bookkeeper, name = studio.app.test_client(), uuid.uuid4().hex
+        post(bookkeeper, "account/register", login=name, password="fixture-account")
+        other = uuid.uuid4().hex
+        post(studio.app.test_client(), "account/register", login=other, password="fixture-account")
+        post(self.c, "admin/staff", login=name, role="finance")
+        own = post(bookkeeper, "admin/credits", login=name, amount=50, ref="self", reason="自己补给自己")
+        self.assertEqual(own.status_code, 400, own.json)
+        self.assertEqual(bookkeeper.get("/api/state").json["credits"], 120)
+        self.assertEqual(post(bookkeeper, "admin/credits", login=other, amount=50, ref="service-1",
+                              reason="客服补偿").status_code, 200)
+        superuser = uuid.uuid4().hex
+        post(self.c, "account/register", login=superuser, password="fixture-account")
+        self.assertEqual(post(self.c, "admin/credits", login=superuser, amount=5, ref="ops-1",
+                              reason="运营调拨").status_code, 200)
+        self.assertEqual(self.state()["credits"], 125)
+        self.assertIn("actor", self.c.get("/api/admin").json["audit"][0])
+
+    def test_merchant_detail_shows_profile_tasks_orders_and_ledger_by_role(self):
+        self.admin()
+        name = uuid.uuid4().hex
+        merchant = studio.app.test_client()
+        post(merchant, "account/register", login=name, password="fixture-account")
+        post(merchant, "profile", name="山野茶事", industryTags=["茶饮"])
+        operator, operator_name = studio.app.test_client(), uuid.uuid4().hex
+        post(operator, "account/register", login=operator_name, password="fixture-account")
+        path = "/api/admin/merchants/" + name
+        self.assertEqual(studio.app.test_client().get(path).status_code, 403)
+        detail = self.c.get(path)
+        self.assertEqual(detail.status_code, 200, detail.json)
+        self.assertEqual(detail.json["profile"]["industryTags"], ["茶饮"])
+        self.assertEqual(detail.json["login"], name)
+        self.assertEqual(sorted(detail.json), ["created", "jobs", "ledger", "login", "orders", "profile", "role"])
+        for group, allowed in (("operations", False), ("finance", True), ("support", True)):
+            post(self.c, "admin/staff", login=operator_name, role=group)
+            self.assertEqual(operator.get(path).status_code, 200 if allowed else 403, group)
+            self.assertEqual(operator.post(path).status_code, 405, group)
+        self.assertEqual(self.c.get("/api/admin/merchants/nobody-" + name).status_code, 404)
+
+    def test_late_payment_after_close_is_fulfilled_and_flagged_for_review(self):
+        import hashlib
+        import hmac
+
+        self.admin()
+        self.c.get("/api/state")
+        with patch.dict(os.environ, {"TRUPIC_CHECKOUT_URL": "https://pay.invalid",
+                                     "TRUPIC_PAYMENT_SECRET": "late"}):
+            offer = post(self.c, "admin/offers", name="补付验收", cycle="month", cents=1000,
+                         credits=10, bonus=0).json[0]
+            coupon = post(self.c, "admin/coupons", offer=offer["id"], discount=100, threshold=0,
+                          quantity=1, per_user=1, starts=studio.now()[:10],
+                          ends=studio.now()[:10]).json[0]["code"]
+            with self.c.session_transaction() as sess:
+                tenant = sess["tenant"]
+            post(self.c, "account/register", login="late-payer-" + uuid.uuid4().hex[:8], password="fixture-account")
+            oid = post(self.c, "orders", offer=offer["id"], credits=10, bonus=0, cents=900,
+                       coupon=coupon, requestKey="late").json["id"]
+
+            def notice(status, receipt):
+                data = json.dumps(dict(order=oid, status=status, currency="CNY", cents=900,
+                                       receipt=receipt)).encode()
+                stamp = str(int(time.time()))
+                signature = hmac.new(b"late", stamp.encode() + b"." + data, hashlib.sha256).hexdigest()
+                return self.c.post("/api/payments/webhook", data=data, content_type="application/json",
+                                   headers={"X-Payment-Timestamp": stamp, "X-Payment-Signature": signature})
+
+            self.assertEqual(notice("cancelled", "close-" + oid).status_code, 200)
+            self.assertEqual(post(self.c, "orders/price", offer=offer["id"], coupon=coupon).json["cents"], 900)
+            paid = notice("paid", "receipt-" + oid)
+            self.assertEqual(paid.status_code, 200, paid.json)
+            self.assertEqual(notice("paid", "receipt-" + oid).status_code, 200)
+        with studio.db() as c:
+            row = c.execute("SELECT state,cents FROM purchase WHERE id=?", (oid,)).fetchone()
+            review = c.execute("SELECT reason,state FROM payment_review WHERE order_id=?", (oid,)).fetchone()
+            redemption = c.execute("SELECT status FROM redemption WHERE order_id=?", (oid,)).fetchone()[0]
+            granted = c.execute(
+                "SELECT COALESCE(SUM(remaining),0) FROM credit_lot WHERE tenant=? AND source='套餐月度积分'",
+                (tenant,)).fetchone()[0]
+        self.assertEqual((row["state"], row["cents"]), ("paid", 900))
+        self.assertEqual(redemption, "paid")
+        self.assertIn("订单关闭后收到付款", review["reason"])
+        self.assertEqual(review["state"], "pending")
+        self.assertEqual(granted, 10)
+
+    def test_stale_unpaid_order_releases_its_coupon(self):
+        from server import commerce
+
+        self.admin()
+        with patch.dict(os.environ, {"TRUPIC_CHECKOUT_URL": "https://pay.invalid",
+                                     "TRUPIC_PAYMENT_SECRET": "stale"}):
+            offer = post(self.c, "admin/offers", name="过期验收", cycle="month", cents=1000,
+                         credits=10, bonus=0).json[0]
+            coupon = post(self.c, "admin/coupons", offer=offer["id"], discount=100, threshold=0,
+                          quantity=1, per_user=1, starts=studio.now()[:10],
+                          ends=studio.now()[:10]).json[0]["code"]
+            post(self.c, "account/register", login="stale-" + uuid.uuid4().hex[:8], password="fixture-account")
+            oid = post(self.c, "orders", offer=offer["id"], credits=10, bonus=0, cents=900,
+                       coupon=coupon, requestKey="stale").json["id"]
+            self.assertEqual(post(self.c, "orders/price", offer=offer["id"], coupon=coupon).status_code, 400)
+            with studio.db(True) as c:
+                c.execute("UPDATE purchase SET created=? WHERE id=?",
+                          ((dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)).isoformat(timespec="seconds"), oid))
+                commerce.close_stale(c)
+            shop = self.c.get("/api/shop").json
+            self.assertEqual([(o["id"], o["state"]) for o in shop["orders"]], [(oid, "cancelled")])
+            self.assertEqual(post(self.c, "orders/price", offer=offer["id"], coupon=coupon).json["cents"], 900)
+
+    def test_disabled_offer_can_be_listed_again_except_quarter(self):
+        self.admin()
+        offer = post(self.c, "admin/offers", name="重新上架", cycle="month", cents=1000,
+                     credits=10, bonus=0).json[0]
+        listed = lambda: [o["id"] for o in self.c.get("/api/shop").json["offers"]]
+        self.assertIn(offer["id"], listed())
+        post(self.c, "admin/offers/" + offer["id"] + "/disable")
+        self.assertNotIn(offer["id"], listed())
+        self.assertEqual(post(self.c, "admin/offers/" + offer["id"] + "/enable").status_code, 200)
+        self.assertIn(offer["id"], listed())
+        quarter = post(self.c, "admin/offers", name="季付", cycle="quarter", cents=3000,
+                       credits=30, bonus=0).json[0]
+        self.assertEqual(post(self.c, "admin/offers/" + quarter["id"] + "/enable").status_code, 400)
+        self.assertEqual(post(self.c, "admin/offers/missing-" + uuid.uuid4().hex + "/enable").status_code, 404)
+
+    def test_failed_model_calls_record_a_reason_without_secrets(self):
+        import urllib.error
+        from pathlib import Path
+        from server import model
+        from server.background import generate_scene
+
+        self.admin()
+        cfg = dict(provider="fixture", url="https://model.invalid/v1/chat/completions",
+                   key="secret-key-value", model="writer")
+        cases = [
+            (urllib.error.HTTPError(cfg["url"], 429, "limited", {}, None), "HTTP 429"),
+            (TimeoutError("timed out with secret-key-value"), "timeout"),
+            (urllib.error.URLError(TimeoutError()), "timeout"),
+            (urllib.error.URLError(OSError("connection refused")), "connection"),
+            (model.InvalidModelOutput("平台回复不是有效 JSON。"), "invalid_output"),
+            (ValueError("secret-key-value rejected"), "rejected"),
+            (KeyError("choices"), "KeyError"),
+        ]
+        for failure, expected in cases:
+            with self.subTest(expected=expected):
+                with patch("server.model.urllib.request.urlopen", side_effect=failure), \
+                        patch.object(model, "reserve_provider_call"):
+                    with self.assertRaises(type(failure) if not isinstance(failure, urllib.error.URLError) else urllib.error.URLError):
+                        model.chat_request(cfg, "writer", [{"role": "user", "content": "hi"}], 20, "text")
+                with studio.db() as c:
+                    row = c.execute("SELECT ok,error FROM model_call ORDER BY id DESC LIMIT 1").fetchone()
+                self.assertEqual(tuple(row), (0, expected))
+        # A failed concept image is classified the same way before it becomes a merchant message.
+        folder = Path(studio.DATA) / "fixture-tenant" / "works" / "poster" / "1"
+        folder.mkdir(parents=True)
+        plan = dict(subject="茶饮", goal="日常分享", angle="周末", shot="近景",
+                    output=dict(width=1024, height=1024), design=dict(scene="室内"))
+        selected = dict(provider="custom-" + uuid.uuid4().hex, url="https://images.example/v1/images/generations",
+                        model="image-model", key="secret-key-value")
+        with patch("urllib.request.urlopen", side_effect=TimeoutError()), \
+                patch.object(model, "reserve_provider_call"):
+            with self.assertRaises(ValueError):
+                generate_scene(selected, folder, plan, None, "poster", True, strict=True)
+        with studio.db() as c:
+            row = c.execute("SELECT ok,error FROM model_call ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(tuple(row), (0, "timeout"))
+        failures = self.c.get("/api/admin").json["modelFailures"]
+        self.assertEqual({f["error"] for f in failures}, {"HTTP 429", "timeout", "connection", "invalid_output", "rejected", "KeyError"})
+        self.assertEqual(sum(f["calls"] for f in failures if f["error"] == "timeout"), 3)
+        self.assertNotIn("secret-key-value", json.dumps(failures))

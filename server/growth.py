@@ -597,18 +597,20 @@ def register(app, services):
                     if not row:
                         raise ValueError("找不到待核查记录。")
                     if action == "approve-transfer":
-                        if row["kind"] != "agent" or row["guest"] == row["owner"]:
-                            raise ValueError("人工迁移仅支持有效渠道归属。")
-                        if not c.execute(
+                        if row["guest"] == row["owner"]:
+                            raise ValueError("商家不能归属到自己。")
+                        if row["kind"] == "agent" and not c.execute(
                             "SELECT 1 FROM channel_agent WHERE tenant=? AND enabled=1",
                             (row["owner"],),
                         ).fetchone():
                             raise ValueError("此渠道授权已停用。")
                         check_cycle(c, row["guest"], row["owner"])
                         old = c.execute(
-                            "SELECT owner FROM attribution WHERE guest=? AND kind='agent'",
-                            (row["guest"],),
+                            "SELECT owner FROM attribution WHERE guest=? AND kind=?",
+                            (row["guest"], row["kind"]),
                         ).fetchone()
+                        # Both an agent claim and an existing merchant's first invitation are
+                        # reviewed here; earlier pending claims of the same kind are superseded.
                         c.execute(
                             """INSERT INTO attribution VALUES(?,?,?,?,?) ON CONFLICT(guest,kind) DO UPDATE SET
                             owner=excluded.owner,kind=excluded.kind,code=excluded.code,created=excluded.created""",
@@ -622,13 +624,13 @@ def register(app, services):
                         )
                         c.execute(
                             """UPDATE attribution_review SET state='superseded' WHERE guest=? AND id<>?
-                            AND state='pending' AND code IN (SELECT code FROM promotion_code WHERE kind='agent')""",
-                            (row["guest"], target),
+                            AND state='pending' AND code IN (SELECT code FROM promotion_code WHERE kind=?)""",
+                            (row["guest"], target, row["kind"]),
                         )
                         audit(
                             c,
                             actor,
-                            "迁移后续渠道归属",
+                            "迁移后续渠道归属" if row["kind"] == "agent" else "确认商家邀请归属",
                             dump(
                                 {
                                     "guest": row["guest"],

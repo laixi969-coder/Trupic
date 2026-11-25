@@ -5,7 +5,12 @@
     "pages/mine/mine",
     "pages/confirm/confirm",
     "pages/result/result",
-    "pages/promotion/promotion"
+    "pages/promotion/promotion",
+    "pages/quick/quick",
+    "pages/quick-confirm/quick-confirm",
+    "pages/run/run",
+    "pages/shop/shop",
+    "pages/agent/agent"
   ],
   "window": {
     "navigationBarTitleText": "响指出片 Trupic",

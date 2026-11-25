@@ -108,7 +108,7 @@ function Connection({ kind, platform, busy, act, routeVersion, formal }) {
       {options.map(option => <option key={option.id} value={option.id}>{option.id} · {option.priceLabel || "平台未提供价格"}</option>)}
     </select></label>
     {configured.model && configured.selectable === false && <p className="fineprint">当前已保存模型不在此用途的目录中，请同步后重新选择。</p>}
-    <small>按平台目录和用途显示模型，不限制发布日期。</small>
+    <small>目录可用于测试。正式路由须核实 2026 年起的实际发布日期。</small>
     {selectedModel && <div className="connection-result">
       {selectedModel.released && <p>发布日期 {selectedModel.released}</p>}
       <p>{selectedModel.priceLabel || "平台未提供价格"}</p>
@@ -121,7 +121,7 @@ function Connection({ kind, platform, busy, act, routeVersion, formal }) {
       <button className="primary" disabled={locked || !selected}>保存并启用</button></div>
     {["image", "edit", "video"].includes(kind) && <small>测试将实际生成素材，并计入平台用量。</small>}
     {(formal || probe?.state === "complete") && <details><summary>正式模型核验 · {(configured.approved && configured.model===form.model && sameBase && !form.key) || reviewed===fingerprint ? "已核验" : "待核验"}</summary>
-      {[["released","发布日期（选填）","date"],["source","官方发布依据（选填）","url"],["family","模型系列","text"],["version","核实版本","text"],["minimum","系列最低版本","text"],["review","实际输出质量与成本核验记录","text"]].map(([k,l,type])=>
+      {[["released","发布日期（正式路由必填）","date"],["source","官方发布依据（正式路由必填）","url"],["family","模型系列","text"],["version","核实版本","text"],["minimum","系列最低版本","text"],["review","实际输出质量与成本核验记录","text"]].map(([k,l,type])=>
         <label className="field" key={k}>{l}<input type={type} value={metadata[k]||""} onChange={e=>setMetadata({...metadata,[k]:e.target.value})}/></label>)}
       <button type="button" className="secondary" disabled={probe?.state!=="complete"||tested.current!==fingerprint} onClick={async()=>{
         try {await api("/admin/model-admission","POST",{...form,...metadata,probe:probe.id});setReviewed(fingerprint);setError("");} catch(e){setError(e.message);}
@@ -180,7 +180,14 @@ function Routing({config,busy,act}) {
   );
 }
 
-export default function ModelPlatforms({config,usage,costs,busy,act}) {
+const failureLabels = {
+  timeout: "超时",
+  connection: "连接失败",
+  invalid_output: "回复格式异常",
+  rejected: "返回内容不可用",
+};
+
+export default function ModelPlatforms({config,usage,failures,costs,busy,act}) {
   const {platforms,routes} = config;
   const [category, chooseCategory] = useState("text");
   const [imageKind, chooseImageKind] = useState("image");
@@ -214,6 +221,8 @@ export default function ModelPlatforms({config,usage,costs,busy,act}) {
       <h2>{categories.find(([id]) => id === category)[1]}平台</h2>
       <p>当前使用 {platforms.find(p => p.id === routes[kind])?.label || "默认连接"}
         {" · "}{config.effective?.[kind]?.model || localLabels[kind]}</p>
+      {config.keySealing === false && <p className="muted">供应商密钥目前明文保存在服务器数据目录。设置 TRUPIC_SECRET_KEY 并重启后，新保存的密钥会加密保存。</p>}
+      {config.resting?.[kind] && <p role="status">熔断中：{platforms.find(p => p.id === config.resting[kind])?.label || config.resting[kind]} 最近连续失败，已暂时改用备用连接；稍后会自动重试主连接。</p>}
       <label className="field">选择平台<select aria-label="选择平台" value={selected.id}
         onChange={e => chooseId({...ids, [kind]: e.target.value})}>
         {available.map(platform => <option key={platform.id} value={platform.id}>
@@ -231,5 +240,8 @@ export default function ModelPlatforms({config,usage,costs,busy,act}) {
     {!usage.length&&<p className="muted">今天还没有模型请求记录。</p>}
     {usage.map(row=><div className="reviewrow" key={[row.platform,row.model,row.kind].join("/")}><strong>{platforms.find(p=>p.id===row.platform)?.label||"默认连接"} · {row.model}</strong><p>{kinds.find(k=>k[0]===row.kind)?.[1]||row.kind} · 请求 {row.calls} 次 · 成功 {row.succeeded} 次 · 平均 {(row.meanMs/1000).toFixed(1)} 秒</p><small>输入 token：{row.inputTokens??"未返回"}；输出 token：{row.outputTokens??"未返回"}</small></div>)}
     </details>
+    {!!failures?.length && <div className="formpanel"><h2>今日失败原因</h2>
+      {failures.map(row=><p key={[row.platform,row.model,row.kind,row.error].join("/")}><b>{platforms.find(p=>p.id===row.platform)?.label||"默认连接"} · {row.model}</b> · {kinds.find(k=>k[0]===row.kind)?.[1]||row.kind} · {failureLabels[row.error]||row.error||"未记录"} · {row.calls} 次</p>)}
+    </div>}
   </>;
 }

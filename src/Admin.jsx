@@ -104,6 +104,8 @@ export default function Admin({ tip }) {
             onClick={() => {
               setTab(k);
               if (k === "settings" && d) form(Object.fromEntries(["feed", "license", "board", "pinRights"].map(key => [key, d.settings[key] || ""])));
+              // Panels record their own actions; the log must show them when it is opened.
+              if (k === "audit" && d) refresh().catch((e) => error(e.message));
               error("");
             }}
           >
@@ -117,7 +119,7 @@ export default function Admin({ tip }) {
       ) : (
         <>
           {tab === "dashboard" && <section className="formpanel"><h2>经营概览</h2><div className="datarows">
-            {[["已核对模型账单（人民币）",d.costSummary.billed===null?"待对账":"¥"+(d.costSummary.billed/1000000).toFixed(2)],["已核对成本的任务",d.costSummary.reconciled],["云文件同步异常",d.costSummary.storageErrors],["今日注册商家", d.metrics.registrations],["今日发起创作的商家",d.metrics.active],["付费商家",d.metrics.payers],["累计实收（扣除全额退款）","¥"+(d.metrics.revenueCents/100).toFixed(2)],["任务交付成功率",d.metrics.finished?(100*d.metrics.delivered/d.metrics.finished).toFixed(1)+"%":"暂无完成任务"],["注册后第七天创作留存",d.metrics.cohort?d.metrics.retained+" / "+d.metrics.cohort:"暂无到期商家"]].map(([k,v])=><div key={k}><span>{k}</span><b>{v}</b></div>)}
+            {[["营销助理对话",d.assistantMetrics?.conversations ?? 0],["对话任务",d.assistantMetrics?.tasks ?? 0],["对话任务等待确认",d.assistantMetrics?.states.quoted ?? 0],["已核对模型账单（人民币）",d.costSummary.billed===null?"待对账":"¥"+(d.costSummary.billed/1000000).toFixed(2)],["已核对成本的任务",d.costSummary.reconciled],["云文件同步异常",d.costSummary.storageErrors],["今日注册商家", d.metrics.registrations],["今日发起创作的商家",d.metrics.active],["付费商家",d.metrics.payers],["累计实收（扣除全额退款）","¥"+(d.metrics.revenueCents/100).toFixed(2)],["已核对模型毛利（实收减已核对模型成本）",d.costSummary.billed===null?"待对账":"¥"+(d.metrics.revenueCents/100-d.costSummary.billed/1000000).toFixed(2)],["任务交付成功率",d.metrics.finished?(100*d.metrics.delivered/d.metrics.finished).toFixed(1)+"%":"暂无完成任务"],["注册后第七天创作留存",d.metrics.cohort?d.metrics.retained+" / "+d.metrics.cohort:"暂无到期商家"]].map(([k,v])=><div key={k}><span>{k}</span><b>{v}</b></div>)}
           </div></section>}
           {tab === "merchants" && <Merchants role={d.role} tip={tip}/>}
           {tab === "growth" && <GrowthAdmin tip={tip} />}
@@ -128,6 +130,7 @@ export default function Admin({ tip }) {
             <ModelPlatforms
               config={d.modelPlatforms}
               usage={d.modelUsage}
+              failures={d.modelFailures}
               costs={d.modelCosts}
               busy={busy}
               act={act}
@@ -504,6 +507,19 @@ export default function Admin({ tip }) {
                   <div>
                     <b>{a.action}</b>
                     <p>{a.target}</p>
+                    {a.actor && (
+                      <small>
+                        操作人 ·{" "}
+                        {a.actor === d.viewer
+                          ? "本人"
+                          : a.login ||
+                            (a.actor === "payment-bridge"
+                              ? "支付桥接"
+                              : a.actor === "system"
+                                ? "系统定时任务"
+                                : "体验空间 " + a.actor.slice(0, 8))}
+                      </small>
+                    )}
                   </div>
                   <small>{new Date(a.created).toLocaleString("zh-CN")}</small>
                 </div>

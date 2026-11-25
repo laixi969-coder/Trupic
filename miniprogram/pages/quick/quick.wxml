@@ -1,0 +1,36 @@
+<view class="page">
+  <view class="title">今天要推广什么？</view>
+  <view class="panel">
+    <view class="row"><button wx:for="{{modes}}" wx:key="id" data-key="mode" data-value="{{item.id}}" bindtap="pick" aria-pressed="{{item.id===mode}}" class="chip {{item.id===mode?'active':''}}">{{item.name}}</button></view>
+    <textarea class="prompt" aria-label="创作需求" value="{{brief}}" bindinput="input" maxlength="1200" disabled="{{busy}}" placeholder="比如，周五下班，想请附近的朋友来台球室组局。" adjust-position="{{true}}"/>
+    <block wx:if="{{mode==='image'}}">
+      <view class="label">图片数量</view>
+      <view class="ratio-row"><button wx:for="{{imageCosts}}" wx:key="index" data-key="imageCount" data-value="{{index+1}}" bindtap="pick" aria-pressed="{{imageCount===index+1}}" class="chip {{imageCount===index+1?'active':''}}">{{index+1}} 张 · {{item}} 积分</button></view>
+    </block>
+    <block wx:else>
+      <view class="label">短片时长</view>
+      <view class="ratio-row"><button wx:for="{{durations}}" wx:key="*this" data-key="duration" data-value="{{item}}" bindtap="pick" aria-pressed="{{duration===item}}" class="chip {{duration===item?'active':''}}">{{item}} 秒 · {{videoCosts[index]}} 积分</button></view>
+    </block>
+    <view class="label">画幅</view>
+    <view class="ratio-row"><button wx:for="{{ratios}}" wx:key="key" data-key="{{mode==='video'?'videoRatioKey':'ratioKey'}}" data-value="{{item.key}}" bindtap="pick" aria-pressed="{{(mode==='video'?videoRatioKey:ratioKey)===item.key}}" class="chip ratio-chip {{(mode==='video'?videoRatioKey:ratioKey)===item.key?'active':''}}"><view class="ratio-shape" style="{{shapeStyles[index]}}" aria-hidden="true"/><text>{{item.label}}</text></button></view>
+    <view class="between tools">
+      <button wx:if="{{asset}}" class="link" bindtap="addPhoto" disabled="{{busy}}">{{assetConfirmed?'已选商品图':'更换商品图'}}</button>
+      <button wx:else class="link" bindtap="addPhoto" disabled="{{busy}}">＋ 商品图（选填）</button>
+      <button wx:if="{{!showFacts}}" class="link" bindtap="pick" data-key="showFacts" data-value="{{true}}">补充信息（选填）</button>
+    </view>
+    <block wx:if="{{showFacts || facts || (plan && !plan.ready && plan.questions && plan.questions.length)}}">
+      <view wx:if="{{plan && !plan.ready && plan.questions && plan.questions.length}}" class="note">{{plan.message}} {{plan.questions[0]}}</view>
+      <textarea class="moment-note" aria-label="补充信息" value="{{facts}}" bindinput="facts" maxlength="400" disabled="{{busy}}" placeholder="把实际价格、日期或适用条件写在这里"/>
+    </block>
+    <view class="note" aria-live="polite">{{busy?'正在检查图片…':planning?'正在检查需求和制作规格…':plan?(plan.ready?('将为你制作：'+delivery):plan.message):(planError||'写下想推广的商品或服务。')}}</view>
+    <view wx:if="{{trialNote}}" class="note">{{trialNote}}</view>
+    <block wx:if="{{plan && !plan.ready && plan.action==='review-asset'}}">
+      <button class="secondary spaced" bindtap="toStudio" disabled="{{busy}}">去工作台核对商品图</button>
+      <button class="link" bindtap="removePhoto" disabled="{{busy}}">移除商品图</button>
+    </block>
+    <view wx:if="{{planError}}" class="error" aria-live="polite">{{planError}}</view>
+    <button class="primary spaced" bindtap="go" disabled="{{busy || planning || !plan || !plan.ready}}">{{mode==='video'?'开始制作视频':'生成候选文案'}}{{plan && plan.ready?' · '+plan.cost+' 积分':''}}</button>
+    <view class="sub">每项成功交付后结算，失败自动退回积分。</view>
+  </view>
+  <button class="link" bindtap="history">我的作品与制作进度 ›</button>
+</view>

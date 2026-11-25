@@ -2,7 +2,7 @@ import CreationSpecs from "./CreationSpecs.jsx";
 import CopyChoices from "./CopyChoices.jsx";
 import React, { useEffect, useRef, useState } from "react";
 import { UploadCloud, Mic, Sparkles, RefreshCw, Download, X } from "lucide-react";
-import { api, Modal, Busy, dateText } from "./ui.jsx";
+import { api, Modal, Busy, dateText, copyText } from "./ui.jsx";
 
 const statusText = { queued: "等待制作", running: "正在制作", failed: "制作中断", complete: "已完成" };
 
@@ -307,7 +307,7 @@ export default function AutoCreate({ assets, draft, patch, refresh, textRef, che
           {Object.entries(item.directions).map(([channel, value]) => <p key={channel}><b>{{copy:"文案",image:"画面",video:"视频"}[channel]}指令</b> {value}</p>)}
         </details>}
         {item.error && <p role="alert" className="error">此项生成失败，预占积分已退回。{item.error}</p>}
-        <div className="auto-item-actions">{item.text && <button className="textbtn" type="button" onClick={() => perform("copy", async () => { await navigator.clipboard.writeText(item.text); setCopied(item.job); })}>{copied === item.job ? "已复制" : "复制文案"}</button>}{item.download && <><a href={item.download} download>下载此项</a><a href={"#work/" + item.work}>查看建议与版本</a></>}{item.state === "failed" && <button className="secondary" disabled={!!busy} onClick={() => retry(item.job)}><RefreshCw size={14} />重试此项</button>}</div>
+        <div className="auto-item-actions">{item.text && <button className="textbtn" type="button" onClick={() => perform("copy", async () => { if (!(await copyText(item.text))) throw new Error("复制未成功，请长按文案手动复制。"); setCopied(item.job); })}>{copied === item.job ? "已复制" : "复制文案"}</button>}{item.download && <><a href={item.download} download>下载此项</a><a href={"#work/" + item.work}>查看建议与版本</a></>}{item.state === "failed" && <button className="secondary" disabled={!!busy} onClick={() => retry(item.job)}><RefreshCw size={14} />重试此项</button>}</div>
       </section>)}</div>
       <details className="auto-facts"><summary>核对本次商品资料</summary><p>{run.summary.facts.join("；") || "未补充商品参数，成品未新增规格与价格。"}</p>{run.summary.notes.map((note) => <p key={note}>{note}</p>)}</details>
     </article>)}</section>}

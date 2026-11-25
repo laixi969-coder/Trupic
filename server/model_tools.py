@@ -200,16 +200,16 @@ def execute_probe(folder,kind,cfg):
         result.update(state='complete',**detail)
     except urllib.error.HTTPError as exc:
         reasons = {401:'密钥无效',403:'没有调用权限',404:'接口地址或模型不存在',429:'请求限流或额度不足'}
-        result.update(state='failed',error=f'HTTP {exc.code}：'+reasons.get(exc.code,'平台请求失败'))
+        result.update(state='failed',reason=f'HTTP {exc.code}',error=f'HTTP {exc.code}：'+reasons.get(exc.code,'平台请求失败'))
     except Exception as exc:
         message = str(exc) if isinstance(exc,ValueError) else '连接、响应解析或文件解码失败，请核对接口与模型。'
-        result.update(state='failed',error=message[:240])
+        result.update(state='failed',error=message[:240],reason=model.failure_reason(exc))
     result['ms'] = round((time.monotonic()-started)*1000)
     result['completed'] = now()
     write_status(folder,result)
     if kind=='image':
         with db(True) as c:
-            c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms) VALUES(?,?,?,?,?,?)',(now()[:10],kind,cfg['provider'],cfg['model'],result['state']=='complete',result['ms']))
+            c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms,error) VALUES(?,?,?,?,?,?,?)',(now()[:10],kind,cfg['provider'],cfg['model'],result['state']=='complete',result['ms'],result.get('reason')))
 
 
 def register(app,services):

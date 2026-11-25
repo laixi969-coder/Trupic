@@ -12,7 +12,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 from .store import DATA, db, now
-from . import providers, costs
+from . import providers, costs, sealing
 
 SETTINGS = DATA / "integrations.json"
 
@@ -37,9 +37,10 @@ ENV_NAMES = {
 
 def saved_settings():
     try:
-        return json.loads(SETTINGS.read_text())
+        data = json.loads(SETTINGS.read_text())
     except (OSError, ValueError):
         return {}
+    return {**data, **{field: sealing.unseal(data.get(field, "")) for field in sealing.FIELDS}}
 
 
 def settings():
@@ -56,6 +57,7 @@ def save_settings(data):
                 data[field] = previous[field]
             else:
                 data.pop(field, None)
+    data.update({field: sealing.seal(data.get(field, "")) for field in sealing.FIELDS})
     with tempfile.NamedTemporaryFile(mode="w", dir=DATA, delete=False) as f:
         json.dump(data, f)
         name = f.name
@@ -235,6 +237,23 @@ def routed_chat(cfg, messages, max_tokens, kind):
         return chat_request(backup, backup["model"], messages, max_tokens, kind), backup["model"]
 
 
+def failure_reason(exc):
+    """A short category for a failed provider call. Never includes keys or response bodies."""
+    import socket
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(exc, urllib.error.URLError):
+        return "timeout" if isinstance(exc.reason, (TimeoutError, socket.timeout)) else "connection"
+    if isinstance(exc, InvalidModelOutput):
+        return "invalid_output"
+    if isinstance(exc, ValueError):
+        return "rejected"
+    return type(exc).__name__
+
+
 def chat_request(cfg, name, messages, max_tokens, kind):
     data = {"model": name, "messages": messages, "max_tokens": max_tokens}
     # Qwen3.8 Flash enables thinking by default. Our short JSON drafting and
@@ -256,7 +275,7 @@ def chat_request(cfg, name, messages, max_tokens, kind):
     reserve_provider_call(kind)
     started = time.monotonic()
     usage = {}
-    ok = False
+    ok, reason = False, None
     try:
         with urllib.request.urlopen(
             req, timeout=90
@@ -282,12 +301,15 @@ def chat_request(cfg, name, messages, max_tokens, kind):
         result = response_object(message.get("content") if isinstance(message, dict) else None)
         ok = True
         return result
+    except Exception as exc:
+        reason = failure_reason(exc)
+        raise
     finally:
         counts = [usage.get(k) for k in ("prompt_tokens", "completion_tokens")]
         with db(True) as c:
             c.execute(
-                """INSERT INTO model_call(day,kind,platform,model,ok,ms,input_tokens,output_tokens,job)
-                      VALUES(?,?,?,?,?,?,?,?,current_model_job())""",
+                """INSERT INTO model_call(day,kind,platform,model,ok,ms,input_tokens,output_tokens,job,error)
+                      VALUES(?,?,?,?,?,?,?,?,current_model_job(),?)""",
                 (
                     now()[:10],
                     kind,
@@ -296,5 +318,6 @@ def chat_request(cfg, name, messages, max_tokens, kind):
                     ok,
                     round((time.monotonic() - started) * 1000),
                     *(n if type(n) is int and 0 <= n < 2**63 else None for n in counts),
+                    reason,
                 ),
             )

@@ -1,6 +1,8 @@
 """Explicit staff permissions on ordinary authenticated accounts. Superuser stays separate."""
 
-from flask import jsonify, request, session
+import json
+
+from flask import abort, jsonify, request, session
 from . import wallet
 from .store import audit, db, dump, now
 
@@ -26,6 +28,12 @@ def permitted(group, path, method):
         return False
     if path == "/api/admin":
         return True
+    if (
+        method == "GET"
+        and path.startswith("/api/admin/merchants/")
+        and group in ("finance", "support")
+    ):
+        return True
     if group == "finance":
         return (
             path
@@ -41,7 +49,7 @@ def permitted(group, path, method):
             and path.startswith("/api/admin/coupons/")
             and path.endswith("/redemptions")
             or path.startswith("/api/admin/offers/")
-            and path.endswith("/disable")
+            and path.endswith(("/disable", "/enable"))
         )
     if group == "support":
         return (
@@ -140,6 +148,47 @@ def register(app, services):
                 ]
             )
 
+    @app.get("/api/admin/merchants/<login>")
+    def merchant_detail(login):
+        services["require_admin"]()
+        with db() as c:
+            m = c.execute(
+                "SELECT id,login,created,profile FROM merchant WHERE login=?", (login,)
+            ).fetchone()
+            if not m:
+                abort(404)
+            t = m["id"]
+            return jsonify(
+                login=m["login"],
+                created=m["created"],
+                profile=json.loads(m["profile"]),
+                role=(c.execute("SELECT role FROM staff_role WHERE tenant=?", (t,)).fetchone() or [""])[0],
+                jobs=[
+                    dict(r)
+                    for r in c.execute(
+                        """SELECT id,state,stage,cost,work,version,error,created,
+                    json_extract(spec,'$.kind') kind,json_extract(spec,'$.plan.original') brief
+                    FROM job WHERE tenant=? ORDER BY created DESC,rowid DESC LIMIT 50""",
+                        (t,),
+                    )
+                ],
+                orders=[
+                    dict(r)
+                    for r in c.execute(
+                        """SELECT id,state,cents,created,paid,json_extract(snapshot,'$.name') name
+                    FROM purchase WHERE tenant=? ORDER BY created DESC,rowid DESC LIMIT 50""",
+                        (t,),
+                    )
+                ],
+                ledger=[
+                    dict(r)
+                    for r in c.execute(
+                        "SELECT delta,note,created FROM ledger WHERE tenant=? ORDER BY id DESC LIMIT 50",
+                        (t,),
+                    )
+                ],
+            )
+
     @app.post("/api/admin/staff")
     def assign_role():
         services["require_admin"]()
@@ -183,6 +232,9 @@ def register(app, services):
             if not m:
                 raise ValueError("找不到商家。")
             t = m["id"]
+            # Finance staff settle other accounts; only the superuser may credit their own.
+            if t == actor and not services["is_admin"](c):
+                raise ValueError("不能调整本人账号的积分，请由超级管理员操作。")
             old = c.execute(
                 "SELECT * FROM credit_adjustment WHERE tenant=? AND ref=?", (t, ref)
             ).fetchone()

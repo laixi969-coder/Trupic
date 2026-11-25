@@ -1,0 +1,23 @@
+<view class="page">
+  <view class="between"><view class="heading">{{chat.title || '营销助理'}}</view><button class="link" disabled="{{busy}}" bindtap="history">历史</button><button class="link" disabled="{{busy}}" bindtap="fresh">＋ 新对话</button></view>
+  <view wx:if="{{showHistory}}" class="panel"><button wx:for="{{history}}" wx:key="id" class="line" data-id="{{item.id}}" bindtap="open">{{item.title}}</button></view>
+  <view wx:for="{{turns}}" wx:key="seq" class="turn {{item.role}}">
+    <block wx:if="{{item.kind==='topics'}}"><view class="label">本周营销主题</view><button wx:for="{{item.items}}" wx:for-item="r" wx:key="topicId" class="line" data-item="{{r}}" bindtap="topic" disabled="{{busy}}">{{r.title}} ›</button></block>
+    <block wx:elif="{{item.kind==='switch'}}"><view>这是一个新任务。要在哪里继续？</view><button class="link" data-action="branch" data-item="{{item}}" bindtap="switchTask" disabled="{{busy}}">另开对话</button><button class="link" data-action="here" data-item="{{item}}" bindtap="switchTask" disabled="{{busy}}">留在这里</button></block>
+    <block wx:elif="{{item.kind==='pick_work'}}"><text>{{item.text}}</text><button wx:for="{{item.items}}" wx:for-item="work" wx:key="id" data-work="{{work}}" data-question="{{item}}" bindtap="pickWork">{{work.label}}</button></block>
+    <block wx:elif="{{item.kind==='task'}}"><view class="label">{{item.card.stateText}}</view><view>{{item.card.note}}</view><view wx:if="{{item.card.locked}}">{{item.card.locked.title}} {{item.card.locked.body}} {{item.card.locked.cta}}</view>
+      <button wx:if="{{item.card.status==='waiting_script'}}" class="secondary" data-action="options" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">生成并复核脚本</button>
+      <block wx:if="{{item.card.status==='waiting_copy'}}"><button wx:if="{{!item.card.options.length}}" class="secondary" data-action="options" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">获取候选文案</button>
+        <button wx:for="{{item.card.options}}" wx:for-item="opt" wx:key="title" class="line" data-index="{{index}}" data-card="{{item.card}}" bindtap="choose" disabled="{{busy}}">{{opt.title}}　{{opt.body}}</button></block>
+      <block wx:if="{{item.card.status==='quoted'}}"><button class="primary" data-action="approve" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">确认制作 · {{item.card.cost}} 积分</button>
+        <view class="sub">排队时可取消。开始制作后继续执行，失败项自动退回积分。</view><button class="link" data-card="{{item.card}}" bindtap="requote" disabled="{{busy}}">刷新报价</button></block>
+      <button wx:if="{{item.card.canCancel}}" class="link" data-action="cancel" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">取消任务</button>
+      <view wx:for="{{item.card.items}}" wx:for-item="out" wx:key="job" class="line"><text>{{out.label}}　{{out.stage}}</text>
+        <view wx:if="{{out.state==='failed'}}" class="error">生成失败，积分已退回。{{out.error}}</view>
+        <block wx:if="{{out.state==='complete'}}"><text selectable>{{out.text}}</text><button wx:if="{{out.text}}" class="link" data-text="{{out.text}}" bindtap="copy">复制文案</button><button class="link" data-id="{{out.work}}" bindtap="result">查看与保存成品</button></block></view>
+    </block>
+    <text wx:else selectable>{{item.text}}</text>
+  </view>
+  <view class="panel"><textarea maxlength="1200" value="{{text}}" placeholder="想为店里推广什么？" bindinput="input"/><button class="link" bindtap="addPhoto" disabled="{{busy}}">{{asset ? asset.name : '添加有权使用的照片'}}</button><button class="primary" bindtap="send" disabled="{{busy || !text}}" loading="{{busy}}">发送消息</button></view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+</view>

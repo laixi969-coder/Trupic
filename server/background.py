@@ -12,18 +12,18 @@ from tempfile import TemporaryDirectory
 
 from PIL import Image, ImageOps
 
-from .model import reserve_provider_call, route
+from .model import failure_reason, reserve_provider_call, route
 from .store import db, now
 from .design import DIRECTIONS
 from . import atlas_image, qwen_image
 from .moment_poster import PLATES, SET_BRIEFS
 
 
-def make_scene(folder, plan, asset, kind, fresh, strict=False):
+def make_scene(folder, plan, asset, kind, fresh, strict=False, name="concept"):
     primary = route("image")
     backup = primary.get("backup")
     try:
-        return generate_scene(primary, folder, plan, asset, kind, fresh, strict or bool(backup))
+        return generate_scene(primary, folder, plan, asset, kind, fresh, strict or bool(backup), name)
     except atlas_image.PendingImage:
         raise
     except ValueError as exc:
@@ -31,10 +31,10 @@ def make_scene(folder, plan, asset, kind, fresh, strict=False):
             if backup and not strict and exc.__cause__ is not None:
                 return None, "本地排版（图像服务未返回可用画面）"
             raise
-        return generate_scene(backup, folder, plan, asset, kind, fresh, strict)
+        return generate_scene(backup, folder, plan, asset, kind, fresh, strict, name)
 
 
-def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
+def generate_scene(selected, folder, plan, asset, kind, fresh, strict, name="concept"):
     art_direction = plan.get("posterArt", {})
     if kind != "copy" and art_direction.get("print"):
         return None, "实拍照片孔版分色"
@@ -48,8 +48,9 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
         return (preset, "ImageGen 商业布景 · 实拍分层") if preset else (None, "本地排版")
     if asset and asset.name != "subject.png" and not plan.get("autoCreation"):
         return None, "原图排版"
-    # A revision reuses the same approved scene. No extra provider billing.
-    name = "concept.webp"
+    # A revision reuses the same approved scene. No extra provider billing,
+    # except when the merchant asked for another picture of a scene-only poster.
+    name = name + ".webp"
     if moment:
         out = plan["output"]
         source = (selected.get("provider", "") + "|" + cfg["imageModel"] + "|" + cfg["imageUrl"]).encode()
@@ -120,7 +121,7 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
     headers = {"Content-Type": "application/json", "User-Agent": "Trupic/1.0"}
     if cfg["imageKey"]:
         headers["Authorization"] = "Bearer " + cfg["imageKey"]
-    started, ok = time.monotonic(), False
+    started, ok, reason = time.monotonic(), False, None
     try:
         endpoint = cfg["imageUrl"].rstrip("/")
         if moment and cfg["imageModel"].startswith("gpt-image-") and endpoint.endswith("/images/generations"):
@@ -167,6 +168,7 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
         ok = True
         return path, cfg["imageModel"]
     except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+        reason = failure_reason(exc)
         if strict:
             if atlas_image.matches(selected) and isinstance(exc, ValueError):
                 raise
@@ -174,6 +176,9 @@ def generate_scene(selected, folder, plan, asset, kind, fresh, strict):
         if preset:
             return preset, "ImageGen 商业布景 · 图像服务未返回可用画面"
         return None, "本地排版（图像服务未返回可用画面）"
+    except Exception as exc:
+        reason = failure_reason(exc)
+        raise
     finally:
         with db(True) as c:
-            c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms,job) VALUES(?,?,?,?,?,?,current_model_job())',(now()[:10],'image',selected.get('provider','default'),cfg['imageModel'],ok,round((time.monotonic()-started)*1000)))
+            c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms,job,error) VALUES(?,?,?,?,?,?,current_model_job(),?)',(now()[:10],'image',selected.get('provider','default'),cfg['imageModel'],ok,round((time.monotonic()-started)*1000),reason))

@@ -284,8 +284,20 @@ export function FinanceAdmin({ tip }) {
             >
               下架
             </button>
+          ) : o.cycle === "quarter" ? (
+            <small className="muted">后台储备，暂不开放</small>
           ) : (
-            "已下架"
+            <button
+              className="textbtn"
+              disabled={busy}
+              onClick={() =>
+                save(() =>
+                  api("/admin/offers/" + o.id + "/enable", "POST", {}),
+                )
+              }
+            >
+              重新上架
+            </button>
           )}
         </div>
       ))}
@@ -356,7 +368,20 @@ export function MerchantShop({ merchant = "" }) {
         </p>
       )}
       {shop?.subscription && (
-        <p>套餐有效至 {shop.subscription.ends.slice(0, 10)}</p>
+        <>
+          <p>套餐有效至 {shop.subscription.ends.slice(0, 10)}</p>
+          {(() => {
+            // Remind once a week before the plan ends; renewal starts after the current period.
+            const left = Math.ceil(
+              (new Date(shop.subscription.ends + "Z") - Date.now()) / 86400000,
+            );
+            return left <= 7 ? (
+              <p role="status">
+                套餐{left <= 0 ? "即将到期" : `还有 ${left} 天到期`}，可提前续费。
+              </p>
+            ) : null;
+          })()}
+        </>
       )}
       {!!shop?.offers.length && (
         <label className="field">

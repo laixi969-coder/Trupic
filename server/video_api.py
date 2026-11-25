@@ -142,7 +142,7 @@ def render_background(folder, plan, copy, cfg):
         model.reserve_provider_call('video')
         task = dict(signature=signature,state='submitting')
         checkpoint.write_text(json.dumps(task))
-        started, ok = time.monotonic(), False
+        started, ok, reason = time.monotonic(), False, None
         try:
             task_id = submit(cfg, prompt, ratio)
             if not isinstance(task_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task_id):
@@ -150,14 +150,15 @@ def render_background(folder, plan, copy, cfg):
             task.update(id=task_id,state='queued')
             checkpoint.write_text(json.dumps(task))
             ok = True
-        except urllib.error.HTTPError as exc:
-            if exc.code in (400,401,403,404,422,429):
+        except Exception as exc:
+            reason = model.failure_reason(exc)
+            if isinstance(exc, urllib.error.HTTPError) and exc.code in (400,401,403,404,422,429):
                 task['state'] = 'failed'
                 checkpoint.write_text(json.dumps(task))
             raise
         finally:
             with db(True) as c:
-                c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms,job) VALUES(?,?,?,?,?,?,current_model_job())',(now()[:10],'video',cfg.get('provider','default'),cfg['model'],ok,round((time.monotonic()-started)*1000)))
+                c.execute('INSERT INTO model_call(day,kind,platform,model,ok,ms,job,error) VALUES(?,?,?,?,?,?,current_model_job(),?)',(now()[:10],'video',cfg.get('provider','default'),cfg['model'],ok,round((time.monotonic()-started)*1000),reason))
     if not task.get('id'):
         raise ValueError('视频提交结果未知，请先在视频平台确认任务；不会自动重复提交。')
     try:

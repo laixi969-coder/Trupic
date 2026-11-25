@@ -8,10 +8,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
+from . import sealing
 from .media import ROOT
 
 DATA = Path(os.getenv("TRUPIC_DATA", ROOT / ".trupic")).resolve()
 DATA.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+# Workspaces opened without an account receive trial credits up to this many times per network per day.
+TRIAL_LIMIT = int(os.getenv("TRUPIC_TRIAL_PER_DAY") or 5)
+TRIAL_NOTE = "同一网络今天的免费体验名额已用完，明天会恢复。也可以注册商家账号或选购套餐后继续。"
 
 
 model_job = ContextVar("model_job", default=None)
@@ -33,11 +38,15 @@ def db(write=False):
     c = sqlite3.connect(DATA / "studio.sqlite3", timeout=15)
     c.row_factory = sqlite3.Row
     c.create_function("current_model_job", 0, model_job.get)
+    sealing.register(c)
     try:
         if write:
             c.execute("BEGIN IMMEDIATE")
         yield c
         c.commit()
+    except sqlite3.OperationalError as exc:
+        c.rollback()
+        raise sealing.wrap_error(exc) from None
     except BaseException:
         c.rollback()
         raise
@@ -102,9 +111,13 @@ def init():
         CREATE TABLE IF NOT EXISTS skill_version(skill TEXT NOT NULL,n INTEGER NOT NULL,instructions TEXT NOT NULL,reason TEXT NOT NULL,tests TEXT NOT NULL,status TEXT NOT NULL,created TEXT NOT NULL,published TEXT,PRIMARY KEY(skill,n));
         CREATE UNIQUE INDEX IF NOT EXISTS skill_active_version ON skill_version(skill,status) WHERE status IN ('pilot','live');
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor TEXT,action TEXT,target TEXT,created TEXT);
+        CREATE TABLE IF NOT EXISTS trial_grant(source TEXT NOT NULL,tenant TEXT NOT NULL,created TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS trial_grant_source ON trial_grant(source,created);
         """)
         for table, column, datatype in (
             ("model_call", "job", "TEXT"),
+            ("model_call", "error", "TEXT"),
+            ("model_call", "created", "TEXT"),
             ("model_provider", "label", "TEXT NOT NULL DEFAULT ''"),
             ("model_provider", "connections", "TEXT NOT NULL DEFAULT '{}'"),
             ("cases", "tags", "TEXT DEFAULT ''"),
@@ -125,6 +138,10 @@ def init():
             ]:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {datatype}")
         c.execute("CREATE INDEX IF NOT EXISTS model_call_job ON model_call(job)")
+        sealing.open_provider_table(c)
+        # Stamp each model call once the column exists, whatever wrote the row.
+        c.execute("""CREATE TRIGGER IF NOT EXISTS model_call_stamp AFTER INSERT ON model_call WHEN NEW.created IS NULL
+            BEGIN UPDATE model_call SET created=strftime('%Y-%m-%d %H:%M:%S','now') WHERE id=NEW.id; END""")
         from .pricing import initialize
         initialize(c)
         from . import wallet
@@ -147,11 +164,57 @@ def init():
             )
 
 
-def tenant_new(c, tenant):
+def trial_allowed(c, tenant, source):
+    """Count one trial against the network that opened the workspace.
+
+    A loopback address means a same-host reverse proxy whose client addresses are
+    not being forwarded; it must not pool every visitor into one quota.
+    """
+    if not TRIAL_LIMIT or not source or source.startswith("127.") or source == "::1":
+        return True
+    since = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=24)).isoformat(
+        timespec="seconds"
+    )
+    used = c.execute(
+        "SELECT COUNT(*) FROM trial_grant WHERE source=? AND created>?", (source, since)
+    ).fetchone()[0]
+    if used >= TRIAL_LIMIT:
+        return False
+    c.execute(
+        "INSERT INTO trial_grant(source,tenant,created) VALUES(?,?,?)",
+        (source, tenant, now()),
+    )
+    return True
+
+
+def grant_trial(c, tenant, source):
+    """Give the trial once per workspace; False when the daily cap withheld it."""
     from .pricing import current
     from . import wallet
+
     rates = current(c)
+    if c.execute(
+        "SELECT 1 FROM credit_lot WHERE tenant=? AND (ref=? OR ref='opening')",
+        (tenant, "trial:" + tenant),
+    ).fetchone():
+        return True
+    if not trial_allowed(c, tenant, source):
+        return False
+    wallet.grant(
+        c,
+        tenant,
+        "开通工作室体验积分",
+        "trial:" + tenant,
+        rates["trial"],
+        wallet.after_days(rates.get("trialDays", 30)),
+    )
+    return True
+
+
+def tenant_new(c, tenant, source=None):
+    """Open a workspace. No source means it is a side effect of signing in, not a trial visit."""
     c.execute(
         "INSERT INTO merchant(id,profile,credits,created)VALUES(?,?,?,?)", (tenant, "{}", 0, now())
     )
-    wallet.grant(c, tenant, "开通工作室体验积分", "trial:"+tenant, rates["trial"], wallet.after_days(rates.get("trialDays",30)))
+    if source is not None:
+        grant_trial(c, tenant, source)

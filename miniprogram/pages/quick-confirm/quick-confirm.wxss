@@ -1,0 +1,9 @@
+.copy-option {
+  display: grid;
+  align-items: start;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16rpx;
+}
+.copy-option .sub {
+  margin: 6rpx 0;
+}

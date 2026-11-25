@@ -156,8 +156,10 @@ def fulfill(c, row, receipt, payer=None, payer_login=None):
         if row["receipt"] != receipt:
             raise ValueError("支付凭证与已结算订单不同。")
         return
-    if row["state"] != "pending":
+    if row["state"] not in ("pending", "cancelled"):
         raise ValueError("订单状态不支持结算。")
+    # Money that arrives after the cashier closed an order still buys what was ordered.
+    reopened = row["state"] == "cancelled"
     if offer["cycle"] == "pack":
         wallet.grant(c, t, "购买积分包", oid + ":pack", offer["credits"])
         expiry = None
@@ -199,6 +201,8 @@ def fulfill(c, row, receipt, payer=None, payer_login=None):
         ).fetchone()
     ):
         reasons.append("同一付款凭据用于多个商户")
+    if reopened:
+        reasons.append("订单关闭后收到付款")
     if reasons:
         c.execute(
             "INSERT INTO payment_review VALUES(?,?,'pending')",
@@ -255,6 +259,21 @@ def refund(c, row, receipt):
         (oid,),
     )
     audit(c, "payment-bridge", "原单全额退款并冲回权益", oid)
+
+
+ORDER_MINUTES = int(os.getenv("TRUPIC_ORDER_TTL_MINUTES") or 120)
+
+
+def close_stale(c):
+    """Close unpaid orders after the cashier's payment window and give their coupons back."""
+    cutoff = (
+        dt.datetime.now(dt.UTC) - dt.timedelta(minutes=ORDER_MINUTES)
+    ).isoformat(timespec="seconds")
+    c.execute("UPDATE purchase SET state='cancelled' WHERE state='pending' AND created<?", (cutoff,))
+    c.execute(
+        """UPDATE redemption SET status='cancelled' WHERE status='reserved'
+        AND order_id IN (SELECT id FROM purchase WHERE state='cancelled')"""
+    )
 
 
 def register(app, services):
@@ -489,4 +508,18 @@ def register(app, services):
             ).rowcount:
                 abort(404)
             audit(c, t, "下架套餐或积分包", oid)
+        return jsonify(ok=True)
+
+    @app.post("/api/admin/offers/<oid>/enable")
+    def enable(oid):
+        services["require_admin"]()
+        t = services["reqtenant"]()
+        with db(True) as c:
+            offer = c.execute("SELECT cycle FROM plan_offer WHERE id=?", (oid,)).fetchone()
+            if not offer:
+                abort(404)
+            if offer["cycle"] == "quarter":
+                raise ValueError("季付方案暂不对商家开放。")
+            if c.execute("UPDATE plan_offer SET enabled=1 WHERE id=?", (oid,)).rowcount:
+                audit(c, t, "重新上架套餐或积分包", oid)
         return jsonify(ok=True)

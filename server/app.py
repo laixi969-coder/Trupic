@@ -7,7 +7,8 @@ import os
 import shutil
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
+from .production_queue import ProductionQueue
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,7 +27,7 @@ from io import BytesIO
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import model, moments, providers
+from . import model, moments, providers, personal_agent
 from .copy_choices import apply_choice, choices_for_quote, selected_copy
 from .background import make_scene
 from .creative import (
@@ -40,7 +41,7 @@ from .creative import (
 )
 from .governance import active_rule, discover, run_tests, retrieve_method
 from .media import ROOT, SIZES, inspect_upload, photo_layout_features, render
-from .store import DATA, audit, db, dump, ident, init, now, secret, tenant_new
+from .store import DATA, TRIAL_NOTE, audit, db, dump, grant_trial, ident, init, now, secret, tenant_new
 from . import object_storage, region_edit, reference_assets, event_sources, costs, pricing, work_history, revisions, wallet, commerce, model_admission, growth, coupons, staff
 from .topics import weekly, check_topic
 from .formats import output_spec
@@ -53,7 +54,7 @@ from .design import (
 )
 from .typography import Typesetter, inspect_face
 from .lettering import OPTIONS as LETTERING_OPTIONS
-from .campaign import storyboard
+from .campaign import long_form, storyboard
 from .shot_detail import merchant_detail
 from .prompt_agent import apply_poster_layout, full_poster_prompt, optimize
 from .product_bundle import qualified_cutout, register as register_bundles
@@ -88,7 +89,29 @@ ADMIN = os.getenv("TRUPIC_ADMIN_KEY") or secret("admin.key")
 init()
 with db(True) as c:
     c.execute("CREATE TABLE IF NOT EXISTS admin_auth (id INTEGER PRIMARY KEY CHECK(id=1), password_hash TEXT NOT NULL)")
-pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trupic")
+pool = ProductionQueue(int(os.getenv("TRUPIC_JOB_WORKERS", "2")))
+# Jobs being produced by this process. A running job outside this set has lost its worker.
+ACTIVE = set()
+ACTIVE_LOCK = threading.Lock()
+RECOVERIES = {}
+SIGNIN_FAILURES = {}
+SIGNIN_LIMIT = int(os.getenv("TRUPIC_SIGNIN_FAILURES") or 20)
+
+
+def blocked_signin(key):
+    """Slow down password guessing: failures per source and account within ten minutes."""
+    if not SIGNIN_LIMIT:
+        return False
+    recent = [at for at in SIGNIN_FAILURES.get(key, []) if at > time.monotonic() - 600]
+    if recent:
+        SIGNIN_FAILURES[key] = recent
+    else:
+        SIGNIN_FAILURES.pop(key, None)
+    return len(recent) >= SIGNIN_LIMIT
+
+
+def fail_signin(key):
+    SIGNIN_FAILURES.setdefault(key, []).append(time.monotonic())
 
 
 def body():
@@ -99,11 +122,24 @@ def string(val, limit=500):
     return val.strip()[:limit] if isinstance(val, str) else ""
 
 
-def reqtenant():
+def client_source():
+    """Client address for daily trial quotas.
+
+    The forwarded address is trusted only when TRUPIC_TRUST_PROXY=1, i.e. the operator
+    runs a reverse proxy that overwrites X-Forwarded-For.
+    """
+    if os.getenv("TRUPIC_TRUST_PROXY") == "1":
+        forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+    return request.remote_addr or ""
+
+
+def reqtenant(trial=True):
     if not session.get("tenant"):
         t = ident()
         with db(True) as c:
-            tenant_new(c, t)
+            tenant_new(c, t, client_source() if trial else None)
         session["tenant"] = t
         session.permanent = True
     return session["tenant"]
@@ -280,6 +316,8 @@ def state():
     with db(True) as c:
         commerce.issue_due(c,t)
         wallet.expire(c,t)
+        # Grant a withheld trial as soon as the daily quota allows, before the balance is read.
+        trial_ok = grant_trial(c, t, client_source())
         m = c.execute("SELECT * FROM merchant WHERE id=?", (t,)).fetchone()
         prof = json.loads(m["profile"])
         works = [
@@ -323,8 +361,12 @@ def state():
                 )
             ],
             login=m["login"],
+            workspace=t,
+            personalAgent=personal_agent.enabled(t),
             admin=is_admin(c) or bool(staff.role(c)),
             credits=pricing.available(c, t),
+            # Shown only when the daily network quota actually withheld the trial.
+            trialNote="" if trial_ok else TRIAL_NOTE,
             works=works,
             assets=assets,
             cases=CASES,
@@ -428,7 +470,8 @@ def font_sample(font_id):
 
 @app.post("/api/account/<action>")
 def account(action):
-    t = reqtenant()
+    # Signing in must not spend a trial on a workspace the visitor is about to leave.
+    t = reqtenant(trial=action not in ("login", "register"))
     v = body()
     login = string(v.get("login"), 64).lower()
     pw = string(v.get("password"), 160)
@@ -436,15 +479,23 @@ def account(action):
         session.clear()
         return jsonify(ok=True)
     if action == "admin":
+        source = (request.remote_addr, "admin")
+        if blocked_signin(source):
+            abort(429, description="尝试次数过多，请十分钟后再试。")
         with db(True) as c:
             credential, hashed = admin_credential(c)
             if not admin_matches(pw, credential, hashed):
+                fail_signin(source)
                 abort(403, description="管理密码不正确；首次登录请使用本机初始管理密钥，它与商家账号密码不同。")
+            SIGNIN_FAILURES.pop(source, None)
             session["admin"] = admin_token(credential)
             audit(c, t, "管理登录", "")
         return jsonify(ok=True)
     if not login or len(pw) < 8:
         raise ValueError("请填写账号，并使用至少 8 位的密码。")
+    entering = None
+    if action == "login" and blocked_signin((request.remote_addr, "account", login)):
+        abort(429, description="尝试次数过多，请十分钟后再试。")
     with db(True) as c:
         if action == "register":
             if c.execute("SELECT id FROM merchant WHERE login=?", (login,)).fetchone():
@@ -455,17 +506,25 @@ def account(action):
                 "UPDATE merchant SET login=?,password=? WHERE id=?",
                 (login, generate_password_hash(pw), t),
             )
+            # Binding an account is the moment a withheld trial may be granted.
+            grant_trial(c, t, client_source())
             growth.bind_link(c,t,string(v.get("invite"),64),string(v.get("channel"),64),new=True)
         elif action == "login":
             r = c.execute("SELECT * FROM merchant WHERE login=?", (login,)).fetchone()
             if not r or not check_password_hash(r["password"], pw):
+                fail_signin((request.remote_addr, "account", login))
                 abort(401, description="账号或密码不正确。")
-            session.clear()
+            # A rejected promotion link must not sign the merchant out of the current workspace.
             growth.bind_link(c,r["id"],string(v.get("invite"),64),string(v.get("channel"),64))
-            session["tenant"] = r["id"]
-            session.permanent = True
+            grant_trial(c, r["id"], client_source())
+            entering = r["id"]
         else:
             abort(404)
+    SIGNIN_FAILURES.pop((request.remote_addr, "account", login), None)
+    if entering:
+        session.clear()
+        session["tenant"] = entering
+        session.permanent = True
     return jsonify(ok=True)
 
 
@@ -526,7 +585,7 @@ def delete_asset(id):
     return jsonify(ok=True)
 
 
-def plan_spec(c, t, v, *, original_photo=False):
+def plan_spec(c, t, v, *, original_photo=False, agent_profile=None):
     brief = string(v.get("brief"), 1200)
     kind = string(v.get("kind"))
     ratio = string(v.get("ratio") or ("story" if kind == "video" else "portrait"))
@@ -563,6 +622,8 @@ def plan_spec(c, t, v, *, original_photo=False):
     prof = json.loads(
         c.execute("SELECT profile FROM merchant WHERE id=?", (t,)).fetchone()[0]
     )
+    if agent_profile is not None:
+        prof = agent_profile
     if not any(
         [prof.get("product"), prof.get("industry"), len(brief) > 6]
     ) and brief in (
@@ -585,7 +646,7 @@ def plan_spec(c, t, v, *, original_photo=False):
     plan = prepare(
         brief,
         prof,
-        history(c, t),
+        [] if agent_profile is not None else history(c, t),
         rule,
         string(v.get("reference")),
         string(v.get("facts"), 250),
@@ -724,10 +785,10 @@ def moment_spec(c, tenant, request):
     return spec
 
 
-def enqueue(t, v, work=None, *, moment=False):
+def enqueue(t, v, work=None, *, moment=False, agent_reserve=None):
     key = string(v.get("requestKey"), 90)
-    if not key:
-        raise ValueError("缺少请求标识，请刷新后再试。")
+    if not key or (key.startswith("agent:") and not agent_reserve):
+        raise ValueError("缺少有效请求标识，请刷新后再试。")
     with db(True) as c:
         old = c.execute(
             "SELECT id,work,state FROM job WHERE tenant=? AND request_key=?", (t, key)
@@ -745,12 +806,15 @@ def enqueue(t, v, work=None, *, moment=False):
                 q = quotes.loads(v.get("quote") or "", salt="revision", max_age=1800)
             except BadSignature:
                 raise ValueError("请先查看并确认修改报价。")
+            if agent_reserve and q.get("currentAtQuote") != w["current"]:
+                abort(409, description="原作品已有新版本，请刷新修改报价。")
             if q["tenant"] != t or q["work"] != work:
                 abort(403)
             if type(v.get("confirmedCost")) is not int or v["confirmedCost"] != q["cost"] or v.get("confirmed") is not True:
                 raise ValueError("请确认本次修改的总积分。")
             r = c.execute("SELECT spec,copy FROM version WHERE work=? AND n=?", (work,q["base"])).fetchone()
             s = json.loads(r["spec"])
+            s["plan"].pop("agentTask", None)
             cost = q["cost"]
             s["pricingSnapshot"] = q["pricingSnapshot"]
             nxt = c.execute("SELECT MAX(n)+1 FROM version WHERE work=?", (work,)).fetchone()[0]
@@ -793,6 +857,8 @@ def enqueue(t, v, work=None, *, moment=False):
                 raise ValueError("请确认本次积分用量后再制作。")
         enough(c, t, cost)
         id = ident()
+        if agent_reserve:
+            agent_reserve(c, id, s)
         c.execute(
             "INSERT INTO job(id,tenant,request_key,spec,state,cost,work,version,error,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (id, t, key, dump(s), "queued", cost, work, nxt, None, now()),
@@ -806,7 +872,7 @@ def enqueue(t, v, work=None, *, moment=False):
 def moment_price():
     tenant = reqtenant()
     with db() as c:
-        return jsonify(cost=pricing.current(c)["poster"], workspace=tenant)
+        return jsonify(cost=pricing.current(c)["poster"], workspace=tenant, personalAgent=personal_agent.enabled(tenant))
 
 
 @app.post("/api/moments")
@@ -821,7 +887,10 @@ def create_job():
 
 @app.post("/api/works/<id>/revision-quote")
 def revision_quote(id):
-    t, v = reqtenant(), body()
+    return jsonify(make_revision_quote(reqtenant(), id, body()))
+
+
+def make_revision_quote(t, id, v):
     with db() as c:
         w = owner(c, "work", id, t)
         base = v.get("base", w["current"])
@@ -844,9 +913,9 @@ def revision_quote(id):
                 raise ValueError(rewrite.get("callError") or rewrite.get("revisionNote") or rewrite["reviewFlag"])
             spec["replacement"] = rewrite
         cost = pricing.snapshot(spec, pricing.current(c), "revision")
-        quote = quotes.dumps(dict(tenant=t, work=id, base=base, action=action, rewrite=rewrite, ratio=v.get("ratio"),
+        quote = quotes.dumps(dict(tenant=t, work=id, base=base, currentAtQuote=w["current"], action=action, rewrite=rewrite, ratio=v.get("ratio"),
                                   pricingSnapshot=spec["pricingSnapshot"], cost=cost, instruction=instruction,field=v.get("field"),region=v.get("region"),duplicate=v.get("duplicate") is True), salt="revision")
-        return jsonify(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta","offer","terms")} if action in ("edit","revision") else None)
+        return dict(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta","offer","terms")} if action in ("edit","revision") else None)
 
 
 @app.post("/api/works/<id>/revise")
@@ -857,10 +926,83 @@ def revise(id):
 def produce(id):
     from .store import model_job
     token = model_job.set(id)
+    with ACTIVE_LOCK:
+        ACTIVE.add(id)
     try:
         return produce_job(id)
     finally:
+        with ACTIVE_LOCK:
+            ACTIVE.discard(id)
         model_job.reset(token)
+
+
+def worker_alive(pid, created=None):
+    """A recycled process ID must not keep a job from an earlier process running forever."""
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    if created is None:
+        return True
+    try:
+        started = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+            env={**os.environ, "LC_ALL": "C"}, timeout=5,
+        ).stdout.strip()
+        boot = dt.datetime.strptime(started, "%a %b %d %H:%M:%S %Y").astimezone(dt.UTC)
+        return boot <= dt.datetime.fromisoformat(created)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return True
+
+
+def recover_jobs():
+    """Requeue running jobs whose worker died before settling. Credits stay reserved once."""
+    with db() as c:
+        rows = c.execute(
+            "SELECT id,tenant,work,cost,worker_pid,created FROM job WHERE state='running'"
+        ).fetchall()
+        with ACTIVE_LOCK:
+            tracked = set(RECOVERIES)
+        if tracked:
+            # Only a finished job clears its recovery count; a requeued job keeps it.
+            marks = ",".join("?" for _ in tracked)
+            finished = {
+                r[0]
+                for r in c.execute(
+                    f"SELECT id FROM job WHERE state IN ('complete','failed') AND id IN ({marks})",
+                    tuple(tracked),
+                )
+            }
+            with ACTIVE_LOCK:
+                for id in finished:
+                    RECOVERIES.pop(id, None)
+    with ACTIVE_LOCK:
+        active = set(ACTIVE)
+    recovered = []
+    for j in rows:
+        if j["id"] in active:
+            continue
+        if j["worker_pid"] != os.getpid() and worker_alive(j["worker_pid"], j["created"]):
+            continue
+        if RECOVERIES.get(j["id"], 0) >= 2:
+            # The same job keeps losing its worker: release the reservation instead of re-running.
+            with db(True) as c:
+                if c.execute("UPDATE job SET state='failed',error=?,stage=NULL WHERE id=? AND state='running'",
+                             ("制作中断，预占积分已退回。请重试。", j["id"])).rowcount:
+                    wallet.finish(c, j["tenant"], j["id"], False)
+            RECOVERIES.pop(j["id"], None)
+            continue
+        RECOVERIES[j["id"]] = RECOVERIES.get(j["id"], 0) + 1
+        with db(True) as c:
+            if c.execute("UPDATE job SET state='queued',stage=NULL WHERE id=? AND state='running'", (j["id"],)).rowcount:
+                recovered.append(j["id"])
+    for id in recovered:
+        pool.submit(produce, id)
+    return recovered
 
 
 def produce_job(id):
@@ -917,6 +1059,8 @@ def produce_job(id):
             filename = "original.png" if s.get("assetMode") == "original" else json.loads(a["info"])["file"]
             ap = DATA / t / "assets" / s["asset"] / filename
         if s["kind"] == "video":
+            if not (p.get("agentTask") and s.get("copySelected")) and (longer := long_form(p, cp)):
+                cp["longForm"] = longer
             cp["storyboard"] = storyboard(p, cp, ap)
         if s["kind"] == "poster" and p.get("posterArt") and p.get("output"):
             if n == 1 or ("moment" in p and not s.get("regionEdit") and not p.get("layoutOverride")):
@@ -935,6 +1079,7 @@ def produce_job(id):
         if s["kind"] == "video" and cp["storyboard"][1].get("evidence"):
             words += " " + cp["storyboard"][1]["line"]
             known += " " + p.get("markedDetail", {}).get("label", "")
+        words += " " + " ".join(cp.get("longForm", {}).values())
         if RISK.search(words) or unconfirmed_number(words, known):
             raise ValueError("检测到未经确认的经营声明，请补充事实后重新创作。")
         if not cached_copy:
@@ -942,6 +1087,10 @@ def produce_job(id):
                 c.execute("UPDATE job SET copy_checkpoint=?,spec=? WHERE id=?", (dump(cp), dump(s), id))
         if s["kind"] != "copy":
             stage("正在生成视频画面" if s["kind"] == "video" else "正在准备海报画面")
+        # "换一张" on a poster that has no real photo draws a new scene; the copy stays.
+        new_scene = bool(s["kind"] == "poster" and not ap and p.get("visualSource") == "concept"
+                         and p.get("layoutOverride") and s.get("variant", 0) > 0)
+        scene = f"concept-{s['variant']}" if new_scene else "concept"
         if s.get("regionEdit"):
             background, visual_engine = None, "海报局部修图"
         elif p.get("autoCreation") and s["kind"] != "copy" and p.get("bundleRole") not in ("white","overlay","box","bag","card"):
@@ -951,11 +1100,11 @@ def produce_job(id):
                 p["videoBackground"] = str(prepare_background(dest, p, cp))
                 visual_engine = p.get("videoModel") or model.route("video")["model"]
             else:
-                background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1, strict=True)
+                background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1 or new_scene, strict=True, name=scene)
         elif p.get("bundleRole") or p.get("autoCreation"):
             background, visual_engine = None, "本地商品素材排版"
         else:
-            background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1)
+            background, visual_engine = make_scene(dest, p, ap, s["kind"], n == 1 or new_scene, name=scene)
         cp["visualEngine"] = visual_engine
         custom_font = None
         if p.get("brandType"):
@@ -1307,7 +1456,7 @@ def produce_job(id):
 def job_status(id):
     with db() as c:
         r = owner(c, "job", id, reqtenant())
-    return jsonify({k: r[k] for k in ("id", "state", "work", "error", "version")})
+    return jsonify({k: r[k] for k in ("id", "state", "work", "error", "version", "stage")})
 
 
 @app.post("/api/jobs/<id>/retry")
@@ -1467,6 +1616,7 @@ def admin_state():
                     (SELECT 1 FROM job j WHERE j.tenant=m.id AND date(j.created)=date('now'))) retained""").fetchone()),
             costSummary=dict(c.execute("""SELECT (SELECT SUM(amount) FROM provider_bill WHERE currency='CNY') billed,
                 (SELECT COUNT(*) FROM job_bill) reconciled,(SELECT COUNT(*) FROM cos_object WHERE error IS NOT NULL) storageErrors""").fetchone()),
+            assistantMetrics=personal_agent.metrics(c),
             adminAuth={"environmentManaged": bool(os.getenv("TRUPIC_ADMIN_KEY")), "customPassword": admin_credential(c)[1]},
             modelPlatforms={**providers.overview(c), "defaults": {kind:{k:v for k,v in model.default_connection(kind).items() if k in ("url","model")} for kind in providers.KINDS}, "effective": {kind:{k:v for k,v in model.route(kind).items() if k in ("provider","url","model","protocol")} for kind in providers.KINDS}},
             modelCosts=costs.overview(c),
@@ -1477,6 +1627,14 @@ def admin_state():
                     SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,
                     COUNT(input_tokens) inputReports,COUNT(output_tokens) outputReports FROM model_call
                     WHERE day=? GROUP BY platform,model,kind ORDER BY calls DESC""",
+                    (now()[:10],),
+                )
+            ],
+            modelFailures=[
+                dict(r)
+                for r in c.execute(
+                    """SELECT platform,model,kind,error,COUNT(*) calls FROM model_call
+                    WHERE day=? AND ok=0 GROUP BY platform,model,kind,error ORDER BY calls DESC""",
                     (now()[:10],),
                 )
             ],
@@ -1526,6 +1684,7 @@ def admin_state():
                 "engine": model.engine_name() or "未启用文字模型",
             },
             skills=skill_library_catalog(c),
+            viewer=session.get("tenant"),
             works=works,
             cases=[
                 dict(i)
@@ -1542,7 +1701,7 @@ def admin_state():
             audit=[
                 dict(i)
                 for i in c.execute(
-                    "SELECT action,target,created FROM audit ORDER BY id DESC LIMIT 80"
+                    "SELECT a.action,a.target,a.created,a.actor,m.login FROM audit a LEFT JOIN merchant m ON m.id=a.actor ORDER BY a.id DESC LIMIT 80"
                 )
             ],
             jobs=[
@@ -2005,22 +2164,20 @@ commerce.register(app, globals())
 coupons.register(app, globals())
 work_history.register(app, globals())
 register_bundles(app, globals())
-register_creations(app, globals())
+creation_submit, creation_details = register_creations(app, globals())
+personal_agent.register(app, globals())
 register_model_tools(app, globals())
 model_admission.register(app, globals())
 
 
 def start():
+    # Nothing can still be running on a host where this process is the only producer.
     with db(True) as c:
         for j in c.execute(
-            "SELECT id,worker_pid FROM job WHERE state='running'"
+            "SELECT id,worker_pid,created FROM job WHERE state='running'"
         ).fetchall():
-            try:
-                if not j["worker_pid"]:
-                    raise ProcessLookupError()
-                os.kill(j["worker_pid"], 0)
-            except ProcessLookupError:
-                c.execute("UPDATE job SET state='queued' WHERE id=?", (j["id"],))
+            if not worker_alive(j["worker_pid"], j["created"]):
+                c.execute("UPDATE job SET state='queued',stage=NULL WHERE id=?", (j["id"],))
         pending = [
             row[0] for row in c.execute("SELECT id FROM job WHERE state='queued'")
         ]
@@ -2029,43 +2186,53 @@ def start():
 
     if object_storage.destination():
         def mirror_files():
-            import time
             while True:
-                if not object_storage.drain():
+                try:
+                    idle = not object_storage.drain()
+                except Exception:
+                    # A busy database must not stop the mirror for the rest of the process lifetime.
+                    app.logger.exception("Storage mirror interrupted")
+                    idle = True
+                if idle:
                     time.sleep(5)
         threading.Thread(target=mirror_files,daemon=True,name="cos-mirror").start()
 
     def sync():
-        import time
-
         last_sync = 0
         last_week = None
         while True:
-            event_sources.refresh_due()
-            cfg = model.settings()
-            week = dt.date.today().isocalendar()[:2]
-            if last_week != week:
+            try:
+                event_sources.refresh_due()
+                recover_jobs()
                 with db(True) as c:
-                    for merchant in c.execute(
-                        "SELECT id,profile FROM merchant"
-                    ).fetchall():
-                        weekly(
-                            c,
-                            merchant["id"],
-                            json.loads(merchant["profile"]),
-                            history(c, merchant["id"]),
-                        )
-                last_week = week
-            configured = (cfg["feed"] and cfg["license"]) or (
-                cfg["board"] and cfg["pinToken"] and cfg["pinRights"]
-            )
-            if configured and time.time() - last_sync > 86400:
-                try:
-                    discover()
-                    last_sync = time.time()
-                except Exception:
-                    logging.exception("Reference feed unavailable")
-                    last_sync = time.time() - 82800
+                    commerce.close_stale(c)
+                cfg = model.settings()
+                week = dt.date.today().isocalendar()[:2]
+                if last_week != week:
+                    with db(True) as c:
+                        for merchant in c.execute(
+                            "SELECT id,profile FROM merchant"
+                        ).fetchall():
+                            weekly(
+                                c,
+                                merchant["id"],
+                                json.loads(merchant["profile"]),
+                                history(c, merchant["id"]),
+                            )
+                    last_week = week
+                configured = (cfg["feed"] and cfg["license"]) or (
+                    cfg["board"] and cfg["pinToken"] and cfg["pinRights"]
+                )
+                if configured and time.time() - last_sync > 86400:
+                    try:
+                        discover()
+                        last_sync = time.time()
+                    except Exception:
+                        logging.exception("Reference feed unavailable")
+                        last_sync = time.time() - 82800
+            except Exception:
+                # One failed tick must not end weekly topics, event sync or job recovery.
+                app.logger.exception("Scheduled work interrupted")
             time.sleep(60)
 
     threading.Thread(target=sync, daemon=True).start()

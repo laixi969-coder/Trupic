@@ -84,7 +84,7 @@ def factual_lines(brief, extra, profile):
     return list(dict.fromkeys(values))
 
 
-def coordinate(services, c, tenant, v):
+def coordinate(services, c, tenant, v, *, agent_context=None):
     brief, extra = services["string"](v.get("brief"), 1200), services["string"](v.get("facts"), 400)
     if len(brief) < 2:
         raise ValueError("请用一句话描述想推广什么、希望得到什么。")
@@ -99,6 +99,8 @@ def coordinate(services, c, tenant, v):
         return dict(ready=False, message=route["unsupported"], questions=[])
     if mode:
         route = dict(workflow=None, roles=["copy", "motion"] if mode == "video" else ["copy", "poster", "alternate"][:count + 1])
+    if agent_context is not None and agent_context["kind"] == "copy":
+        route = dict(workflow=None, roles=["copy"])
     asset_id = services["string"](v.get("asset"), 60)
     asset = json.loads(services["owner"](c, "asset", asset_id, tenant)["info"]) if asset_id else {}
     roles = list(route["roles"])
@@ -114,6 +116,8 @@ def coordinate(services, c, tenant, v):
     if visual and v.get("assetMode") != "original" and asset.get("action") == "主体抠图" and not asset.get("suppliedTransparency") and not confirmed:
         return dict(ready=False, message="请核对抠图轮廓，或直接使用原图继续。", questions=[], action="review-asset", allowOriginal=True)
     profile = json.loads(c.execute("SELECT profile FROM merchant WHERE id=?", (tenant,)).fetchone()[0])
+    if agent_context is not None:
+        profile = agent_context["profile"]
     lines = factual_lines(brief, extra, profile)
     facts = "；".join(lines)
     questions = []
@@ -157,7 +161,7 @@ def coordinate(services, c, tenant, v):
     refs = study(c,tenant,v.get("references"),services["owner"])
     if refs:
         common_request["posterStyle"] = "photo-grid"
-    base = services["plan_spec"](c, tenant, common_request, original_photo=True)
+    base = services["plan_spec"](c, tenant, common_request, original_photo=True, agent_profile=profile if agent_context is not None else None)
     if v.get("videoReference"):
         if mode != "video":
             raise ValueError("视频节奏参考用于短片创作。")
@@ -269,7 +273,7 @@ def register(app, services):
                                           (job["work"], job["version"])).fetchone()[0])
             else:
                 cp = json.loads(job["copy_checkpoint"]) if job["copy_checkpoint"] else spec["replacement"]
-            items.append({**item, "stage":job["stage"], "promptEngine":spec["plan"].get("promptBrief", {}).get("engine"),
+            items.append({**item, "stage":job["stage"], "cost":job["cost"], "promptEngine":spec["plan"].get("promptBrief", {}).get("engine"),
                           "directions":spec["plan"].get("promptBrief", {}).get("prompts", {}),
                           "copyEngine":cp.get("engine") if cp else None, "kind":spec["kind"],"state":job["state"],"copyReady":bool(job["copy_checkpoint"]),"error":job["error"],"work":job["work"],"preview":base+"/poster" if done and spec["kind"]!="copy" else None,"video":base+"/video" if done and spec["kind"]=="video" else None,"text":"\n\n".join(cp[k] for k in ("title","body","cta") if cp.get(k)) if done and spec["kind"]=="copy" else None,"download":base+"/download" if done else None})
         complete=bool(items) and all(i["state"]=="complete" for i in items)
@@ -287,12 +291,17 @@ def register(app, services):
     @app.post("/api/creations")
     def auto_create():
         t,v=tenant(),services["body"]()
+        if str(v.get("requestKey", "")).startswith("agent:"):
+            raise ValueError("此标识用于对话任务。")
+        return jsonify(submit(t, v))
+
+    def submit(t, v, *, locked_copy=None, on_reserve=None, agent_task=None):
         key=services["string"](v.get("requestKey"),90)
         if not key: raise ValueError("缺少请求标识，请刷新后重试。")
         with db() as c:
             old = c.execute("SELECT * FROM creative_run WHERE tenant=? AND request_key=?", (t, key)).fetchone()
             if old:
-                return jsonify(details(c, old))
+                return details(c, old)
             try:
                 q = quotes.loads(v.get("quote", ""), max_age=1800)
             except BadSignature:
@@ -303,8 +312,8 @@ def register(app, services):
                 raise ValueError("创作费用已更新，请查看按钮旁的积分后重试。")
             services["enough"](c, t, q["cost"])
             visuals = [e["spec"] for e in q["items"] if e["spec"]["kind"] != "copy"]
-            if any(s["kind"] == "poster" for s in visuals):
-                chosen = selected_copy(quotes, v)
+            if locked_copy is not None or any(s["kind"] == "poster" for s in visuals):
+                chosen = locked_copy if locked_copy is not None else selected_copy(quotes, v)
                 copy_fields = {k: chosen[k] for k in ("title", "body", "cta", "offer", "terms")}
                 q["shared"].update(copy_fields)
                 q["title"] = chosen["title"]
@@ -324,14 +333,18 @@ def register(app, services):
         with db(True) as c:
             old = c.execute("SELECT * FROM creative_run WHERE tenant=? AND request_key=?", (t, key)).fetchone()
             if old:
-                return jsonify(details(c, old))
+                return details(c, old)
             services["enough"](c, t, q["cost"])
             if any(i["spec"]["plan"]["output"].get("duration",9) > 15 for i in q["items"]) and not commerce.subscription(c,t):
                 raise ValueError("当前套餐不支持所选短片时长，请重新报价。")
             services["check_topic"](c, t, q["items"][0]["spec"]["plan"].get("topic"))
             rid=ident(); items=[]
+            if on_reserve:
+                on_reserve(c, rid)
             for entry in q["items"]:
                 spec=entry["spec"]
+                if agent_task:
+                    spec["plan"]["agentTask"] = agent_task
                 spec["plan"]["creationRun"]=rid
                 for ref in spec["plan"].get("references",[]):
                     owner(c,"asset",ref["id"],t)
@@ -346,7 +359,7 @@ def register(app, services):
             c.execute("INSERT INTO creative_run VALUES(?,?,?,?,?,?,?,?)",(rid,t,key,q["title"],q["brief"],dump(summary),dump(items),now()))
             result=details(c,owner(c,"creative_run",rid,t))
         for jid in ids: services["pool"].submit(services["produce"],jid)
-        return jsonify(result)
+        return result
 
     @app.get("/api/creations")
     def auto_listing():
@@ -379,3 +392,5 @@ def register(app, services):
                               (job["work"], job["version"]))
         stream.seek(0)
         return send_file(stream,mimetype="application/zip",as_attachment=True,download_name="创作成品.zip")
+
+    return submit, details

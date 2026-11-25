@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { MerchantShop } from "./Commerce.jsx";
-import { api } from "./ui.jsx";
+import { api, copyText } from "./ui.jsx";
 
 const statuses = {
   pending: "待结算",
@@ -206,17 +206,15 @@ export function GrowthAdmin({ tip }) {
           {data.reviews.map((r) => (
             <div className="adminrow" key={r.id}>
               <span>
-                {r.guest} · 申请归属 {r.owner}
+                {r.guest} · 申请{r.kind === "agent" ? "渠道" : "邀请"}归属 {r.owner}
               </span>
-              {r.kind === "agent" && (
-                <button
-                  className="secondary"
-                  disabled={busy}
-                  onClick={() => act({ action: "approve-transfer", id: r.id })}
-                >
-                  迁移后续订单
-                </button>
-              )}
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => act({ action: "approve-transfer", id: r.id })}
+              >
+                {r.kind === "agent" ? "迁移后续订单" : "确认邀请归属"}
+              </button>
               <button
                 className="textbtn"
                 disabled={busy}
@@ -358,8 +356,8 @@ export function Promotion({ onLogin }) {
                   className="secondary"
                   onClick={async () => {
                     try {
-                      await navigator.clipboard.writeText(link(k));
-                      setMsg("链接已复制");
+                      if (await copyText(link(k))) setMsg("链接已复制");
+                      else setMsg("请选中上方链接复制");
                     } catch {
                       setMsg("请选中上方链接复制");
                     }

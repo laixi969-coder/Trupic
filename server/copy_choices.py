@@ -203,6 +203,21 @@ def write_options(spec, tenant, previous=()):
             "在每个标题中放一个具体的动作或物件。正文只写商品或项目名加一个真实细节，最多20字。"
             "把时间和预约留给末句。不要用抽象形容词和广告口号。reply 要回应标题，不得重复标题。"
         )
+    fields = ("title", "body", "cta", "shareTo", "reply")
+    if plan.get("capability"):
+        inputs["本次图文构思"] = {
+            "商品": plan.get("promptBrief", {}).get("reading", {}).get("product"),
+            "客群": plan.get("audience"), "切入角度": plan.get("angle"),
+        }
+        if local_photo and not wenan.social_headline(plan):
+            fields = ("title", "body", "cta")
+            task = (
+                "请创作三份可直接发布的中文海报文字。第一份主标题写顾客眼前的具体瞬间，"
+                "第二份主标题是一位顾客邀请朋友时会说的话，第三份主标题写选择这个商品的具体理由。"
+                "从需求提取信息，用自己的句子表达。只在副标题补齐商品名及已知条件。"
+                "没有证据的优惠、价格、功效不能写。指定标题原样使用。"
+                + wenan.POSTER_HEADINGS
+            )
     try:
         locked = LOCKED.search(plan["original"])
         seen = set(previous)
@@ -223,11 +238,16 @@ def write_options(spec, tenant, previous=()):
             review_task += "逐条检验标题：顾客会把它发给谁，对方能怎么接话，和眼前的商品或场景有什么关系？空泛或换品也成立的标题退稿。"
         approved = []
         feedback = ""
+        schema = option_schema(*fields)
+        if plan.get("capability") and local_photo and not locked:
+            headings = schema["properties"]["options"]["items"]["properties"]
+            headings["title"].update(minLength=8, maxLength=18, description="一句给顾客看的主标题")
+            headings["body"].update(maxLength=20, description="补充商品或经营事实的副标题")
         for attempt in range(2):
             drafts, sharing = [], []
             draft_error = ""
             result, engine = ask(
-                task, inputs, 900, option_schema("title", "body", "cta", "shareTo", "reply")
+                task, inputs, 900, schema
             )
             rows = result.get("options")
             if not isinstance(rows, list):

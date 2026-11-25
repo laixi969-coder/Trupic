@@ -35,6 +35,35 @@ export async function api(path, method = "GET", data) {
   if (!response.ok) throw new Error(result.error || "操作失败，请重试。");
   return result;
 }
+export async function copyText(text) {
+  // The Clipboard API needs a secure origin. Local network testing over http
+  // falls back to a temporary selection, which still works inside a tap.
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "");
+  field.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(field);
+  const picked = document.getSelection();
+  const range = picked?.rangeCount ? picked.getRangeAt(0) : null;
+  field.select();
+  field.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {}
+  field.remove();
+  if (range) {
+    picked.removeAllRanges();
+    picked.addRange(range);
+  }
+  return ok;
+}
 export function Brand() {
   return (
     <div className="brand">

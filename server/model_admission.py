@@ -27,11 +27,12 @@ def eligible(c, kind, cfg):
     from .model_tools import probe_signature
 
     row = c.execute(
-        """SELECT m.version,f.minimum FROM approved_model m JOIN model_family f ON
+        """SELECT m.version,f.minimum,m.released,m.source FROM approved_model m JOIN model_family f ON
         f.family=m.family WHERE m.platform=? AND m.kind=? AND m.signature=?""",
         (cfg["provider"], kind, probe_signature(cfg)),
     ).fetchone()
-    return bool(row and version(row["version"]) >= version(row["minimum"]))
+    return bool(row and "2026-01-01" <= row["released"] <= dt.date.today().isoformat()
+                and row["source"].startswith("https://") and version(row["version"]) >= version(row["minimum"]))
 
 
 def register(app, services):
@@ -57,6 +58,8 @@ def register(app, services):
                 dt.date.fromisoformat(released)
             except ValueError:
                 raise ValueError("发布日期格式应为 YYYY-MM-DD，也可留空。")
+        if formal() and (not "2026-01-01" <= released <= dt.date.today().isoformat() or not v.get("source")):
+            raise ValueError("正式路由需要核实 2026 年起的实际发布日期并登记官方发布依据。")
         family, number, minimum = (
             services["string"](v.get(k), 100) for k in ("family", "version", "minimum")
         )

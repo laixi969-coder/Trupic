@@ -24,3 +24,40 @@
 升级前先暂停入口写入并等待在跑任务结束，停服务后备份整个数据目录（含 SQLite 的 WAL 文件、所有媒体和签名文件），在副本上启动新版本并运行下文验收。程序回滚需要恢复与旧代码对应的同一份备份。升级后已接收的真实订单须先核对支付桥接账单，再决定如何重放，避免重复发放。规则误配可优先发布新的增长规则、重新选用路由或回退 Skill 版本，历史订单始终按所存快照核算。主机扩容为多机前需要共享数据库、文件存储和跨机任务调度。
 
 本地环境和角色操作步骤见 [README](README.md)，逐项验收及外部前置条件见 [PRD 验收进度](PRD-验收进度.md)。
+
+## V4 营销助理
+
+网页和微信小程序均使用登录会话中的租户。一次对话可有多项任务；同一项目的对话可共享经营事实及素材。创作先在服务端生成可恢复的任务草案，生产确认继续进入原来的报价、积分、作品与审核链路。后台经营概览显示对话数、任务数及等待确认数。
+
+| 数据 | 持久化与一致性 |
+| --- | --- |
+| 对话与上下文 | `agent_project`、`conversation`、`agent_message`、`agent_memory`、`agent_preferences`。同一对话中的消息幂等键唯一；归档对话后已排队任务继续。校验记忆版本后才能纠正或删除。 |
+| 创意档案 | `agent_task` 保存当前修订、需求、真实报价、候选、锁定文案及制作组标识。`agent_revision` 保存历次版本快照。`agent_option_lease` 避免相同修订同时向模型请求两组选稿。 |
+| 执行状态 | 任务规划和选稿可重试。确认后查询原 job 的实际状态；job 状态或阶段变更在同一事务写入 `agent_event`。旧任务回调以自身 job 和版本定位。 |
+| 积分与重放 | 确认同时核对商家、任务、修订、报价标识、总价、类型与幂等键。过期报价需重新确认。绑定制作组、原子预占积分后启动原制作线程。失败项按原批次释放，同组成功项仍独立结算。 |
+| 数据迁移 | `server/agent_store.py:initialize` 随服务启动创建新增表、索引和触发器；可重复执行。旧作品、订单和积分表继续按原格式读写。 |
+
+### HTTP 契约
+
+以下路由使用 `/api/agent` 前缀，返回 JSON。素材及成品继续使用原有私有下载端点。
+
+| 操作 | 输入 | 返回与异常 |
+| --- | --- | --- |
+| GET /api/agent | 当前会话 | 对话目录、项目、推荐间隔。 |
+| POST /projects、POST /conversations | 项目名称；新对话可附 project | 项目 ID 或新对话详情。项目必须属于当前商家。 |
+| GET /conversations/{id}、POST /conversations/{id}/visit | 对话 ID | 有序消息、任务与真实进度。visit 同时检查是否到达本周推荐日期。DELETE 归档对话。 |
+| GET 或 POST /conversations/{id}/messages | 读取支持 after 游标；提交含 text、requestKey 和可选 options、task、revision、workRef | 返回有序消息或更新后的完整对话。已提交消息重发可恢复同一任务。指定成品需校验版本和商家。 |
+| POST /tasks/{id}/prepare 或 /options | 规划恢复或当前 revision | 当前卡片；候选生成、脚本复核失败可重试，也能使用商家成稿。 |
+| POST /tasks/{id}/approve | revision、quoteId、approvalType=production、confirmedCost、requestKey，精简文案可选 option | 启动生产或返回同一确认结果。版本冲突为 409、无余额或报价过期为 400、同时制作达到配置上限为 429。 |
+| POST /tasks/{id}/cancel、GET /tasks/{id}/events | 当前 revision；读取可附 after | 尚未开始制作时可取消；已开始返回 409。事件按 seq 排序，包含任务、修订、类型、时间和明细。 |
+| GET 或 POST /memory，GET、PATCH、DELETE /memory/{id} | scope 由空 project 或指定项目表示；name、value、kind。变更携带 version | 读取可见条目，显式保存、修正、停用或删除。跨商家资源返回 404。 |
+| POST /preferences | weeks 为 0–4 的整数 | 0 暂停自动周主题，1–4 表示间隔周数；仍可手动查看选题。 |
+
+### 部署与回滚
+
+内测环境默认打开助理。正式模型环境初始灰度为 0。部署可用 `TRUPIC_AGENT_ROLLOUT` 设置按商家稳定分组的百分比。`TRUPIC_JOB_WORKERS` 控制全局制作线程数量，`TRUPIC_AGENT_ACTIVE_LIMIT` 控制每商家活跃制作组上限。供应商单日调用上限、预算与熔断沿用现有配置。
+
+1. 发布前备份完整持久数据目录，在数据库副本上启动升级服务，检查历史作品、账务和渠道。运行测试时使用独立的 `TRUPIC_DATA`。
+2. 先对内测商家开放，核对文案、海报、视频、积分流水和失败原因后扩大灰度。
+3. 入口回退可设 `TRUPIC_PERSONAL_AGENT=0` 并重启服务。网页 `#studio` 和原小程序入口继续工作。已有任务按持久化作业恢复，历史作品仍可下载。
+4. 若须回退代码，先关闭新提交，等待正在运行的制作结束，使用升级前工作区版本和同一持久数据目录。保留升级后新增订单、积分流水、消息及版本。重新启用 V4 后可继续原对话。整库灾难恢复另按数据卷备份与订单重放流程执行。

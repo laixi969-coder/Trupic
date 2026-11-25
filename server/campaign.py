@@ -163,13 +163,19 @@ def storyboard(plan, copy, asset=None):
     elif plan.get("visualSource") == "concept":
         shots[1]["purpose"] = "以场景承接开场，字幕沿用文案里的信息。"
     duration = plan.get("output", {}).get("duration", 9)
+    # A longer film opens and closes differently from the fifteen-second cut.
+    longer = copy.get("longForm") or {} if duration in (30, 45) else {}
+    if longer.get("opening"):
+        shots[0]["line"] = longer["opening"]
+    if longer.get("closing"):
+        shots[-1]["line"] = longer["closing"]
     if duration == 15:
         shots[1]["end"] = shots[2]["start"] = 10
         shots[2]["end"] = 15
     elif duration in (30, 45):
         segments = [s.strip() for s in re.split(r"[。！？；;，,\n]", copy["body"]) if s.strip()]
         facts = list(dict.fromkeys([*plan.get("coordination", {}).get("facts", []), *segments]))
-        used = {shot["line"].strip("。！？") for shot in shots}
+        used = {shot["line"].strip("。！？") for shot in shots} | set(longer.values())
         extras = [f for f in facts if f not in used and len(f) > 2]
         needed = 2 if duration == 30 else 4
         if len(extras) < needed:
@@ -193,3 +199,62 @@ def storyboard(plan, copy, asset=None):
             if nearby:
                 shots[index]["end"] = shots[index+1]["start"] = min(nearby,key=lambda t: abs(t-end))
     return shots
+
+
+def long_form(plan, copy):
+    """Opening hook and closing action for a 30 or 45 second film, distinct from the 15 second cut.
+
+    Anything the merchant has not confirmed is dropped; the shared title and call to
+    action remain when no text model is connected or the draft fails these checks.
+    """
+    if plan.get("output", {}).get("duration") not in (30, 45):
+        return {}
+    from . import model
+    from .creative import RISK, unconfirmed_number
+
+    if not model.route("text")["model"]:
+        return {}
+    known = " ".join(
+        str(part)
+        for part in (
+            plan.get("original", ""),
+            plan.get("facts", ""),
+            plan["profile"].get("facts", ""),
+            copy.get("offer"),
+            copy.get("terms"),
+        )
+    )
+    try:
+        result, _ = model.ask(
+            "你为同一条商品短片写更长版本的开场和结尾。只返回 JSON 对象，"
+            "opening 是前三秒的开场钩子，closing 是结尾的行动引导。"
+            "两者都要与已有标题和行动句不同，各不超过 18 个字，口语自然，"
+            "不新增价格、优惠、数字、功效或承诺，不使用分号和换行。",
+            {
+                "标题": copy.get("title", ""),
+                "正文": copy.get("body", ""),
+                "行动句": copy.get("cta", ""),
+                "商家已确认的信息": known,
+            },
+            max_tokens=200,
+        )
+    except (ValueError, OSError):
+        return {}
+    if not isinstance(result, dict):
+        return {}
+    kept = {}
+    for key, current in (("opening", copy.get("title")), ("closing", copy.get("cta"))):
+        value = result.get(key)
+        if not isinstance(value, str):
+            continue
+        value = value.strip("“”「」 ")
+        if (
+            not 4 <= len(value) <= 18
+            or value == (current or "").strip()
+            or RISK.search(value)
+            or unconfirmed_number(value, known)
+            or any(mark in value for mark in "；;\n")
+        ):
+            continue
+        kept[key] = value
+    return kept

@@ -1,7 +1,9 @@
 """Independent capability connections, compatible protocols and provider routing."""
 
+import datetime as dt
 import hashlib
 import json
+import os
 import re
 from urllib.parse import urlsplit
 from . import model_admission, model_catalog
@@ -32,6 +34,32 @@ DEFAULT_URLS = {("atlas","video"): "https://api.atlascloud.ai/api/v1/model/gener
 
 def supported(platform):
     return SUPPORTED.get(platform, KINDS)
+
+
+# A platform whose latest calls for one capability all failed rests for this long.
+BREAKER_FAILURES = int(os.getenv("TRUPIC_BREAKER_FAILURES") or 3)
+BREAKER_SECONDS = int(os.getenv("TRUPIC_BREAKER_SECONDS") or 120)
+
+
+def tripped(c, kind, platform):
+    """True while the platform's most recent calls all failed inside the cooldown.
+
+    Rows older than the cooldown no longer count, so the platform is tried again
+    after it rests; one success resets the count.
+    """
+    if not BREAKER_FAILURES or not BREAKER_SECONDS or not platform or platform == "local-rules":
+        return False
+    rows = c.execute(
+        "SELECT ok,created FROM model_call WHERE kind=? AND platform=? ORDER BY id DESC LIMIT ?",
+        (kind, platform, BREAKER_FAILURES),
+    ).fetchall()
+    if len(rows) < BREAKER_FAILURES or any(r["ok"] for r in rows) or not rows[0]["created"]:
+        return False
+    try:
+        last = dt.datetime.fromisoformat(rows[0]["created"].replace(" ", "T") + "+00:00")
+    except ValueError:
+        return False
+    return (dt.datetime.now(dt.UTC) - last).total_seconds() < BREAKER_SECONDS
 
 
 def protocols_for(platform, kind):
@@ -190,9 +218,13 @@ def save_capability(c, actor, payload):
     if "baseUrl" in payload:
         require_catalog_model(c, platform, kind, connections[kind])
         connections[kind]["baseUrl"] = payload["baseUrl"]
-    c.execute("""INSERT INTO model_provider(id,label,url,key,text,vision,connections) VALUES(?,?,?,'','','',?)
-        ON CONFLICT(id) DO UPDATE SET label=excluded.label,connections=excluded.connections""",
-        (platform,label,PRESETS.get(platform,("",""))[1],json.dumps(connections)))
+    # Rows pass through the sealing view; split the upsert so the view triggers apply.
+    stored = json.dumps(connections)
+    if c.execute("SELECT 1 FROM model_provider WHERE id=?", (platform,)).fetchone():
+        c.execute("UPDATE model_provider SET label=?,connections=? WHERE id=?", (label,stored,platform))
+    else:
+        c.execute("INSERT INTO model_provider(id,label,url,key,text,vision,connections) VALUES(?,?,?,'','','',?)",
+                  (platform,label,PRESETS.get(platform,("",""))[1],stored))
     audit(c,actor,"更新独立模型连接",label+" / "+kind)
 
 
@@ -259,7 +291,9 @@ def overview(c):
                 connections[kind]["catalog"] = dict(**visible, updated=cached["updated"])
                 connections[kind]["selectable"] = any(m["id"] == cfg.get("model") for m in visible["models"])
         platforms.append(dict(id=platform,label=label,url=record["url"],text=record.get("text",""),vision=record.get("vision",""),hasKey=bool(record.get("key")),connections=connections,supported=list(supported(platform))))
-    return {"routeVersion": route_version(c), "formal": model_admission.formal(), "platforms": platforms, "backups": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_backup")}, "routes": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_route")}, "protocols": PROTOCOLS}
+    resting = {kind: route[0] for kind in KINDS if (route := c.execute("SELECT platform FROM model_route WHERE kind=?", (kind,)).fetchone()) and tripped(c, kind, route[0])}
+    return {"routeVersion": route_version(c), "formal": model_admission.formal(), "resting": resting,
+            "keySealing": bool(os.getenv("TRUPIC_SECRET_KEY", "").strip()), "platforms": platforms, "backups": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_backup")}, "routes": {r["kind"]:r["platform"] for r in c.execute("SELECT * FROM model_route")}, "protocols": PROTOCOLS}
 
 
 def save(c, actor, payload):
@@ -305,11 +339,12 @@ def save(c, actor, payload):
     ):
         if route["kind"] in ("text", "vision") and not {"text": text, "vision": vision}[route["kind"]]:
             raise ValueError("该模型正在使用，请先切换对应的调用平台。")
-    c.execute(
-        """INSERT INTO model_provider(id,url,key,text,vision,label) VALUES(?,?,?,?,?,?)
-              ON CONFLICT(id) DO UPDATE SET url=excluded.url,key=excluded.key,text=excluded.text,vision=excluded.vision,label=excluded.label""",
-        (platform, url, key, text, vision, label),
-    )
+    if c.execute("SELECT 1 FROM model_provider WHERE id=?", (platform,)).fetchone():
+        c.execute("UPDATE model_provider SET url=?,key=?,text=?,vision=?,label=? WHERE id=?",
+                  (url, key, text, vision, label, platform))
+    else:
+        c.execute("INSERT INTO model_provider(id,url,key,text,vision,label) VALUES(?,?,?,?,?,?)",
+                  (platform, url, key, text, vision, label))
     audit(c, actor, "更新模型平台", label)
 
 
@@ -395,6 +430,9 @@ def connection(kind):
             primary = checked_connection(c, kind, route[0])
             backup_id = c.execute("SELECT platform FROM model_backup WHERE kind=?", (kind,)).fetchone()
             backup = checked_connection(c, kind, backup_id[0]) if backup_id else None
+            if primary and backup and tripped(c, kind, primary["provider"]):
+                # The main connection is resting after repeated failures; use the backup alone.
+                return backup
             if primary:
                 if backup:
                     primary["backup"] = backup

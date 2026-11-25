@@ -11,9 +11,34 @@ const ratios = ["3:4", "1:1", "9:16", "4:5", "16:9"];
 const ratioKeys = ["portrait", "square", "story", "feed", "landscape"];
 const resolutions = [720, 1080, 2160],
   dpis = [72, 150, 300];
+// Every ratio is shown with its number and a shape of the same proportions.
+const shapeStyles = ratios.map((label) => {
+  const [w, h] = label.split(":").map(Number);
+  const scale = 28 / Math.max(w, h);
+  return `width:${Math.round(w * scale)}rpx;height:${Math.round(h * scale)}rpx;`;
+});
 const defaults = {
   poster: { ratio: "3:4", resolution: 1080, dpi: 300 },
   video: { ratio: "9:16", resolution: 720, dpi: 300 },
+};
+const emptyStudioDraft = {
+  kind: "poster",
+  brief: "",
+  briefError: "",
+  focusBrief: false,
+  style: "auto",
+  source: "一句话创作",
+  topicId: "",
+  format: defaults.poster,
+  asset: null,
+  identityRegion: null,
+  visualDetail: null,
+  assetMode: "original",
+  assetConfirmed: false,
+  assetImage: "",
+  photoError: "",
+  sheet: "",
+  regionStyle: "",
 };
 Page({
   ...moment.methods,
@@ -22,6 +47,7 @@ Page({
     studio: false,
     kinds,
     ratios,
+    shapeStyles,
     resolutions,
     dpis,
     kind: "poster",
@@ -58,10 +84,37 @@ Page({
         ...draft,
         regionStyle: this.regionStyle(draft.identityRegion),
       });
+    // Drafts saved before accounts were recorded have no owner and are adopted once.
+    this.draftWorkspace = draft?.workspace || null;
     this.setData({ format: this.formats[this.data.kind] || defaults.poster });
   },
-  onShow() {
+  async onShow() {
     const app = getApp();
+    const handoff = app.globalData.handoff;
+    if (handoff) {
+      // A photo that needs its protected label marked arrives from the one-tap page.
+      app.globalData.handoff = null;
+      this.setData({
+        studio: true,
+        kind: "poster",
+        brief: handoff.brief,
+        briefError: "",
+        style: "auto",
+        source: "一键创作",
+        topicId: "",
+        format: this.formats.poster,
+        asset: handoff.asset,
+        identityRegion: null,
+        visualDetail: null,
+        regionStyle: "",
+        marking: false,
+        assetMode: "original",
+        assetConfirmed: false,
+        assetImage: "",
+      });
+      this.save();
+      await this.showPhoto();
+    }
     if (app.globalData.sample) {
       const s = app.globalData.sample;
       this.setData({
@@ -78,7 +131,33 @@ Page({
       this.save();
       wx.pageScrollTo({ scrollTop: 0, duration: 0 });
     }
-    return this.data.studio ? this.loadTopics() : this.loadMoment();
+    // The price call also tells which workspace is active, so an account change is
+    // noticed before the previous merchant's brief or photo can be shown again.
+    return this.loadMoment().then(() =>
+      this.data.studio ? this.loadTopics() : undefined,
+    );
+  },
+  agent() { wx.navigateTo({ url: "/pages/agent/agent" }); },
+  showLegacy() { this.setData({ legacyMoment: true }); },
+  quick(e) {
+    getApp().globalData.quickMode = e.currentTarget.dataset.mode;
+    wx.navigateTo({ url: "/pages/quick/quick" });
+  },
+  adoptWorkspace(workspace) {
+    this.workspace = workspace;
+    if (this.draftWorkspace === null) this.draftWorkspace = workspace;
+    if (this.draftWorkspace !== workspace) this.resetStudioDraft();
+  },
+  // Another account on this device must not inherit the earlier brief and product photo.
+  resetStudioDraft() {
+    this.draftWorkspace = this.workspace;
+    wx.setStorageSync("trupic.draft", null);
+    this.setData({
+      ...emptyStudioDraft,
+      format: this.formats.poster,
+      topics: [],
+      topicsError: "",
+    });
   },
   toggleStudio() {
     if (this.data.busy) return;
@@ -122,6 +201,8 @@ Page({
       brief,
       style,
       source,
+      // Keep the known owner when saving before this page has learned the active workspace.
+      workspace: this.workspace || this.draftWorkspace || undefined,
       topicId: this.data.topicId,
       asset,
       assetMode,
@@ -157,6 +238,12 @@ Page({
   },
   close() {
     this.setData({ sheet: "" });
+  },
+  pickRatio(e) {
+    this.selectFormat({
+      currentTarget: { dataset: { key: "ratio" } },
+      detail: { value: Number(e.currentTarget.dataset.index) },
+    });
   },
   selectFormat(e) {
     const key = e.currentTarget.dataset.key;

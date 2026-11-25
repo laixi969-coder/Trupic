@@ -67,7 +67,7 @@ def request_edit(cfg, image, instruction, fields, timeout):
 def cloud_patch(cfg, image, instruction):
     # Send only the selected patch. A provider can never modify the surrounding pixels.
     model.reserve_provider_call("edit")
-    started, ok = time.monotonic(), False
+    started, ok, reason = time.monotonic(), False, None
     try:
         raw = request_edit(cfg, image, instruction, {"response_format": "b64_json"}, 95)
         with Image.open(io.BytesIO(raw)) as edited:
@@ -78,10 +78,13 @@ def cloud_patch(cfg, image, instruction):
             raise ValueError("修图服务未修改选区。")
         ok = True
         return patch
+    except Exception as exc:
+        reason = model.failure_reason(exc)
+        raise
     finally:
         with db(True) as c:
             c.execute(
-                "INSERT INTO model_call(day,kind,platform,model,ok,ms,job) VALUES(?,?,?,?,?,?,current_model_job())",
+                "INSERT INTO model_call(day,kind,platform,model,ok,ms,job,error) VALUES(?,?,?,?,?,?,current_model_job(),?)",
                 (
                     now()[:10],
                     "edit",
@@ -89,6 +92,7 @@ def cloud_patch(cfg, image, instruction):
                     cfg["model"],
                     ok,
                     round((time.monotonic() - started) * 1000),
+                    reason,
                 ),
             )
 

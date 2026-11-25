@@ -13,7 +13,7 @@ const vm = require("node:vm");
 
 test(
   "朋友圈拍照直出、成品后选稿与换版，以及原有创作和导出",
-  { timeout: 180000 },
+  { timeout: 300000 },
   async (t) => {
     const root = resolve(__dirname, "..");
     const temp = mkdtempSync(join(tmpdir(), "trupic-wx-"));
@@ -129,6 +129,7 @@ test(
       switchTab: (o) => (route = o.url),
       navigateTo: (o) => (route = o.url),
       redirectTo: (o) => (route = o.url),
+      navigateBack: () => (route = "back"),
       showToast: () => {},
       showModal(o) {
         if (!o.success) return errors.push(o.content);
@@ -500,6 +501,162 @@ test(
     const afterMoments = await api.request("state");
     assert.equal(afterMoments.works.length, state.works.length + 2);
     assert.equal(state.credits - afterMoments.credits, 2 * state.prices.poster + 2 * state.prices.revision);
+    // One-tap entries: two square images with copy, then a 15-second video with copy.
+    const settle = async (quick) => {
+      for (let i = 0; i < 400 && quick.data.planning; i++) await delay(25);
+      assert.equal(quick.data.planning, false, quick.data.planError);
+    };
+    const priced = (await api.request("state")).prices;
+    app.globalData.quickMode = "image";
+    const quick = page("quick");
+    quick.onLoad();
+    await quick.onShow();
+    assert.equal(quick.data.mode, "image");
+    assert.equal(quick.data.total, priced.copy + priced.poster);
+    quick.pick(click({ key: "imageCount", value: 2 }));
+    quick.pick(click({ key: "ratioKey", value: "square" }));
+    assert.equal(quick.data.total, priced.copy + 2 * priced.poster);
+    assert.equal(String(quick.data.shapeStyles[0]), "width:28rpx;height:28rpx;");
+    await quick.input(input("周末台球组局，双人台球"));
+    await settle(quick);
+    assert.equal(quick.data.plan?.ready, true, quick.data.plan?.message || quick.data.planError);
+    assert.deepEqual(quick.data.plan.deliveries.map((d) => d.kind), ["copy", "poster", "poster"]);
+    assert.equal(quick.data.plan.cost, quick.data.total);
+    quick.go();
+    assert.equal(route, "/pages/quick-confirm/quick-confirm");
+    const confirmRun = page("quick-confirm");
+    confirmRun.onLoad();
+    assert.equal(confirmRun.data.cost, quick.data.plan.cost);
+    await confirmRun.submit();
+    assert.equal(route, "/pages/quick-confirm/quick-confirm");
+    await confirmRun.loadOptions();
+    assert.ok(confirmRun.data.options.length >= 2, confirmRun.data.error);
+    confirmRun.choose(input(confirmRun.data.options[1].token));
+    await confirmRun.submit();
+    assert.ok(route.startsWith("/pages/run/run?run="), confirmRun.data.error);
+    const progress = page("run");
+    progress.onLoad({ run: route.split("=").pop() });
+    await progress.onShow();
+    for (let i = 0; i < 1200 && progress.data.run?.active; i++) {
+      await delay(60);
+      await progress.refresh();
+    }
+    assert.equal(progress.data.run.complete, true, JSON.stringify(progress.data.items.map((i) => i.error)));
+    assert.equal(progress.data.done, 3);
+    const delivered = progress.data.run.items.find((i) => i.kind === "copy");
+    progress.copy({ currentTarget: { dataset: { text: delivered.text } } });
+    assert.ok(clipboard.includes(confirmRun.data.options[1].title));
+    const picture = progress.data.items.filter((i) => i.kind === "poster");
+    assert.ok(picture.every((i) => i.media));
+    await progress.save(click({ job: picture[0].job }));
+    assert.equal(album, picture[0].media);
+    assert.equal(readFileSync(album).readUInt32BE(16), 1080);
+    progress.onHide();
+    app.globalData.quickMode = "video";
+    const clip = page("quick");
+    clip.onLoad();
+    await clip.onShow();
+    assert.equal(clip.data.mode, "video");
+    // The same device, same account: the earlier brief is still there to reuse.
+    assert.match(clip.data.brief, /台球/);
+    clip.pick(click({ key: "duration", value: 30 }));
+    assert.deepEqual(Array.from(clip.data.durations), [15]);
+    assert.equal(clip.data.duration, 15);
+    await settle(clip);
+    assert.deepEqual(clip.data.plan.deliveries.map((d) => d.kind), ["copy", "video"]);
+    clip.go();
+    const confirmClip = page("quick-confirm");
+    confirmClip.onLoad();
+    await confirmClip.submit();
+    assert.ok(route.startsWith("/pages/run/run?run="), confirmClip.data.error);
+    progress.onLoad({ run: route.split("=").pop() });
+    await progress.onShow();
+    for (let i = 0; i < 1200 && progress.data.run?.active; i++) {
+      await delay(60);
+      await progress.refresh();
+    }
+    assert.equal(progress.data.run.complete, true, JSON.stringify(progress.data.items.map((i) => i.error)));
+    const film = progress.data.items.find((i) => i.kind === "video");
+    assert.ok(film.media);
+    assert.equal(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", film.media], { encoding: "utf8" }).trim().split(".")[0], "15");
+    await progress.save(click({ job: film.job }));
+    assert.equal(album, film.media);
+    progress.onHide();
+    // History: delete one, undo, delete all, undo; industry as several tags plus a custom one.
+    const history = page("mine");
+    await history.load();
+    assert.equal(history.data.account, "wechat-owner");
+    assert.equal(history.data.runs.length, 2);
+    const kept = history.data.works.length;
+    history.manage();
+    history.toggle(click({ id: history.data.works[0].id }));
+    assert.equal(history.data.works[0].checked, true);
+    await history.removeSelected();
+    assert.equal(history.data.works.length, kept - 1);
+    assert.equal(history.data.trash.count, 1);
+    await history.undo();
+    assert.equal(history.data.works.length, kept);
+    await history.removeAll();
+    assert.equal(history.data.works.length, 0);
+    assert.equal(history.data.trash.count, kept);
+    await history.undo();
+    assert.equal(history.data.works.length, kept);
+    history.toggleLedger();
+    assert.ok(history.data.ledger.some((row) => row.delta < 0));
+    history.edit();
+    history.toggleIndustry(click({ name: "休闲娱乐" }));
+    history.field({ ...click({ key: "customIndustry" }), ...input("台球") });
+    history.addIndustry();
+    await history.save();
+    assert.deepEqual(Array.from(history.data.profile.industryTags), ["休闲娱乐", "台球"]);
+    const shop = page("shop");
+    await shop.load();
+    // No payment bridge is configured here, so nothing can be bought by accident.
+    assert.equal(shop.data.canPay, false);
+    assert.equal(shop.data.account, "wechat-owner");
+    const assistant = page("agent");
+    assistant.onLoad();
+    await assistant.onShow();
+    await assistant.sendText("给茶馆做一张海报，文案用「今晚来喝茶」");
+    const card = assistant.data.chat.tasks[0];
+    assert.equal(card.locked.title, "今晚来喝茶");
+    assert.equal(card.status, "quoted");
+    assistant.onHide();
+    const restored = page("agent");
+    restored.onLoad();
+    await restored.onShow();
+    assert.equal(restored.data.chat.tasks[0].quoteId, card.quoteId);
+    await restored.stage(click({card, action:"approve"}));
+    assert.ok(restored.data.chat.tasks[0].items.length);
+    restored.onUnload();
+    // The account changes without the page-level logout that clears the stored draft.
+    // Another merchant on this device must not inherit the earlier brief or photo.
+    await api.request("account/logout", "POST", {});
+    await api.request("account/register", "POST", { login: "wechat-stranger", password: "wechat-fixture" });
+    const stranger = page("home");
+    stranger.onLoad();
+    assert.ok(stranger.data.brief, "the stored draft is restored until the workspace is known");
+    await stranger.onShow();
+    assert.equal(stranger.data.brief, "");
+    assert.equal(stranger.data.asset, null);
+    assert.equal(stranger.data.briefError, "");
+    assert.deepEqual(stranger.data.shapeStyles, [
+      "width:21rpx;height:28rpx;",
+      "width:28rpx;height:28rpx;",
+      "width:16rpx;height:28rpx;",
+      "width:22rpx;height:28rpx;",
+      "width:28rpx;height:16rpx;",
+    ]);
+    const strangerQuick = page("quick");
+    strangerQuick.onLoad();
+    await strangerQuick.onShow();
+    assert.equal(strangerQuick.data.brief, "");
+    assert.equal(strangerQuick.data.asset, null);
+    await api.request("account/login", "POST", { login: "wechat-owner", password: "wechat-fixture" });
+    const owner = page("home");
+    owner.onLoad();
+    await owner.onShow();
+    assert.equal(owner.data.brief, "");
     assert.deepEqual(errors, []);
   },
 );

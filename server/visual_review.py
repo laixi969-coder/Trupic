@@ -565,6 +565,8 @@ def compact_review(dest, spec, cfg, layout):
         separated = (spec["kind"] == "poster" and measured_separation(layout["frames"][0]))
         review_cfg = review_schema(cfg, "status")
         system = "审核整幅广告构图。并排画面按播放顺序排列。观察主体与标题的空间关系，短片观察景别变化。若标题明显盖住主体识别处、文案挤出画幅，或三镜只换字而图像完全相同，返回 repair 并点明位置。画面可辨、构图成立时返回 pass，简述所见。风格喜好或无法读清的小字不单独判为缺陷。"
+        if spec["kind"] == "video" and spec["plan"].get("agentTask"):
+            system += "第一镜代表开场前两秒。请结合封面标题、开场可见的具体事物、中段的信息变化与末镜行动，说明观众能读懂的核心意思。"
         if separated:
             system = ("逐项观察这张成品广告：商品是否可辨、背景中是否出现多余商品、是否出现异常拼接或重影。"
                       "版面测量已确认所有字框在画布内、均与商品边界分离。请描述实际看到的主体与环境。"
@@ -653,6 +655,8 @@ def review_with(cfg, dest, original, spec, copy, layout):
     with Image.open(dest / "poster.png") as im:
         content.extend(image_message("交付海报或短片封面", im))
     if spec["kind"] == "video":
+        if spec["plan"].get("agentTask"):
+            content.extend(image_message("开场前两秒的末帧，核对标题和吸引继续观看的具体画面", exported_frame(dest / "video.mp4", 47)))
         for i, shot in enumerate(copy["storyboard"]):
             label = f"第{i + 1}镜"
             if i == 1 and (evidence := copy["storyboard"][i].get("evidence")):
