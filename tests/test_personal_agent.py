@@ -72,6 +72,35 @@ class PersonalAgentTests(TestCase):
             s["tenant"] = self.tenant
         return client
 
+    def test_home_resumes_active_owned_task_and_excludes_archived_or_cancelled(self):
+        hello = self.send("你好。")
+        self.assertFalse(hello["tasks"])
+        self.assertIn("想为店里推广什么", hello["messages"][-1]["text"])
+        self.assertIsNone(self.c.get("/api/agent").json["pending"])
+        card = self.card()
+        spoken = self.send("确认制作。", task=card["id"], revision=card["revision"])
+        self.assertIn("请在任务卡上点", spoken["messages"][-1]["text"])
+        self.assertEqual(spoken["tasks"][0]["quoteId"], card["quoteId"])
+        self.assertEqual(self.jobs(card), [])
+        another = self.conversation()
+        latest = self.card(cid=another)
+        home = self.c.get("/api/agent").json
+        self.assertEqual(home["workspace"], self.tenant)
+        self.assertEqual(home["pending"]["task"], latest["id"])
+        self.assertEqual(home["pending"]["cost"], latest["cost"])
+        self.assertIsNone(studio.app.test_client().get("/api/agent").json["pending"])
+        self.c.delete("/api/agent/conversations/" + another, json={})
+        pending = self.c.get("/api/agent").json["pending"]
+        self.assertEqual((pending["conversation"], pending["task"]), (self.cid, card["id"]))
+        res = post(self.c, "agent/tasks/" + card["id"] + "/cancel", revision=card["revision"])
+        self.assertEqual(res.status_code, 200, res.json)
+        self.assertIsNone(self.c.get("/api/agent").json["pending"])
+        queued = self.card(cid=self.conversation())
+        with patch.object(studio.pool, "submit"):
+            self.assertEqual(self.approve(queued).status_code, 200)
+        queued_home = self.c.get("/api/agent").json["pending"]
+        self.assertEqual((queued_home["task"], queued_home["status"]), (queued["id"], "queued"))
+
     def test_scoped_memory_correction_disable_delete_and_explicit_conflict(self):
         project = post(self.c, "agent/projects", title="春季品鉴会").json["id"]
         post(self.c, "agent/memory", name="招牌", value="桂花茶")

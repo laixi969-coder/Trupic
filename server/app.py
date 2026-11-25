@@ -60,6 +60,7 @@ from .prompt_agent import apply_poster_layout, full_poster_prompt, optimize
 from .product_bundle import qualified_cutout, register as register_bundles
 from .auto_creation import register as register_creations
 from .auto_pipeline import shared_copy
+from .voice import register as register_voice
 from .model_tools import register as register_model_tools
 from .skill_library import attach as attach_skills, catalog as skill_library_catalog, effective_versions, manage_version, import_package
 from .visual_review import (
@@ -2166,6 +2167,7 @@ work_history.register(app, globals())
 register_bundles(app, globals())
 creation_submit, creation_details = register_creations(app, globals())
 personal_agent.register(app, globals())
+register_voice(app, reqtenant)
 register_model_tools(app, globals())
 model_admission.register(app, globals())
 

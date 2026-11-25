@@ -1,11 +1,15 @@
-<view class="page">
-  <view class="between"><view class="heading">{{chat.title || '营销助理'}}</view><button class="link" disabled="{{busy}}" bindtap="history">历史</button><button class="link" disabled="{{busy}}" bindtap="fresh">＋ 新对话</button></view>
-  <view wx:if="{{showHistory}}" class="panel"><button wx:for="{{history}}" wx:key="id" class="line" data-id="{{item.id}}" bindtap="open">{{item.title}}</button></view>
-  <view wx:for="{{turns}}" wx:key="seq" class="turn {{item.role}}">
+<view wx:if="{{!workspaceReady}}" class="page">
+  <view class="heading">营销助理</view><view class="note" aria-live="polite">{{error || '正在打开对话…'}}</view>
+  <button wx:if="{{error}}" class="secondary" bindtap="onShow">重试</button>
+</view>
+<view wx:else class="page chat-page {{callActive ? 'on-call' : ''}}">
+  <view class="between"><view class="heading conversation-title">{{chat.title || '新的营销对话'}}</view><button class="link" disabled="{{busy}}" bindtap="history">历史</button><button class="link" disabled="{{busy}}" bindtap="fresh">＋ 新对话</button></view>
+  <view wx:if="{{showHistory}}" class="panel"><view wx:if="{{!history.length}}" class="sub">还没有对话记录。发出第一条需求后会保存在这里。</view><button wx:for="{{history}}" wx:key="id" class="line" data-id="{{item.id}}" bindtap="open">{{item.title}}</button></view>
+  <view wx:for="{{turns}}" wx:key="seq" id="{{item.card ? 'task-' + item.card.id : 'turn-' + item.seq}}" class="turn {{item.role}} {{item.card ? 'task-card' : ''}} {{item.card && item.card.id === focusedTask ? 'focused-card' : ''}}">
     <block wx:if="{{item.kind==='topics'}}"><view class="label">本周营销主题</view><button wx:for="{{item.items}}" wx:for-item="r" wx:key="topicId" class="line" data-item="{{r}}" bindtap="topic" disabled="{{busy}}">{{r.title}} ›</button></block>
     <block wx:elif="{{item.kind==='switch'}}"><view>这是一个新任务。要在哪里继续？</view><button class="link" data-action="branch" data-item="{{item}}" bindtap="switchTask" disabled="{{busy}}">另开对话</button><button class="link" data-action="here" data-item="{{item}}" bindtap="switchTask" disabled="{{busy}}">留在这里</button></block>
     <block wx:elif="{{item.kind==='pick_work'}}"><text>{{item.text}}</text><button wx:for="{{item.items}}" wx:for-item="work" wx:key="id" data-work="{{work}}" data-question="{{item}}" bindtap="pickWork">{{work.label}}</button></block>
-    <block wx:elif="{{item.kind==='task'}}"><view class="label">{{item.card.stateText}}</view><view>{{item.card.note}}</view><view wx:if="{{item.card.locked}}">{{item.card.locked.title}} {{item.card.locked.body}} {{item.card.locked.cta}}</view>
+    <block wx:elif="{{item.kind==='task'}}"><view class="card-state">{{item.card.stateText}}</view><view class="request-line">{{item.card.deliveryLabel}}</view><view wx:if="{{item.card.note}}" class="sub">{{item.card.note}}</view><view wx:if="{{item.card.locked}}" class="locked-copy">{{item.card.locked.title}} {{item.card.locked.body}} {{item.card.locked.cta}}</view>
       <button wx:if="{{item.card.status==='waiting_script'}}" class="secondary" data-action="options" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">生成并复核脚本</button>
       <block wx:if="{{item.card.status==='waiting_copy'}}"><button wx:if="{{!item.card.options.length}}" class="secondary" data-action="options" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">获取候选文案</button>
         <button wx:for="{{item.card.options}}" wx:for-item="opt" wx:key="title" class="line" data-index="{{index}}" data-card="{{item.card}}" bindtap="choose" disabled="{{busy}}">{{opt.title}}　{{opt.body}}</button></block>
@@ -18,6 +22,29 @@
     </block>
     <text wx:else selectable>{{item.text}}</text>
   </view>
-  <view class="panel"><textarea maxlength="1200" value="{{text}}" placeholder="想为店里推广什么？" bindinput="input"/><button class="link" bindtap="addPhoto" disabled="{{busy}}">{{asset ? asset.name : '添加有权使用的照片'}}</button><button class="primary" bindtap="send" disabled="{{busy || !text}}" loading="{{busy}}">发送消息</button></view>
-  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <view wx:if="{{turns.length}}" class="reply-tools">
+    <button class="small-action" bindtap="readReply" disabled="{{busy || callActive || voiceState !== 'idle'}}">{{speaking ? '停止朗读' : '朗读最近回复'}}</button>
+  </view>
+  <view class="composer" id="message-composer">
+    <view wx:if="{{asset}}" class="attachment">
+      <image wx:if="{{assetPhoto}}" src="{{assetPhoto}}" mode="aspectFill"/>
+      <text>{{asset.name || '商品照片'}}</text><button class="small-action" bindtap="removePhoto" disabled="{{busy || callActive}}">移除</button>
+    </view>
+    <textarea class="chat-input" maxlength="1200" value="{{text}}" disabled="{{busy || callActive}}" placeholder="商品、活动，或想调整的地方…" bindinput="input"/>
+    <view class="compose-tools">
+      <button class="small-action" bindtap="addPhoto" disabled="{{busy || callActive}}">{{asset ? '换照片' : '加照片'}}</button>
+      <button class="small-action" bindtap="dictate" disabled="{{busy || callActive || speaking || voiceState === 'authorizing' || voiceState === 'transcribing'}}">{{voiceState === 'listening' && !callActive ? '结束听写' : '语音听写'}}</button>
+      <button class="send-action" bindtap="send" disabled="{{busy || !text || callActive || voiceState !== 'idle'}}">发送</button>
+    </view>
+  </view>
+  <view wx:if="{{!callActive}}" class="call-entry">
+    <button class="call-switch" bindtap="toggleCall" disabled="{{busy || speaking || voiceState !== 'idle'}}">开始连续语音对话</button>
+    <view class="sub call-hint">停顿后发送，助理会读出回复。</view>
+  </view>
+  <view wx:if="{{callActive}}" class="live-call">
+    <view class="live-caption"><view class="card-state">连续语音对话</view><view aria-live="polite">{{voiceNote || '准备下一轮…'}}</view></view>
+    <button class="end-call" bindtap="toggleCall">结束通话</button>
+  </view>
+  <view wx:elif="{{voiceNote}}" class="sub status-note" aria-live="polite">{{voiceNote}}</view>
+  <view wx:if="{{error}}" class="error" aria-live="polite">{{error}}</view>
 </view>

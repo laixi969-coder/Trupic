@@ -1,4 +1,5 @@
 const api = require("../../lib/api");
+const audio = require("../../lib/agent-speech");
 const key = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 const labels = {
   planning: "正在规划",
@@ -28,6 +29,8 @@ function turns(chat) {
             ...m,
             card: {
               ...card,
+              deliveryLabel: (card.deliveries || []).join("、") ||
+                ({ copy: "推广文案", poster: "营销海报", video: "宣传短片" })[card.kind],
               stateText: labels[card.status],
               canCancel: [
                 "planning",
@@ -44,7 +47,9 @@ function turns(chat) {
 }
 
 Page({
+  ...audio.methods,
   data: {
+    ...audio.data,
     text: "",
     chat: null,
     turns: [],
@@ -53,58 +58,93 @@ Page({
     busy: false,
     error: "",
     asset: null,
+    assetPhoto: "",
+    focusedTask: "",
+    workspaceReady: false,
   },
-  onLoad() {
+  onLoad(query = {}) {
     this.workspace = "";
     this.serial = 0;
+    this.entryRoute = query;
+    this.emptyNew = query.mode === "new" || query.mode === "call";
+    if (query.mode === "new" || query.mode === "call") {
+      this.entryDraft = getApp().globalData.agentEntry;
+      getApp().globalData.agentEntry = null;
+    }
   },
   async onShow() {
     this.visible = true;
-    await this.act(async () => {
-      const state = await api.request("state");
-      if (this.workspace !== state.workspace) {
-        this.ref = null;
-        this.workspace = state.workspace;
-        this.setData({ chat: null, turns: [], asset: null, text: "" });
-      }
+    this.setData({ workspaceReady: false });
+    const route = this.entryRoute || {};
+    let scrollTask;
+    const ready = await this.act(async (valid) => {
       const home = await api.request("agent");
-      this.setData({ history: home.conversations });
+      if (!valid()) return;
+      if (this.workspace !== home.workspace) {
+        this.ref = null;
+        this.workspace = home.workspace;
+        this.setData({ chat: null, turns: [], asset: null, assetPhoto: "", text: "", focusedTask: "", showHistory: false });
+      }
+      this.setData({ history: home.conversations, showHistory: route.mode === "history" });
       const saved = wx.getStorageSync("trupic.agent." + this.workspace);
-      const target =
-        home.conversations.find((r) => r.id === saved) || home.conversations[0];
-      if (target)
-        this.display(
-          await api.request(
-            "agent/conversations/" + target.id + "/visit",
-            "POST",
-            {},
-          ),
-        );
+      const preferred = route.conversation || this.data.chat?.id || saved;
+      const target = home.conversations.find((r) => r.id === preferred)?.id ||
+        (!route.conversation && home.conversations[0]?.id);
+      if (route.conversation && !target) throw new Error("这段对话已归档或不属于当前商家。");
+      if (target && !this.emptyNew) {
+        const chat = await api.request("agent/conversations/" + target + "/visit", "POST", {});
+        if (!valid()) return;
+        const focus = chat.tasks.find((task) => task.id === route.task);
+        this.setData({ focusedTask: focus?.id || this.data.focusedTask });
+        this.display(chat);
+        scrollTask = focus?.id;
+      }
+      this.setData({ workspaceReady: true }, () => {
+        if (scrollTask && this.visible && wx.pageScrollTo)
+          wx.pageScrollTo({ selector: "#task-" + scrollTask, duration: 250 });
+      });
+      return true;
     });
+    if (!ready || !this.visible) return;
+    this.entryRoute = null;
+    const entry = this.entryDraft;
+    this.entryDraft = null;
+    if (entry && entry.workspace === this.workspace) {
+      this.setData({ text: entry.text || "", asset: entry.asset || null, assetPhoto: entry.photo || "" });
+      if (entry.send && this.data.text.trim()) await this.send();
+    }
+    if (route.mode === "call" && this.visible && (!entry || entry.workspace === this.workspace))
+      this.toggleCall();
   },
   onHide() {
     this.visible = false;
     clearTimeout(this.timer);
     this.serial++;
+    this.switchAudioOff();
+    this.setData({ busy: false });
   },
   onUnload() {
     this.onHide();
   },
   async act(fn) {
     if (this.data.busy) return;
-    this.serial++;
+    const serial = ++this.serial;
+    const valid = () => this.visible && this.serial === serial;
     clearTimeout(this.timer);
     this.setData({ busy: true, error: "" });
     try {
-      await fn();
+      return await fn(valid);
     } catch (e) {
-      this.setData({ error: e.message });
+      if (valid()) this.setData({ error: e.message });
     } finally {
-      this.setData({ busy: false });
-      this.schedule();
+      if (valid()) {
+        this.setData({ busy: false });
+        this.schedule();
+      }
     }
   },
   display(c) {
+    this.emptyNew = false;
     this.setData({ chat: c, turns: turns(c) });
     wx.setStorageSync("trupic.agent." + this.workspace, c.id);
   },
@@ -135,43 +175,45 @@ Page({
   input(e) {
     this.setData({ text: e.detail.value });
   },
-  async create() {
+  async create(valid) {
     this.ref = null;
     const c = await api.request("agent/conversations", "POST", {});
-    this.display(c);
+    if (valid()) this.display(c);
     return c;
   },
   fresh() {
-    return this.act(async () => {
-      await this.create();
-      this.setData({ text: "", asset: null, showHistory: false });
+    this.switchAudioOff();
+    return this.act(async (valid) => {
+      await this.create(valid);
+      if (valid()) this.setData({ text: "", asset: null, assetPhoto: "", focusedTask: "", showHistory: false });
     });
   },
   history() {
-    return this.act(async () => {
+    this.switchAudioOff();
+    return this.act(async (valid) => {
+      const home = await api.request("agent");
+      if (!valid()) return;
       this.setData({
-        history: (await api.request("agent")).conversations,
+        history: home.conversations,
         showHistory: !this.data.showHistory,
       });
     });
   },
   open(e) {
     this.ref = null;
-    return this.act(async () => {
-      this.display(
-        await api.request(
-          "agent/conversations/" + e.currentTarget.dataset.id + "/visit",
-          "POST",
-          {},
-        ),
-      );
-      this.setData({ showHistory: false, text: "", asset: null });
+    this.switchAudioOff();
+    return this.act(async (valid) => {
+      const chat = await api.request("agent/conversations/" + e.currentTarget.dataset.id + "/visit", "POST", {});
+      if (!valid()) return;
+      this.display(chat);
+      this.setData({ showHistory: false, text: "", asset: null, assetPhoto: "", focusedTask: "" });
     });
   },
-  async sendText(text, extra = {}) {
+  async sendText(text, extra = {}, { preserveDraft = false } = {}) {
     if (!text.trim()) return;
-    return this.act(async () => {
-      const c = this.data.chat || (await this.create());
+    return this.act(async (valid) => {
+      const c = this.data.chat || (await this.create(valid));
+      if (!valid()) return;
       const storage = "trupic.agent.message." + c.id;
       const payload = {
         text,
@@ -181,7 +223,7 @@ Page({
         ...extra,
       };
       if (!extra.action && c.tasks.length) {
-        const current = c.tasks[c.tasks.length - 1];
+        const current = c.tasks.find((t) => t.id === this.data.focusedTask) || c.tasks[c.tasks.length - 1];
         payload.task = current.id;
         payload.revision = current.revision;
       }
@@ -191,24 +233,38 @@ Page({
         last = { signature, key: key() };
         wx.setStorageSync(storage, last);
       }
-      this.display(
-        await api.request("agent/conversations/" + c.id + "/messages", "POST", {
+      const reply = await api.request("agent/conversations/" + c.id + "/messages", "POST", {
           ...payload,
           requestKey: last.key,
-        }),
-      );
+        });
+      if (!valid()) return;
+      this.display(reply);
       wx.setStorageSync(storage, null);
       this.ref = null;
-      this.setData({ text: "", asset: null });
+      const newest = reply.tasks.find((task) => !c.tasks.some((old) => old.id === task.id));
+      this.setData({ text: preserveDraft ? this.data.text : "", asset: null, assetPhoto: "",
+        focusedTask: newest?.id || (reply.id === c.id ? this.data.focusedTask : "") });
+      return reply;
     });
   },
   send() {
+    this.switchAudioOff();
     return this.sendText(
       this.data.text,
       this.ref ? { action: "new", workRef: this.ref } : {},
     );
   },
+  async loadSpokenChoices(cid, card, active) {
+    await this.act(async (valid) => {
+      await api.request("agent/tasks/" + card.id + "/options", "POST", { revision: card.revision });
+      if (!active() || !valid()) return;
+      const chat = await api.request("agent/conversations/" + cid);
+      if (active() && valid()) this.display(chat);
+    });
+    if (active() && this.data.error) throw new Error(this.data.error);
+  },
   topic(e) {
+    this.switchAudioOff();
     const r = e.currentTarget.dataset.item;
     return this.sendText(r.brief, {
       action: "new",
@@ -216,6 +272,7 @@ Page({
     });
   },
   switchTask(e) {
+    this.switchAudioOff();
     const d = e.currentTarget.dataset;
     return this.sendText(d.item.text, {
       action: d.action,
@@ -223,6 +280,7 @@ Page({
     });
   },
   choose(e) {
+    this.switchAudioOff();
     const d = e.currentTarget.dataset;
     return this.sendText("选第" + (d.index + 1) + "组", {
       action: "select",
@@ -232,6 +290,7 @@ Page({
     });
   },
   pickWork(e) {
+    this.switchAudioOff();
     const { work, question } = e.currentTarget.dataset;
     if (question.needsInstruction) {
       this.ref = work;
@@ -245,7 +304,8 @@ Page({
   },
   stage(e) {
     const { card, action } = e.currentTarget.dataset;
-    return this.act(async () => {
+    this.switchAudioOff();
+    return this.act(async (valid) => {
       await api.request("agent/tasks/" + card.id + "/" + action, "POST", {
         revision: card.revision,
         quoteId: card.quoteId,
@@ -253,12 +313,13 @@ Page({
         approvalType: "production",
         requestKey: "approve-" + card.quoteId,
       });
-      this.display(
-        await api.request("agent/conversations/" + this.data.chat.id),
-      );
+      if (!valid()) return;
+      const chat = await api.request("agent/conversations/" + this.data.chat.id);
+      if (valid()) this.display(chat);
     });
   },
   requote(e) {
+    this.switchAudioOff();
     const t = e.currentTarget.dataset.card;
     return this.sendText("刷新报价", {
       action: "refresh",
@@ -267,17 +328,19 @@ Page({
     });
   },
   addPhoto() {
+    this.switchAudioOff();
     wx.chooseMedia({
       count: 1,
       mediaType: ["image"],
       success: (r) =>
-        this.act(async () => {
-          this.setData({
-            asset: await api.upload(r.tempFiles[0].tempFilePath),
-          });
+        this.act(async (valid) => {
+          const assetPhoto = r.tempFiles[0].tempFilePath;
+          const asset = await api.upload(assetPhoto);
+          if (valid()) this.setData({ asset, assetPhoto });
         }),
     });
   },
+  removePhoto() { this.setData({ asset: null, assetPhoto: "" }); },
   result(e) {
     wx.navigateTo({
       url: "/pages/result/result?id=" + e.currentTarget.dataset.id,

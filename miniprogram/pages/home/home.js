@@ -2,6 +2,7 @@ const api = require("../../lib/api");
 const { confirmBriefChange } = require("../../lib/draft");
 const moment = require("../../lib/moment");
 const samples = require("../../lib/samples");
+const assistant = require("./assistant");
 const kinds = [
   { id: "poster", name: "海报" },
   { id: "copy", name: "文案" },
@@ -42,8 +43,10 @@ const emptyStudioDraft = {
 };
 Page({
   ...moment.methods,
+  ...assistant.methods,
   data: {
     ...moment.data,
+    ...assistant.data,
     studio: false,
     kinds,
     ratios,
@@ -89,6 +92,14 @@ Page({
     this.setData({ format: this.formats[this.data.kind] || defaults.poster });
   },
   async onShow() {
+    this.homeVisible = true;
+    this.homeDestroyed = false;
+    const visit = (this.homeVisit || 0) + 1;
+    this.homeVisit = visit;
+    this.setData({ homeVerified: false, homeNavigating: false, momentError: "" });
+    const price = await this.loadMoment();
+    if (this.homeVisit !== visit || !this.homeVisible || !price) return;
+    this.setData({ homeVerified: true });
     const app = getApp();
     const handoff = app.globalData.handoff;
     if (handoff) {
@@ -131,19 +142,33 @@ Page({
       this.save();
       wx.pageScrollTo({ scrollTop: 0, duration: 0 });
     }
-    // The price call also tells which workspace is active, so an account change is
-    // noticed before the previous merchant's brief or photo can be shown again.
-    return this.loadMoment().then(() =>
-      this.data.studio ? this.loadTopics() : undefined,
-    );
+    if (this.homeVisit !== visit || !this.homeVisible) return;
+    if (this.data.studio) return this.loadTopics();
+    this.startHomeVoiceController();
+    return this.loadHomePending();
   },
-  agent() { wx.navigateTo({ url: "/pages/agent/agent" }); },
-  showLegacy() { this.setData({ legacyMoment: true }); },
+  onHide() {
+    this.homeVisible = false;
+    this.homeVisit = (this.homeVisit || 0) + 1;
+    this.momentLoadVersion = (this.momentLoadVersion || 0) + 1;
+    this.endHomeVoice();
+    this.setData({ homeVerified: false });
+  },
+  onUnload() {
+    this.homeDestroyed = true;
+    this.onHide();
+  },
   quick(e) {
     getApp().globalData.quickMode = e.currentTarget.dataset.mode;
     wx.navigateTo({ url: "/pages/quick/quick" });
   },
   adoptWorkspace(workspace) {
+    if (this.workspace && this.workspace !== workspace) {
+      this.resetHomeAccount();
+      this.topicRequest = (this.topicRequest || 0) + 1;
+      this.photoRequest = (this.photoRequest || 0) + 1;
+      this.setData({ busy: false, uploading: false });
+    }
     this.workspace = workspace;
     if (this.draftWorkspace === null) this.draftWorkspace = workspace;
     if (this.draftWorkspace !== workspace) this.resetStudioDraft();
@@ -161,7 +186,10 @@ Page({
   },
   toggleStudio() {
     if (this.data.busy) return;
-    this.setData({ studio: !this.data.studio });
+    this.setData({
+      studio: !this.data.studio,
+      ...(this.data.studio && this.data.personalAgent ? { legacyMoment: true } : {}),
+    });
     return this.data.studio ? this.loadTopics() : this.loadMoment();
   },
   async loadTopics() {

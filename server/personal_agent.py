@@ -264,7 +264,27 @@ def register(app, services):
     def agent_home():
         t = tenant()
         with db() as c:
+            pending = c.execute(
+                """SELECT a.id AS task, a.conversation, json_extract(a.input,'$.brief') AS title,
+                          a.status, a.run, a.tenant, CASE WHEN a.status='quoted' THEN a.cost END AS cost
+                   FROM agent_task a JOIN conversation c ON c.id=a.conversation
+                   WHERE a.tenant=? AND c.tenant=? AND c.archived=0 AND (
+                     (a.run IS NULL AND a.status IN ('planning','waiting_input','waiting_copy','waiting_script','quoted'))
+                     OR (a.status!='cancelled' AND EXISTS (
+                       SELECT 1 FROM creative_run r, json_each(r.items) i JOIN job j
+                         ON j.id=json_extract(i.value,'$.job')
+                       WHERE r.id=a.run AND r.tenant=a.tenant AND j.state IN ('queued','running'))))
+                   ORDER BY (a.run IS NULL AND a.status!='planning') DESC,
+                            COALESCE((SELECT MAX(seq) FROM agent_event WHERE task=a.id),0) DESC,
+                            a.rowid DESC LIMIT 1""",
+                (t, t),
+            ).fetchone()
             return jsonify(
+                workspace=t,
+                pending={
+                    **{key: pending[key] for key in ("task", "conversation", "title", "cost")},
+                    "status": run_status(c, pending),
+                } if pending else None,
                 conversations=[
                     dict(r)
                     for r in c.execute(
@@ -460,11 +480,18 @@ def register(app, services):
                 extra["asset"] = asset
             message(c, cid, "user", "text", dict(text=text, **extra), key)
 
+        command = text.rstrip("，,。.!！?？ ")
+        if (action == "send" and task and task["status"] == "quoted"
+                and re.fullmatch(r"(?:请|帮我)?(?:确认制作|开始制作|确认扣积分|确认扣款|确认)", command)):
+            record()
+            message(c, cid, "assistant", "text",
+                    {"text": f"本次制作需要 {task['cost']} 积分。请在任务卡上点「确认制作」。"})
+            return cid, None
         if action == "send" and (
-            agent_dialogue.DISCUSS.search(text) or text in ("你好", "您好", "在吗")
+            agent_dialogue.DISCUSS.search(text) or command in ("你好", "您好", "在吗")
         ):
             record()
-            if text in ("你好", "您好", "在吗"):
+            if command in ("你好", "您好", "在吗"):
                 message(
                     c,
                     cid,
@@ -486,7 +513,7 @@ def register(app, services):
                 (dump({"text": text, "discussion": seq}), cid, key),
             )
             return cid, seq
-        if action == "topics" or text in ("本周推荐", "本周灵感", "推荐几个主题"):
+        if action == "topics" or command in ("本周推荐", "本周灵感", "推荐几个主题"):
             record()
             suggestion_list(c, services, t, cid)
             return cid, None

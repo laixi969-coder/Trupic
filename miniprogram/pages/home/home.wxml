@@ -1,9 +1,59 @@
-<view wx:if="{{personalAgent && !studio && !legacyMoment}}" class="page">
-  <view class="title">营销助理</view><view class="panel"><view class="heading">今天想为店里做点什么？</view>
-    <button class="primary" bindtap="agent">进入我的对话</button></view><button class="link" bindtap="showLegacy">实拍朋友圈与原创作台</button>
+<view wx:if="{{!homeVerified}}" class="page home-connection">
+  <view class="heading">响指出片</view>
+  <view class="note" aria-live="polite">{{momentError || '正在连接工作区…'}}</view>
+  <button wx:if="{{momentError}}" class="secondary" bindtap="onShow">重新连接</button>
+</view>
+<view wx:elif="{{personalAgent && !studio && !legacyMoment}}" class="assistant-home">
+  <view class="assistant-bar">
+    <view class="assistant-brand"><image src="/images/assistant-mark.png" aria-hidden="true"/>营销助理</view>
+    <button class="assistant-history" bindtap="homeHistory" disabled="{{homeNavigating || homeVoiceState !== 'idle'}}"><image src="/images/assistant-history.png" aria-hidden="true"/>历史对话</button>
+  </view>
+  <view class="assistant-content">
+    <view class="assistant-intro">
+      <view class="assistant-lead">
+        <view class="assistant-heading">{{homePhoto?'这张图，':'今天想'}}</view>
+        <view class="assistant-heading">{{homePhoto?'想怎么发？':'推广什么？'}}</view>
+        <view class="assistant-hint" aria-live="polite">{{homeVoiceState==='listening'?'正在听，点一下结束。':homeVoiceState==='transcribing'?'正在把语音转成文字…':homeVoiceState==='authorizing'?'请允许使用麦克风。':'点麦克风，说完可以改字。'}}</view>
+      </view>
+      <button class="mic-control {{homeVoiceState==='listening'?'is-listening':''}}" bindtap="toggleHomeVoice" aria-label="{{homeVoiceState==='listening'?'结束本次听写':homeVoiceLabel}}" disabled="{{homeNavigating || homeVoiceState==='authorizing' || homeVoiceState==='transcribing'}}">
+        <view class="mic-disc"><view wx:if="{{homeVoiceState==='listening'}}" class="mic-stop"></view><image wx:else src="/images/assistant-mic.png" aria-hidden="true"/><text>{{homeVoiceLabel}}</text></view>
+      </button>
+    </view>
+    <view wx:if="{{homePhoto}}" class="assistant-photo">
+      <button class="photo-preview" bindtap="previewHomePhoto" disabled="{{homeNavigating || homeVoiceState !== 'idle'}}" aria-label="查看完整商品图"><image class="assistant-image" src="{{homePhoto}}" mode="aspectFit"/></button>
+      <view class="photo-tools"><button bindtap="pickHomePhoto" disabled="{{homeNavigating || homeVoiceState !== 'idle'}}">换图</button><button bindtap="removeHomePhoto" disabled="{{homeNavigating}}">移除</button></view>
+    </view>
+    <view wx:if="{{homePhoto && (homeUploading || homePhotoError)}}" class="photo-feedback" aria-live="polite">
+      <text>{{homeUploading?'正在上传商品图…':homePhotoError}}</text><button wx:if="{{homePhotoError && !homeUploading}}" bindtap="uploadHomePhoto">重试上传</button>
+    </view>
+    <view class="assistant-compose">
+      <textarea class="assistant-input" aria-label="推广需求" value="{{homeText}}" maxlength="1200" bindinput="homeInput" disabled="{{homeNavigating}}" placeholder="{{homePhoto?'给这张商品图补一句需求…':'也可以打字，说说店里要推什么…'}}" placeholder-class="assistant-placeholder" cursor-spacing="36"/>
+      <view class="compose-tools">
+        <button wx:if="{{!homePhoto}}" class="attach-photo" bindtap="pickHomePhoto" disabled="{{homeNavigating || homeVoiceState !== 'idle'}}"><image src="/images/assistant-camera.png" aria-hidden="true"/>拍照 / 选图</button>
+        <view wx:else class="attached-label">{{homeAsset?'已添加商品图':'商品图'}}</view>
+        <button class="send-brief" bindtap="sendHome" disabled="{{homeNavigating || homeVoiceState !== 'idle' || homeUploading || (homePhoto && !homeAsset) || (!homeHasText && !homeAsset)}}"><text>{{homeAsset && !homeHasText?'用图做海报':'发送'}}</text><text class="send-arrow" aria-hidden="true">↑</text></button>
+      </view>
+    </view>
+    <view wx:if="{{homeError}}" class="assistant-error" aria-live="polite">{{homeError}}</view>
+    <button class="call-entry" bindtap="homeCall" disabled="{{homeNavigating || homeVoiceState !== 'idle' || homeUploading || (homePhoto && !homeAsset)}}">
+      <view class="call-icon"><image src="/images/assistant-call.png" aria-hidden="true"/></view>
+      <view class="call-content"><view class="tool-title">连续语音对话</view><view class="tool-desc">停顿后自动发送，助理会朗读回复</view></view>
+      <view class="entry-chevron" aria-hidden="true"></view>
+    </button>
+    <view class="home-tasks">
+      <view class="task-heading">接着做</view>
+      <button wx:if="{{homePendingState==='ready' && homePending}}" class="pending-task" bindtap="homeResume" disabled="{{homeNavigating || homeVoiceState !== 'idle'}}">
+        <view class="pending-status"><text class="task-dot"></text>{{homePending.label}}<text wx:if="{{homePending.showCost}}" class="task-cost">{{homePending.cost}} 积分</text></view>
+        <view class="pending-bottom"><text class="pending-title">{{homePending.title}}</text><text class="pending-action">{{homePending.action}} ›</text></view>
+      </button>
+      <view wx:elif="{{homePendingState==='error'}}" class="pending-empty"><text>待办暂时无法加载</text><button bindtap="loadHomePending">重试</button></view>
+      <view wx:else class="pending-empty" aria-live="polite">{{homePendingState==='loading'?'正在读取待办…':'暂无待处理的任务'}}</view>
+    </view>
+    <button class="legacy-entry" bindtap="showLegacy" disabled="{{homeNavigating || homeVoiceState !== 'idle'}}"><text>实拍朋友圈与其他创作</text><view class="entry-chevron" aria-hidden="true"></view></button>
+  </view>
 </view>
 <view wx:elif="{{!studio}}" class="page moment-page">
-  <button wx:if="{{personalAgent}}" class="link" bindtap="agent">进入营销助理</button>
+  <button wx:if="{{personalAgent}}" class="link" bindtap="showAssistant">‹ 返回营销助理</button>
   <view class="title">今天的朋友圈</view>
   <view class="panel">
     <button class="moment-photo" aria-label="{{momentAsset?'更换照片':'拍照或从相册选图'}}" bindtap="takeMomentPhoto" disabled="{{busy || momentCost===null}}">
@@ -50,7 +100,7 @@
   <button class="hero" bindtap="sample" data-id="tea"><image src="/images/tea-hero.jpg" mode="aspectFill"/><view class="heroTitle">抹茶拿铁<view>上新海报</view></view><view class="heroLink">查看茶饮样张</view></button>
   <button class="mini row" bindtap="sample" data-id="auto"><image src="/images/auto.jpg" mode="aspectFill"/><view><view>周末试驾</view><view class="sub">汽车海报</view></view></button>
 </view>
-<block wx:if="{{sheet}}">
+<block wx:if="{{homeVerified && sheet}}">
   <view class="sheetmask" bindtap="close"></view>
   <view class="sheet">
     <view class="between"><view class="heading">{{sheet==='asset'?'核对商品图':'输出规格'}}</view><button class="close" bindtap="close">关闭</button></view>

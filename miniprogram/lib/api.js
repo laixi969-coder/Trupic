@@ -37,6 +37,10 @@ function network(method, options) {
           return resolve(response);
         let data = response.data;
         try {
+          if (Object.prototype.toString.call(data) === "[object ArrayBuffer]") {
+            const bytes = new Uint8Array(data, 0, Math.min(data.byteLength, 8192));
+            data = decodeURIComponent(Array.from(bytes, (byte) => "%" + byte.toString(16).padStart(2, "0")).join(""));
+          }
           if (typeof data === "string") data = JSON.parse(data);
         } catch (_) {}
         reject(
@@ -83,6 +87,30 @@ async function download(path) {
   await ready();
   return (await network("downloadFile", { url: base() + path })).tempFilePath;
 }
+async function transcribeVoice(filePath) {
+  await ready();
+  const response = await network("uploadFile", {
+    url: base() + "/api/agent/voice/transcribe",
+    filePath,
+    name: "audio",
+  });
+  const data = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
+  if (!data || typeof data.text !== "string" || !data.text.trim())
+    throw new Error("没有识别到清晰的语音，请再说一次");
+  return data.text.trim();
+}
+async function speakVoice(text) {
+  await ready();
+  const response = await network("request", {
+    url: base() + "/api/agent/voice/speak",
+    method: "POST",
+    data: { text },
+    responseType: "arraybuffer",
+  });
+  if (!response.data || !response.data.byteLength)
+    throw new Error("未收到朗读音频，请重试");
+  return response.data;
+}
 function message(e) {
   wx.showModal({
     title: "响指出片",
@@ -90,4 +118,4 @@ function message(e) {
     showCancel: false,
   });
 }
-module.exports = { request, upload, download, message };
+module.exports = { request, upload, download, transcribeVoice, speakVoice, message };
