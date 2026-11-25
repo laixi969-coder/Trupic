@@ -1,5 +1,6 @@
 """Persistent conversations, scoped memory and ordered events over existing production jobs."""
 
+import datetime as dt
 import hashlib
 import os
 
@@ -14,6 +15,12 @@ def enabled(tenant):
     default = "0" if os.getenv("TRUPIC_MODEL_STAGE") == "production" else "100"
     rollout = max(0, min(100, int(os.getenv("TRUPIC_AGENT_ROLLOUT", default))))
     return int(hashlib.sha256(tenant.encode()).hexdigest()[:8], 16) % 100 < rollout
+
+
+def _ensure_column(c, table, name, definition):
+    cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+    if name not in cols:
+        c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def initialize():
@@ -48,6 +55,10 @@ def initialize():
         CREATE TABLE IF NOT EXISTS agent_memory(id TEXT PRIMARY KEY, tenant TEXT NOT NULL, project TEXT NOT NULL,
             name TEXT NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL, active INTEGER NOT NULL,
             version INTEGER NOT NULL, updated TEXT NOT NULL, UNIQUE(tenant,project,name));
+        CREATE TABLE IF NOT EXISTS agent_context_summary(conversation TEXT PRIMARY KEY, tenant TEXT NOT NULL,
+            up_to_seq INTEGER NOT NULL, summary TEXT NOT NULL, goals TEXT NOT NULL, decisions TEXT NOT NULL,
+            pending TEXT NOT NULL, refs TEXT NOT NULL, updated TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS agent_context_summary_tenant ON agent_context_summary(tenant);
         CREATE TABLE IF NOT EXISTS agent_option_lease(task TEXT PRIMARY KEY,revision INTEGER NOT NULL,token TEXT NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_preferences(tenant TEXT PRIMARY KEY, weeks INTEGER NOT NULL, last_sent TEXT);
         CREATE TRIGGER IF NOT EXISTS agent_job_event AFTER UPDATE OF state,stage ON job
@@ -60,6 +71,11 @@ def initialize():
           FROM agent_task WHERE id=json_extract(NEW.spec,'$.plan.agentTask') AND tenant=NEW.tenant;
         END;
         """)
+        _ensure_column(c, "agent_memory", "status", "TEXT NOT NULL DEFAULT 'confirmed'")
+        _ensure_column(c, "agent_memory", "source_message_id", "INTEGER")
+        _ensure_column(c, "agent_memory", "expires_at", "TEXT")
+        _ensure_column(c, "agent_memory", "hit_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(c, "agent_memory", "last_used", "TEXT")
 
 
 def message(c, conversation, role, kind, content, key=None):
@@ -90,14 +106,36 @@ def new_conversation(c, tenant, project=None):
     return cid
 
 
-def memory_rows(c, tenant, project):
-    return [
-        dict(r)
-        for r in c.execute(
-            "SELECT id,project,name,value,kind,active,version,updated FROM agent_memory WHERE tenant=? AND project IN ('',?) ORDER BY rowid",
-            (tenant, project or ""),
+def memory_rows(c, tenant, project, include_candidates=True):
+    today = dt.date.today().isoformat()
+    rows = []
+    for r in c.execute(
+        """SELECT id,project,name,value,kind,active,version,updated,
+                  COALESCE(status,'confirmed') AS status,source_message_id,expires_at,
+                  COALESCE(hit_count,0) AS hit_count,last_used
+           FROM agent_memory WHERE tenant=? AND project IN ('',?) ORDER BY rowid""",
+        (tenant, project or ""),
+    ):
+        item = dict(r)
+        if item["expires_at"] and item["expires_at"] < today and item["status"] == "confirmed":
+            item["status"] = "expired"
+            item["active"] = 0
+        if not include_candidates and item["status"] != "confirmed":
+            continue
+        rows.append(item)
+    return rows
+
+
+def invalidate_summaries(c, tenant, project=None):
+    """Purge cached conversation summaries when memory changes or is deleted (PRD §23)."""
+    if project:
+        c.execute(
+            """DELETE FROM agent_context_summary WHERE tenant=? AND conversation IN
+               (SELECT id FROM conversation WHERE tenant=? AND project=?)""",
+            (tenant, tenant, project),
         )
-    ]
+    else:
+        c.execute("DELETE FROM agent_context_summary WHERE tenant=?", (tenant,))
 
 
 def project_for(c, tenant, pid):
@@ -149,12 +187,20 @@ def metrics(c):
           GROUP BY t.id)
         SELECT state,COUNT(*) FROM task_states GROUP BY state""")
     )
+    mem = dict(
+        c.execute(
+            "SELECT COALESCE(status,'confirmed'), COUNT(*) FROM agent_memory GROUP BY COALESCE(status,'confirmed')"
+        )
+    )
+    compacted = c.execute("SELECT COUNT(*) FROM agent_context_summary").fetchone()[0]
     return dict(
         conversations=c.execute(
             "SELECT COUNT(*) FROM conversation WHERE archived=0"
         ).fetchone()[0],
         tasks=sum(counts.values()),
         states=counts,
+        memories=dict(confirmed=mem.get("confirmed", 0), candidate=mem.get("candidate", 0)),
+        compactedConversations=compacted,
     )
 
 

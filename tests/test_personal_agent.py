@@ -452,3 +452,86 @@ class PersonalAgentTests(TestCase):
                 (first["id"], first["revision"]),
             ).fetchone()[0]
             self.assertIn("19元", historical)
+
+    def test_memorax_explicit_remember_forget_and_promo_price_guard(self):
+        post(self.c, "agent/memory", name="招牌", value="桂花乌龙")
+        r1 = self.send("记住：门店地址是綦江万达三楼")
+        self.assertIn("已记入店铺长期记忆", r1["messages"][-1]["text"])
+        r_dup = self.send("记住：门店地址是綦江万达三楼")
+        self.assertIn("已经在册", r_dup["messages"][-1]["text"])
+        promo = self.send("记住：今天活动价9.9元")
+        self.assertIn("临时价格", promo["messages"][-1]["text"])
+        entries = self.c.get("/api/agent/memory").json["entries"]
+        self.assertFalse(any("9.9" in e["value"] for e in entries))
+        t = self.card()
+        recalled_names = [m["name"] for m in t["recalledMemories"]]
+        self.assertIn("门店地址", recalled_names)
+        self.assertIn("招牌", recalled_names)
+        forgot = self.send("忘掉门店地址")
+        self.assertIn("已忘掉记忆", forgot["messages"][-1]["text"])
+        remaining = [e["name"] for e in self.c.get("/api/agent/memory").json["entries"]]
+        self.assertEqual(remaining, ["招牌"])
+
+    def test_memorax_candidate_extraction_confirm_dismiss_and_expiry(self):
+        chat = self.send("我们店在合川宝龙广场二楼，帮我做一张海报，文案用「下班喝一杯」")
+        candidates = chat["candidates"]
+        self.assertTrue(any(c["name"] == "门店地址" for c in candidates), candidates)
+        cand = next(c for c in candidates if c["name"] == "门店地址")
+        self.assertEqual(cand["status"], "candidate")
+        self.assertEqual(cand["active"], 0)
+        self.assertNotIn("合川宝龙广场二楼", "".join(chat["tasks"][-1]["facts"]))
+        res = post(self.c, "agent/memory/" + cand["id"] + "/confirm", version=cand["version"])
+        self.assertEqual(res.status_code, 200)
+        next_task = self.card(cid=self.conversation())
+        self.assertIn("合川宝龙广场二楼", "".join(next_task["facts"]))
+        expired = post(
+            self.c,
+            "agent/memory",
+            name="冬季限定",
+            value="红糖姜茶",
+            expiresAt="2020-01-01",
+        ).json
+        self.assertTrue(expired["id"])
+        after_expiry = self.card(cid=self.conversation())
+        self.assertNotIn("红糖姜茶", "".join(after_expiry["facts"]))
+
+    def test_memorax_compaction_summary_invalidation_and_selective_retrieval(self):
+        mem = post(self.c, "agent/memory", name="营业时间", value="每天10点到22点").json
+        t = self.card()
+        for i in range(14):
+            self.send(f"你好" if i % 2 == 0 else "我们再聊聊细节")
+        ctx = self.c.get("/api/agent/conversations/" + self.cid + "/context").json
+        compacted = ctx["layers"]["ephemeral"]["compacted"]
+        self.assertIsNotNone(compacted)
+        self.assertIn("下班来喝茶", "".join(compacted["decisions"]))
+        self.assertEqual(ctx["layers"]["task"]["locked"]["title"], "下班来喝茶")
+        # Cross-tenant context access is rejected
+        stranger = studio.app.test_client()
+        self.assertEqual(
+            stranger.get("/api/agent/conversations/" + self.cid + "/context").status_code,
+            404,
+        )
+        # Deleting memory invalidates compacted summaries immediately (PRD §23)
+        self.c.delete("/api/agent/memory/" + mem["id"], json=dict(version=1))
+        ctx_after = self.c.get("/api/agent/conversations/" + self.cid + "/context").json
+        self.assertIsNone(ctx_after["layers"]["ephemeral"]["compacted"])
+        # Selective retrieval caps & prioritizes relevant entries when memory exceeds budget
+        for idx in range(10):
+            post(self.c, "agent/memory", name=f"普通备注{idx}", value=f"常规说明{idx}")
+        post(self.c, "agent/memory", name="抹茶拿铁配方", value="宇治抹茶配鲜奶")
+        focused = self.card("为抹茶拿铁配方做一张海报，文案用「鲜奶抹茶」", cid=self.conversation())
+        self.assertLessEqual(len(focused["recalledMemories"]), 8)
+        self.assertIn("抹茶拿铁配方", [m["name"] for m in focused["recalledMemories"]])
+
+    def test_capability_registry_and_admin_observability(self):
+        caps = self.c.get("/api/agent/capabilities").json["capabilities"]
+        ids = {c["id"] for c in caps}
+        self.assertEqual(ids, {"merchant.copy", "merchant.poster", "merchant.video"})
+        for cap in caps:
+            self.assertIn("version", cap)
+            self.assertIn("fallbackVersion", cap)
+            self.assertIn("inputSchema", cap)
+            self.assertIn("outputSchema", cap)
+            self.assertIn("timeoutSeconds", cap)
+            self.assertIn("costCap", cap)
+            self.assertIn(cap["health"], ("healthy", "degraded"))

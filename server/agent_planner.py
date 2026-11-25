@@ -3,8 +3,7 @@
 import json
 import re
 
-from . import auto_creation
-from .agent_store import memory_rows
+from . import auto_creation, context_memory, providers
 from .formats import RATIOS
 
 KINDS = {"poster": "营销海报", "copy": "推广文案", "video": "宣传短片"}
@@ -149,24 +148,24 @@ def assemble(c, tenant, project, values):
     profile = json.loads(
         c.execute("SELECT profile FROM merchant WHERE id=?", (tenant,)).fetchone()[0]
     )
-    rows = [r for r in memory_rows(c, tenant, project) if r["active"]]
-    # More specific project entries take precedence over same-named merchant preferences.
-    scoped = {}
-    for r in sorted(rows, key=lambda r: bool(r["project"])):
-        scoped[r["name"]] = r
-    facts = [profile.get("facts", "")]
     current_text = "；".join(
         filter(None, [values.get("brief"), values.get("facts"), values.get("ownCopy")])
     )
+    selected, recalled = context_memory.select_memories(
+        c, tenant, project, current_text
+    )
+    facts = [profile.get("facts", "")]
     price = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*元")
     confirmed = re.search(
         r"本次(?:按|以|用)\s*(\d+(?:\.\d+)?)\s*元(?:为准)?", current_text
     )
     tones = [profile.get("tone", "")]
     source = values.copy()
-    for r in scoped.values():
+    used_recalled = []
+    for r, meta in zip(selected, recalled):
         if r["kind"] == "asset":
             source.setdefault("asset", r["value"])
+            used_recalled.append(meta)
         else:
             if r["kind"] == "fact" and r["name"] in current_text:
                 old_prices = set(price.findall(r["value"]))
@@ -186,18 +185,21 @@ def assemble(c, tenant, project, values):
                     )
             target = tones if r["kind"] == "preference" else facts
             target.append(r["name"] + "：" + r["value"])
+            used_recalled.append(meta)
     profile.update(
         facts="；".join(filter(None, facts)), tone="；".join(filter(None, tones))
     )
-    source["deliveryMode"] = {"poster": "image", "video": "video", "copy": None}[
-        values["kind"]
-    ]
+    source["deliveryMode"] = {"poster": "image", "video": "video", "copy": None}.get(
+        values.get("kind")
+    )
     source.setdefault("assetMode", "original")
+    source["_recalled"] = used_recalled
     return source, profile
 
 
 def plan_task(services, c, tenant, project, values):
     source, profile = assemble(c, tenant, project, values)
+    recalled = source.pop("_recalled", [])
     if values.get("facts"):
         combined = source["brief"] + "。" + values["facts"]
         if len(combined) > 1200:
@@ -223,6 +225,8 @@ def plan_task(services, c, tenant, project, values):
         source,
         agent_context=dict(kind=values["kind"], profile=profile),
     )
+    if result.get("shared") is not None:
+        result["shared"]["recalledMemories"] = recalled
     for entry in result.get("items", []):
         spec = entry["spec"]
         spec["plan"]["capability"] = CAPABILITIES[spec["kind"]]
@@ -268,22 +272,57 @@ CAPABILITIES = {
     "copy": dict(
         id="merchant.copy",
         version=1,
+        fallbackVersion=1,
+        supportedTasks=["copy", "poster", "video"],
+        dependencies=["hiccai-wenan", "copy_choices"],
         routes=["text"],
         inputs=["brief", "facts"],
+        inputSchema={"brief": "string(1..1200)", "facts": "string(0..400)"},
         output="copy.txt",
+        outputSchema={"title": "string", "body": "string", "cta": "string"},
+        timeoutSeconds=45,
+        costCap=10,
+        permission="merchant:approved_quote",
     ),
     "poster": dict(
         id="merchant.poster",
         version=1,
+        fallbackVersion=1,
+        supportedTasks=["poster", "revision"],
+        dependencies=["trupic-commercial-poster", "layout-grid", "visual_review"],
         routes=["text", "image", "vision"],
         inputs=["brief", "lockedCopy", "assets"],
+        inputSchema={"brief": "string", "ratio": "enum", "imageCount": "int(1..2)", "lockedCopy": "object"},
         output="poster.png",
+        outputSchema={"png": "binary/png", "copy": "object", "review": "object"},
+        timeoutSeconds=120,
+        costCap=40,
+        permission="merchant:approved_quote",
     ),
     "video": dict(
         id="merchant.video",
         version=1,
+        fallbackVersion=1,
+        supportedTasks=["video"],
+        dependencies=["video_storyboard@1.1.0", "film_timing", "film_edit", "visual_review"],
         routes=["text", "video", "vision"],
         inputs=["brief", "facts", "duration", "assets"],
+        inputSchema={"brief": "string", "ratio": "enum", "duration": "enum(15,30,45)"},
         output="video.mp4",
+        outputSchema={"mp4": "binary/mp4", "storyboard": "array", "review": "object"},
+        timeoutSeconds=300,
+        costCap=120,
+        permission="merchant:approved_quote",
     ),
 }
+
+
+def capability_registry(c):
+    """Return registered capabilities enriched with live provider health status (PRD §22)."""
+    overview = providers.overview(c)
+    breakers = set(overview.get("openBreakers") or [])
+    items = []
+    for cap in CAPABILITIES.values():
+        degraded = [r for r in cap["routes"] if any(b.endswith(":" + r) or b == r for b in breakers)]
+        items.append({**cap, "health": "degraded" if degraded else "healthy", "degradedRoutes": degraded})
+    return items

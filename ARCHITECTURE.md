@@ -31,8 +31,8 @@
 
 | 数据 | 持久化与一致性 |
 | --- | --- |
-| 对话与上下文 | `agent_project`、`conversation`、`agent_message`、`agent_memory`、`agent_preferences`。同一对话中的消息幂等键唯一；归档对话后已排队任务继续。校验记忆版本后才能纠正或删除。 |
-| 创意档案 | `agent_task` 保存当前修订、需求、真实报价、候选、锁定文案及制作组标识。`agent_revision` 保存历次版本快照。`agent_option_lease` 避免相同修订同时向模型请求两组选稿。 |
+| 对话与上下文 | `agent_project`、`conversation`、`agent_message`、`agent_memory`（含 `status`、`source_message_id`、`expires_at`、`hit_count`、`last_used`）、`agent_context_summary`、`agent_preferences`。`server/context_memory.py` 按 MemoraX 思路实现四层隔离、选择性召回、自然语言记住/忘掉、临时活动价拦截、长对话自动压缩及记忆变更同步清缓存。 |
+| 能力注册与档案 | `agent_planner.CAPABILITIES` 与 `/api/agent/capabilities` 登记版本、回退版本、依赖 Skill、输入输出 schema、超时、成本上限与实时路由健康状态。`agent_task` 保存当前修订、需求、真实报价、候选、锁定文案、召回记忆与制作组标识。`agent_revision` 保存历次版本快照。`agent_option_lease` 避免相同修订同时向模型请求两组选稿。 |
 | 执行状态 | 任务规划和选稿可重试。确认后查询原 job 的实际状态；job 状态或阶段变更在同一事务写入 `agent_event`。旧任务回调以自身 job 和版本定位。 |
 | 积分与重放 | 确认同时核对商家、任务、修订、报价标识、总价、类型与幂等键。过期报价需重新确认。绑定制作组、原子预占积分后启动原制作线程。失败项按原批次释放，同组成功项仍独立结算。 |
 | 数据迁移 | `server/agent_store.py:initialize` 随服务启动创建新增表、索引和触发器；可重复执行。旧作品、订单和积分表继续按原格式读写。 |
@@ -50,7 +50,8 @@
 | POST /tasks/{id}/prepare 或 /options | 规划恢复或当前 revision | 当前卡片；候选生成、脚本复核失败可重试，也能使用商家成稿。 |
 | POST /tasks/{id}/approve | revision、quoteId、approvalType=production、confirmedCost、requestKey，精简文案可选 option | 启动生产或返回同一确认结果。版本冲突为 409、无余额或报价过期为 400、同时制作达到配置上限为 429。 |
 | POST /tasks/{id}/cancel、GET /tasks/{id}/events | 当前 revision；读取可附 after | 尚未开始制作时可取消；已开始返回 409。事件按 seq 排序，包含任务、修订、类型、时间和明细。 |
-| GET 或 POST /memory，GET、PATCH、DELETE /memory/{id} | scope 由空 project 或指定项目表示；name、value、kind。变更携带 version | 读取可见条目，显式保存、修正、停用或删除。跨商家资源返回 404。 |
+| GET 或 POST /memory，GET、PATCH、DELETE /memory/{id}，POST /memory/{id}/confirm 或 /dismiss | scope 由空 project 或指定项目表示；name、value、kind、可选 expiresAt。变更携带 version | 读取可见条目，显式保存、确认/忽略候选记忆、修正、停用或删除；变更同步清除失效上下文摘要。跨商家资源返回 404。 |
+| GET /conversations/{id}/context、GET /capabilities | 对话 ID 与可选查询词 q | 返回四层上下文包（商家/项目/任务快照/压缩摘要与近期消息）及实时能力注册与健康状态。 |
 | POST /preferences | weeks 为 0–4 的整数 | 0 暂停自动周主题，1–4 表示间隔周数；仍可手动查看选题。 |
 
 ### 部署与回滚

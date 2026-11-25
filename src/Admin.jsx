@@ -119,8 +119,12 @@ export default function Admin({ tip }) {
       ) : (
         <>
           {tab === "dashboard" && <section className="formpanel"><h2>经营概览</h2><div className="datarows">
-            {[["营销助理对话",d.assistantMetrics?.conversations ?? 0],["对话任务",d.assistantMetrics?.tasks ?? 0],["对话任务等待确认",d.assistantMetrics?.states.quoted ?? 0],["已核对模型账单（人民币）",d.costSummary.billed===null?"待对账":"¥"+(d.costSummary.billed/1000000).toFixed(2)],["已核对成本的任务",d.costSummary.reconciled],["云文件同步异常",d.costSummary.storageErrors],["今日注册商家", d.metrics.registrations],["今日发起创作的商家",d.metrics.active],["付费商家",d.metrics.payers],["累计实收（扣除全额退款）","¥"+(d.metrics.revenueCents/100).toFixed(2)],["已核对模型毛利（实收减已核对模型成本）",d.costSummary.billed===null?"待对账":"¥"+(d.metrics.revenueCents/100-d.costSummary.billed/1000000).toFixed(2)],["任务交付成功率",d.metrics.finished?(100*d.metrics.delivered/d.metrics.finished).toFixed(1)+"%":"暂无完成任务"],["注册后第七天创作留存",d.metrics.cohort?d.metrics.retained+" / "+d.metrics.cohort:"暂无到期商家"]].map(([k,v])=><div key={k}><span>{k}</span><b>{v}</b></div>)}
-          </div></section>}
+            {[["营销助理对话",d.assistantMetrics?.conversations ?? 0],["对话任务",d.assistantMetrics?.tasks ?? 0],["对话任务等待确认",d.assistantMetrics?.states?.quoted ?? 0],["已确认记忆 / 待确认",`${d.assistantMetrics?.memories?.confirmed ?? 0} / ${d.assistantMetrics?.memories?.candidate ?? 0}`],["已压缩长对话",d.assistantMetrics?.compactedConversations ?? 0],["已核对模型账单（人民币）",d.costSummary.billed===null?"待对账":"¥"+(d.costSummary.billed/1000000).toFixed(2)],["已核对成本的任务",d.costSummary.reconciled],["云文件同步异常",d.costSummary.storageErrors],["今日注册商家", d.metrics.registrations],["今日发起创作的商家",d.metrics.active],["付费商家",d.metrics.payers],["累计实收（扣除全额退款）","¥"+(d.metrics.revenueCents/100).toFixed(2)],["已核对模型毛利（实收减已核对模型成本）",d.costSummary.billed===null?"待对账":"¥"+(d.metrics.revenueCents/100-d.costSummary.billed/1000000).toFixed(2)],["任务交付成功率",d.metrics.finished?(100*d.metrics.delivered/d.metrics.finished).toFixed(1)+"%":"暂无完成任务"],["注册后第七天创作留存",d.metrics.cohort?d.metrics.retained+" / "+d.metrics.cohort:"暂无到期商家"]].map(([k,v])=><div key={k}><span>{k}</span><b>{v}</b></div>)}
+          </div>
+          {d.assistantMetrics?.capabilities?.length > 0 && <div style={{marginTop: 18}}><h3>能力注册与健康状态</h3><div className="datarows">
+            {d.assistantMetrics.capabilities.map((cap)=><div key={cap.id}><span>{cap.id} v{cap.version} · {cap.routes.join("/")}</span><b>{cap.health === "healthy" ? "正常" : "降级"}</b></div>)}
+          </div></div>}
+          </section>}
           {tab === "merchants" && <Merchants role={d.role} tip={tip}/>}
           {tab === "growth" && <GrowthAdmin tip={tip} />}
           {tab === "finance" && <FinanceAdmin tip={tip} />}

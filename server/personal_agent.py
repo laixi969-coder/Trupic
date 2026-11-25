@@ -8,12 +8,13 @@ import time
 
 from flask import abort, jsonify, request
 
-from . import agent_dialogue, agent_planner as planner, copy_choices, wallet
+from . import agent_dialogue, agent_planner as planner, context_memory, copy_choices, wallet
 from .agent_store import (
     check_revision,
     enabled,
     event,
     initialize,
+    invalidate_summaries,
     memory_rows,
     message,
     metrics as metrics,
@@ -181,6 +182,7 @@ def task_view(c, services, row):
         concept=brief.get("concept", ""),
         deliveries=brief.get("deliveries", []),
         facts=brief.get("facts", []),
+        recalledMemories=brief.get("recalledMemories", []),
         shortOptions=brief.get("shortOptions", []),
         workRef=data.get("workRef"),
         storyboard=brief.get("storyboard", []),
@@ -206,7 +208,15 @@ def task_view(c, services, row):
             "text",
             "download",
         )
-        view["items"] = [{k: i.get(k) for k in keys} for i in result["items"]]
+        items = []
+        for i in result["items"]:
+            entry = {k: i.get(k) for k in keys}
+            if i.get("state") == "complete" and i.get("job"):
+                jrow = c.execute("SELECT version FROM job WHERE id=?", (i["job"],)).fetchone()
+                if jrow:
+                    entry["version"] = jrow["version"]
+            items.append(entry)
+        view["items"] = items
         view["download"] = result["download"] if result["complete"] else None
     return view
 
@@ -252,12 +262,23 @@ def register(app, services):
                 (cid, t),
             )
         ]
+        candidates = [
+            r
+            for r in memory_rows(c, t, row["project"], include_candidates=True)
+            if r["status"] == "candidate"
+        ]
+        summary_row = c.execute(
+            "SELECT up_to_seq,summary,updated FROM agent_context_summary WHERE conversation=? AND tenant=?",
+            (cid, t),
+        ).fetchone()
         return dict(
             id=cid,
             title=row["title"],
             project=row["project"],
             messages=turns,
             tasks=tasks,
+            candidates=candidates,
+            contextSummary=dict(summary_row) if summary_row else None,
         )
 
     @app.get("/api/agent")
@@ -279,20 +300,44 @@ def register(app, services):
                             a.rowid DESC LIMIT 1""",
                 (t, t),
             ).fetchone()
+            convs = []
+            for r in c.execute(
+                """SELECT id,title,project,created FROM conversation
+                WHERE tenant=? AND archived=0 ORDER BY created DESC,rowid DESC""",
+                (t,),
+            ):
+                item = dict(r)
+                latest = c.execute(
+                    "SELECT * FROM agent_task WHERE conversation=? AND tenant=? ORDER BY rowid DESC LIMIT 1",
+                    (r["id"], t),
+                ).fetchone()
+                st = run_status(c, latest) if latest else None
+                item["activeStatus"] = (
+                    st
+                    if st
+                    in (
+                        "waiting_input",
+                        "waiting_copy",
+                        "waiting_script",
+                        "quoted",
+                        "queued",
+                        "running",
+                        "reviewing",
+                    )
+                    else None
+                )
+                convs.append(item)
+            cand_count = c.execute(
+                "SELECT COUNT(*) FROM agent_memory WHERE tenant=? AND status='candidate'",
+                (t,),
+            ).fetchone()[0]
             return jsonify(
                 workspace=t,
                 pending={
                     **{key: pending[key] for key in ("task", "conversation", "title", "cost")},
                     "status": run_status(c, pending),
                 } if pending else None,
-                conversations=[
-                    dict(r)
-                    for r in c.execute(
-                        """SELECT id,title,project,created FROM conversation
-                WHERE tenant=? AND archived=0 ORDER BY created DESC,rowid DESC""",
-                        (t,),
-                    )
-                ],
+                conversations=convs,
                 projects=[
                     dict(r)
                     for r in c.execute(
@@ -301,6 +346,23 @@ def register(app, services):
                     )
                 ],
                 weeks=preferences(c, t)["weeks"],
+                candidateCount=cand_count,
+            )
+
+    @app.get("/api/agent/capabilities")
+    def agent_capabilities():
+        tenant()
+        with db() as c:
+            return jsonify(capabilities=planner.capability_registry(c))
+
+    @app.get("/api/agent/conversations/<cid>/context")
+    def agent_context(cid):
+        t = tenant()
+        q = request.args.get("q", "")
+        with db() as c:
+            conv = conversation(c, cid, t)
+            return jsonify(
+                context_memory.build_context_packet(c, t, conv, question=q, write_summary=False)
             )
 
     @app.post("/api/agent/projects")
@@ -374,6 +436,17 @@ def register(app, services):
                 ]
             )
 
+    def _checked_expiry(raw):
+        if raw in (None, ""):
+            return None
+        if not isinstance(raw, str) or len(raw) != 10:
+            raise ValueError("有效期格式应为 YYYY-MM-DD。")
+        try:
+            dt.date.fromisoformat(raw)
+        except ValueError:
+            raise ValueError("有效期格式应为 YYYY-MM-DD。")
+        return raw
+
     @app.route("/api/agent/memory", methods=["GET", "POST"])
     def agent_memory():
         t, v = tenant(), body()
@@ -388,6 +461,7 @@ def register(app, services):
                 raise ValueError("记忆类别无效。")
             if kind == "asset":
                 owner(c, "asset", value, t)
+            expires_at = _checked_expiry(v.get("expiresAt"))
             if c.execute(
                 "SELECT 1 FROM agent_memory WHERE tenant=? AND project=? AND name=?",
                 (t, project or "", name),
@@ -395,9 +469,11 @@ def register(app, services):
                 abort(409, description="已有同名记忆，请打开原条目确认修改。")
             mid = ident()
             c.execute(
-                "INSERT INTO agent_memory VALUES(?,?,?,?,?,?,1,1,?)",
-                (mid, t, project or "", name, value, kind, now()),
+                """INSERT INTO agent_memory(id,tenant,project,name,value,kind,active,version,updated,status,expires_at)
+                   VALUES(?,?,?,?,?,?,1,1,?,'confirmed',?)""",
+                (mid, t, project or "", name, value, kind, now(), expires_at),
             )
+            invalidate_summaries(c, t, project)
             return jsonify(id=mid, version=1)
 
     @app.route("/api/agent/memory/<mid>", methods=["GET", "PATCH", "DELETE"])
@@ -411,6 +487,7 @@ def register(app, services):
                 abort(409, description="记忆已更新，请重新查看。")
             if request.method == "DELETE":
                 c.execute("DELETE FROM agent_memory WHERE id=?", (mid,))
+                invalidate_summaries(c, t, row["project"] or None)
             else:
                 value = checked_text(v.get("value", row["value"]), 240, "记忆内容")
                 if row["kind"] == "asset":
@@ -418,10 +495,46 @@ def register(app, services):
                 active = v.get("active", bool(row["active"]))
                 if type(active) is not bool:
                     raise ValueError("请选择是否启用。")
-                c.execute(
-                    "UPDATE agent_memory SET value=?,active=?,version=version+1,updated=? WHERE id=?",
-                    (value, active, now(), mid),
+                status = v.get("status", row["status"] or "confirmed")
+                if status not in ("candidate", "confirmed", "expired", "revoked"):
+                    raise ValueError("记忆状态无效。")
+                expires_at = (
+                    _checked_expiry(v["expiresAt"])
+                    if "expiresAt" in v
+                    else row["expires_at"]
                 )
+                c.execute(
+                    """UPDATE agent_memory SET value=?,active=?,status=?,expires_at=?,
+                       version=version+1,updated=? WHERE id=?""",
+                    (value, active, status, expires_at, now(), mid),
+                )
+                invalidate_summaries(c, t, row["project"] or None)
+            return jsonify(ok=True)
+
+    @app.post("/api/agent/memory/<mid>/confirm")
+    def agent_memory_confirm(mid):
+        t, v = tenant(), body()
+        with db(True) as c:
+            row = owner(c, "agent_memory", mid, t)
+            if v.get("version") is not None and v.get("version") != row["version"]:
+                abort(409, description="记忆已更新，请重新查看。")
+            c.execute(
+                """UPDATE agent_memory SET status='confirmed',active=1,version=version+1,updated=?
+                   WHERE id=?""",
+                (now(), mid),
+            )
+            invalidate_summaries(c, t, row["project"] or None)
+            return jsonify(ok=True, id=mid, version=row["version"] + 1)
+
+    @app.post("/api/agent/memory/<mid>/dismiss")
+    def agent_memory_dismiss(mid):
+        t, v = tenant(), body()
+        with db(True) as c:
+            row = owner(c, "agent_memory", mid, t)
+            if v.get("version") is not None and v.get("version") != row["version"]:
+                abort(409, description="记忆已更新，请重新查看。")
+            c.execute("DELETE FROM agent_memory WHERE id=?", (mid,))
+            invalidate_summaries(c, t, row["project"] or None)
             return jsonify(ok=True)
 
     def answer(c, t, cid, v):
@@ -479,8 +592,20 @@ def register(app, services):
                 owner(c, "asset", asset, t)
                 extra["asset"] = asset
             message(c, cid, "user", "text", dict(text=text, **extra), key)
+            return c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
         command = text.rstrip("，,。.!！?？ ")
+        if action == "send" and (
+            context_memory.EXPLICIT_REMEMBER.match(text.strip())
+            or context_memory.EXPLICIT_FORGET.match(text.strip())
+        ):
+            user_seq = record()
+            reply_text = context_memory.handle_memory_command(
+                c, t, conv["project"], text, source_seq=user_seq
+            )
+            if reply_text:
+                message(c, cid, "assistant", "text", {"text": reply_text})
+                return cid, None
         if (action == "send" and task and task["status"] == "quoted"
                 and re.fullmatch(r"(?:请|帮我)?(?:确认制作|开始制作|确认扣积分|确认扣款|确认)", command)):
             record()
@@ -490,7 +615,7 @@ def register(app, services):
         if action == "send" and (
             agent_dialogue.DISCUSS.search(text) or command in ("你好", "您好", "在吗")
         ):
-            record()
+            user_seq = record()
             if command in ("你好", "您好", "在吗"):
                 message(
                     c,
@@ -499,7 +624,9 @@ def register(app, services):
                     "text",
                     {"text": "你好！今天想为店里推广什么？"},
                 )
+                context_memory.compact_conversation(c, t, cid)
                 return cid, None
+            context_memory.propose_candidates(c, t, conv["project"], text, source_seq=user_seq)
             message(
                 c,
                 cid,
@@ -763,7 +890,10 @@ def register(app, services):
                 "" if corrected else brief, options, previous if revise else None
             )
         tid = task["id"] if revise else ident()
-        record(target=target, prepare=tid)
+        user_seq = record(target=target, prepare=tid)
+        if action in ("send", "new", "here"):
+            context_memory.propose_candidates(c, t, conv["project"], text, source_seq=user_seq)
+        context_memory.compact_conversation(c, t, target)
         if target != cid:
             message(c, target, "user", "text", {"text": text})
         if revise:

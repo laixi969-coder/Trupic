@@ -1617,7 +1617,10 @@ def admin_state():
                     (SELECT 1 FROM job j WHERE j.tenant=m.id AND date(j.created)=date('now'))) retained""").fetchone()),
             costSummary=dict(c.execute("""SELECT (SELECT SUM(amount) FROM provider_bill WHERE currency='CNY') billed,
                 (SELECT COUNT(*) FROM job_bill) reconciled,(SELECT COUNT(*) FROM cos_object WHERE error IS NOT NULL) storageErrors""").fetchone()),
-            assistantMetrics=personal_agent.metrics(c),
+            assistantMetrics={
+                **personal_agent.metrics(c),
+                "capabilities": personal_agent.planner.capability_registry(c),
+            },
             adminAuth={"environmentManaged": bool(os.getenv("TRUPIC_ADMIN_KEY")), "customPassword": admin_credential(c)[1]},
             modelPlatforms={**providers.overview(c), "defaults": {kind:{k:v for k,v in model.default_connection(kind).items() if k in ("url","model")} for kind in providers.KINDS}, "effective": {kind:{k:v for k,v in model.route(kind).items() if k in ("provider","url","model","protocol")} for kind in providers.KINDS}},
             modelCosts=costs.overview(c),
