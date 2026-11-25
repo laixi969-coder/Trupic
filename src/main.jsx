@@ -523,45 +523,65 @@ function App() {
     !modal &&
     !["home", "profile"].includes(page) &&
     !page.startsWith("work/");
+  const agentMode = page === "home" && data.personalAgent;
   return (
-    <div className="shell">
-      {mobile && (
+    <div className={agentMode ? "shell shell-agent" : "shell"}>
+      {!agentMode && mobile && (
         <button
           className="backdrop"
           aria-label="关闭导航"
           onClick={() => setMobile(false)}
         />
       )}
-      <aside className={"sidebar " + (mobile ? "mobileopen" : "")}>
-        <button
-          className="brandbtn"
-          onClick={() => go("home")}
-          aria-label="响指出片首页"
-        >
-          <Brand />
-        </button>
-        <div className="nav-label">工作空间</div>
-        <nav>{navs.slice(0, 3).map(navItem)}</nav>
-        <div className="nav-label second">品牌与灵感</div>
-        <nav>{navs.slice(3).map(navItem)}</nav>
-        <div className="sidebottom">
-
-          <button className={"navitem subdued" + (section === "admin" ? " active" : "")} aria-current={section === "admin" ? "page" : undefined} onClick={navAdmin}>
-            <Settings2 size={17} />
-            运营管理
+      {!agentMode && (
+        <aside className={"sidebar " + (mobile ? "mobileopen" : "")}>
+          <button
+            className="brandbtn"
+            onClick={() => go("home")}
+            aria-label="响指出片首页"
+          >
+            <Brand />
           </button>
-          <button className="accountbtn" onClick={showAccount}>
-            <span className="avatar">
-              <Store size={18} />
-            </span>
-            <span>
-              <strong>{data.profile.name || "我的工作室"}</strong>
-              <small>{data.login || "商家工作空间"}</small>
-            </span>
-            <ChevronsUpDown size={15} />
-          </button>
-        </div>
-      </aside>
+          <div className="nav-label">工作空间</div>
+          <nav>{navs.slice(0, 3).map(navItem)}</nav>
+          <div className="nav-label second">品牌与灵感</div>
+          <nav>{navs.slice(3).map(navItem)}</nav>
+          <div className="sidebottom">
+            <button
+              className={"navitem subdued" + (section === "admin" ? " active" : "")}
+              aria-current={section === "admin" ? "page" : undefined}
+              onClick={navAdmin}
+            >
+              <Settings2 size={17} />
+              运营管理
+            </button>
+            <button className="accountbtn" onClick={showAccount}>
+              <span className="avatar">
+                <Store size={18} />
+              </span>
+              <span>
+                <strong>{data.profile.name || "我的工作室"}</strong>
+                <small>{data.login || "商家工作空间"}</small>
+              </span>
+              <ChevronsUpDown size={15} />
+            </button>
+          </div>
+        </aside>
+      )}
+      {agentMode ? (
+        <PersonalAgent
+          key={data.workspace}
+          data={data}
+          refresh={refresh}
+          tip={tip}
+          seed={agentSeed}
+          clearSeed={() => setAgentSeed(null)}
+          onGo={go}
+          onOpenCredits={() => open("credits")}
+          onOpenAccount={showAccount}
+          onOpenAdmin={navAdmin}
+        />
+      ) : (
       <main className="main">
         <div className="topbar">
           <div className="crumb">
@@ -572,10 +592,23 @@ function App() {
             >
               <Menu size={21} />
             </button>
-            <PanelLeft size={16} className="desktopicon" />
-            <span className="crumb-parent">商家工作空间</span>
+            {data.personalAgent ? (
+              <button
+                className="textbtn"
+                onClick={() => go("home")}
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 600 }}
+              >
+                <ArrowLeft size={16} />
+                返回营销助理
+              </button>
+            ) : (
+              <>
+                <PanelLeft size={16} className="desktopicon" />
+                <span className="crumb-parent">商家工作空间</span>
+              </>
+            )}
             <span className="slash">/</span>
-            <b>{page.startsWith("work/") ? "作品详情" : page === "home" && data.personalAgent ? "营销助理" : pageName}</b>
+            <b>{page.startsWith("work/") ? "作品详情" : pageName}</b>
           </div>
           <div className="topactions">
             <button className="credit" onClick={() => open("credits")}>
@@ -593,7 +626,6 @@ function App() {
           </div>
         </div>
         <div className="content" key={section}>
-          {page === "home" && data.personalAgent && <PersonalAgent key={data.workspace} data={data} refresh={refresh} tip={tip} seed={agentSeed} clearSeed={()=>setAgentSeed(null)}/>}
           {(page === "studio" || (page === "home" && !data.personalAgent) || page === "bundles") && (
             <>
               <div className="homehead">
@@ -1284,6 +1316,7 @@ function App() {
           )}
         </div>
       </main>
+      )}
       <input
         type="file"
         accept="image/jpeg,image/png,image/webp"

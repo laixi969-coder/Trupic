@@ -3,19 +3,25 @@ import {
   ArrowUp,
   BookOpen,
   Check,
-  ChevronDown,
   ChevronRight,
-  Clock3,
+  Compass,
   FolderKanban,
   ImagePlus,
+  Images,
   LoaderCircle,
+  Menu,
   MessageSquare,
   Mic,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
+  Settings2,
   SlidersHorizontal,
   Sparkles,
   Square,
+  Store,
   X,
+  Zap,
 } from "lucide-react";
 import { api, Modal } from "./ui.jsx";
 import { RatioPicker, shapes } from "./CreationSpecs.jsx";
@@ -29,18 +35,34 @@ const activeStates = ["planning", "queued", "running", "reviewing"];
 const choiceKey = () =>
   globalThis.crypto?.randomUUID?.() ||
   Date.now().toString(36) + Math.random().toString(36).slice(2);
-const starters = [
-  [
-    "poster",
-    "做一张海报",
-    "/designs/industry-tea.webp",
-    "想为门店做一张海报，宣传",
-  ],
-  ["copy", "写朋友圈文案", "/visuals/bakery.webp", "想写一条朋友圈文案，介绍"],
-  ["video", "剪一条短片", "/visuals/pool.webp", "想做一条短片，介绍"],
+
+const quickPrompts = [
+  { label: "做张周末促销海报", kind: "poster", seed: "想做一张周末促销海报，主打" },
+  { label: "写条新品朋友圈", kind: "copy", seed: "想写一条新品朋友圈文案，介绍" },
+  { label: "剪个15秒揽客短片", kind: "video", seed: "想做一条15秒揽客短片，介绍" },
+  { label: "看看本周灵感", action: "topics" },
 ];
 
-export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
+function greetingText(shopName) {
+  const hour = new Date().getHours();
+  const timeWord =
+    hour < 11 ? "早上好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
+  return shopName
+    ? `${timeWord}，今天想为${shopName}推什么？`
+    : `${timeWord}，今天想推广什么？`;
+}
+
+export default function PersonalAgent({
+  data,
+  refresh,
+  tip,
+  seed,
+  clearSeed,
+  onGo,
+  onOpenCredits,
+  onOpenAccount,
+  onOpenAdmin,
+}) {
   const [home, setHome] = useState({
       conversations: [],
       projects: [],
@@ -58,6 +80,8 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
     [busy, setBusy] = useState(""),
     [ready, setReady] = useState(false),
     [error, setError] = useState("");
+  const [railOpen, setRailOpen] = useState(false),
+    [railCollapsed, setRailCollapsed] = useState(false);
   const [workRef, setWorkRef] = useState(null),
     [project, setProject] = useState(""),
     [projectTitle, setProjectTitle] = useState(""),
@@ -126,6 +150,7 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
     const c = await api(root + "/" + id + "/visit", "POST", {});
     if (live.current && version === generation.current) {
       reset();
+      setRailOpen(false);
       setProject(c.project || "");
       display(c);
     }
@@ -251,8 +276,9 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
     generation.current++;
     reset();
     display(null);
+    setRailOpen(false);
     setProject(pid);
-    textarea.current?.focus();
+    requestAnimationFrame(() => textarea.current?.focus());
   }
   function scroll() {
     requestAnimationFrame(() =>
@@ -467,7 +493,7 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
     messages.filter((m) => m.kind === "task").map((m) => [m.task, m.seq]),
   );
   const cards = new Map((chat?.tasks || []).map((t) => [t.id, t]));
-  const showWelcome = !messages.some((m) => m.role === "user");
+  const showWelcome = !messages.some((m) => m.role === "user") && !messages.length;
   const activeKind = options.kind || task?.kind || "poster";
   const activeRatio =
     options.ratio ||
@@ -483,6 +509,177 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
   const candidateTotal = Math.max(
     home.candidateCount || 0,
     chat?.candidates?.length || 0,
+  );
+
+  const composerEl = (
+    <form
+      className={"pa-composer " + (showWelcome ? "hero" : "")}
+      onSubmit={(e) => {
+        e.preventDefault();
+        send(
+          input ||
+            (options.ownCopy
+              ? "使用我的文案"
+              : options.asset
+                ? "用这张商品图做一张海报"
+                : ""),
+        );
+      }}
+    >
+      {(workRef || task || options.asset || options.kind || options.ownCopy) && (
+        <div className="agent-attachments">
+          {workRef && (
+            <span>
+              沿用 · {workRef.label}
+              <button
+                type="button"
+                aria-label="清除作品引用"
+                onClick={() => setWorkRef(null)}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          )}
+          {task && (
+            <span>
+              修改 · {kinds[task.kind]}
+              <button
+                type="button"
+                aria-label="退出修改"
+                onClick={() => setTarget(null)}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          )}
+          {asset && (
+            <span>
+              <img
+                src={asset.original}
+                alt=""
+                onClick={() => setPanel("asset")}
+                style={{ cursor: "pointer" }}
+              />
+              <button
+                type="button"
+                onClick={() => setPanel("asset")}
+                title="核对包装标识"
+              >
+                {asset.name}
+              </button>
+              <button
+                type="button"
+                aria-label="移除素材"
+                onClick={() =>
+                  change({
+                    asset: "",
+                    references: [],
+                    identityRegion: null,
+                    assetConfirmed: false,
+                  })
+                }
+              >
+                <X size={12} />
+              </button>
+            </span>
+          )}
+          {options.kind && <span>{kinds[options.kind]}</span>}
+          {options.ownCopy && <span>已附文案</span>}
+        </div>
+      )}
+
+      <textarea
+        ref={textarea}
+        aria-label="给营销助理发消息"
+        maxLength={1200}
+        rows={showWelcome ? 3 : 2}
+        placeholder={
+          task
+            ? "想改哪里？比如「把19元改为29元」或「换横版」"
+            : showWelcome
+              ? "说说店里要推什么，或丢张商品图进来…"
+              : "继续告诉助理，或说「记住：…」"
+        }
+        value={input}
+        disabled={!!busy || !ready}
+        onChange={(e) => {
+          setInput(e.target.value);
+          if (options.topicId) change({ topicId: "", source: "对话创作" });
+        }}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            send(input);
+          }
+        }}
+      />
+
+      <input
+        type="file"
+        multiple
+        accept="image/jpeg,image/png,image/webp"
+        aria-label="选择商品照片"
+        ref={file}
+        hidden
+        onChange={upload}
+      />
+
+      <div className="pa-composer-bar">
+        <div className="pa-composer-left">
+          <button
+            type="button"
+            className="pa-tool-btn"
+            disabled={!!busy}
+            onClick={() => {
+              if (assetRights) file.current?.click();
+              else setPanel("asset");
+            }}
+          >
+            <ImagePlus size={17} />
+            <span>{asset ? "换图" : "发图"}</span>
+          </button>
+          <button
+            type="button"
+            className="pa-tool-btn spec"
+            disabled={!!busy}
+            onClick={() => setPanel("spec")}
+          >
+            <SlidersHorizontal size={14} />
+            <span>{specBadge}</span>
+          </button>
+        </div>
+        <div className="pa-composer-right">
+          {canRecord && (
+            <button
+              type="button"
+              className={"pa-mic-btn " + (recording ? "recording" : "")}
+              disabled={!!busy}
+              aria-label={recording ? "结束录音" : "说话输入"}
+              aria-pressed={recording}
+              onClick={voice}
+            >
+              {recording ? <Square size={15} /> : <Mic size={16} />}
+              <span>{recording ? "说完了" : "说需求"}</span>
+            </button>
+          )}
+          <button
+            className="pa-send-btn"
+            aria-label="发送消息"
+            disabled={
+              !!busy ||
+              !ready ||
+              !(input.trim() || options.ownCopy || options.asset)
+            }
+          >
+            {busy === "send" ? (
+              <LoaderCircle size={18} className="spin" />
+            ) : (
+              <ArrowUp size={19} />
+            )}
+          </button>
+        </div>
+      </div>
+    </form>
   );
 
   const topicCards = (m) => (
@@ -505,541 +702,609 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
   );
 
   return (
-    <div className="agent-page">
-      <header className="agent-bar">
+    <div className={"pa-shell " + (railCollapsed ? "rail-collapsed" : "")}>
+      {railOpen && (
+        <div
+          className="pa-backdrop"
+          onClick={() => setRailOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside
+        className={"pa-rail " + (railOpen ? "open" : "")}
+        aria-label="对话与助理空间"
+      >
+        <div className="pa-rail-top">
+          <button
+            type="button"
+            className="pa-brand"
+            onClick={() => startFresh("")}
+          >
+            <img src="/favicon.svg" alt="" />
+            <span>
+              <b>响指出片</b>
+              <small>营销助理</small>
+            </span>
+          </button>
+          <button
+            type="button"
+            className="pa-icon-btn desktop-only"
+            aria-label="收起侧栏"
+            onClick={() => setRailCollapsed(true)}
+          >
+            <PanelLeftClose size={18} />
+          </button>
+          <button
+            type="button"
+            className="pa-icon-btn mobile-only"
+            aria-label="关闭侧栏"
+            onClick={() => setRailOpen(false)}
+          >
+            <X size={18} />
+          </button>
+        </div>
+
         <button
           type="button"
-          className="agent-project-pill"
+          className="pa-new-btn"
           disabled={!!busy || !ready}
-          onClick={() => setPanel("project")}
-          title="切换或关联营销项目"
+          onClick={() => startFresh("")}
         >
-          <FolderKanban size={15} />
-          <span>{projectName || "独立对话"}</span>
-          <ChevronDown size={14} />
+          <Plus size={17} />
+          <span>新对话</span>
         </button>
-        <div className="agent-bar-actions">
-          <button
-            type="button"
-            disabled={!!busy || !ready}
-            onClick={() => startFresh(chat?.project || "")}
-          >
-            <Plus size={16} />
-            新对话
-          </button>
-          <button
-            type="button"
-            disabled={!!busy}
-            onClick={() =>
-              perform("history", async () => {
-                await syncHome();
-                setPanel("history");
-              })
-            }
-          >
-            <Clock3 size={16} />
-            历史
-          </button>
-          <button
-            type="button"
-            className="agent-memory-trigger"
-            aria-label="助理记忆"
-            title="助理记忆"
-            disabled={!!busy}
-            onClick={() => setPanel("memory")}
-          >
-            <BookOpen size={16} />
-            <span>记忆</span>
-            {candidateTotal > 0 && (
-              <i className="agent-dot" aria-label="有待确认记忆" />
-            )}
-          </button>
-        </div>
-      </header>
 
-      <div className="agent-stream">
-        {showWelcome && (
-          <div className="agent-welcome">
-            <h1>
-              今天想为<span>{data.profile.name || "店里"}</span>推点什么？
-            </h1>
-
-            {home.pending && (
+        <div className="pa-rail-scroll">
+          <div className="pa-rail-section">
+            <div className="pa-section-head">
+              <span>营销项目</span>
               <button
                 type="button"
-                className="agent-pending-card"
-                disabled={!!busy}
-                onClick={() =>
-                  perform("open", () => openChat(home.pending.conversation))
-                }
+                onClick={() => {
+                  setProject("+");
+                  setPanel("project");
+                }}
+                title="新建活动项目"
               >
-                <div className="agent-pending-top">
-                  <span className="agent-pending-dot" />
-                  <b>接着做 · {states[home.pending.status] || "进行中"}</b>
-                  {home.pending.cost != null && (
-                    <em>{home.pending.cost} 积分</em>
-                  )}
-                </div>
-                <div className="agent-pending-bottom">
-                  <span>{home.pending.title || "未完成的创作任务"}</span>
-                  <ChevronRight size={16} />
-                </div>
+                <Plus size={14} />
               </button>
-            )}
-
-            <div className="agent-starters">
-              {starters.map(([kind, label, img, seedText]) => (
+            </div>
+            {home.projects.length === 0 ? (
+              <button
+                type="button"
+                className="pa-rail-muted"
+                onClick={() => {
+                  setProject("+");
+                  setPanel("project");
+                }}
+              >
+                <FolderKanban size={15} />
+                按活动建项目，价格不串用
+              </button>
+            ) : (
+              home.projects.map((p) => (
                 <button
-                  key={kind}
+                  key={p.id}
                   type="button"
-                  disabled={!!busy}
-                  onClick={() => {
-                    setInput(seedText);
-                    setOptions({ kind });
-                    textarea.current?.focus();
-                  }}
+                  className={
+                    "pa-rail-item " +
+                    ((chat?.project || project) === p.id ? "active" : "")
+                  }
+                  onClick={() => startFresh(p.id)}
                 >
-                  <img src={img} alt="" />
-                  <b>
-                    {label}
-                    <ChevronRight size={15} />
-                  </b>
+                  <FolderKanban size={15} />
+                  <span>{p.title}</span>
                 </button>
-              ))}
-            </div>
-
-            <div className="agent-welcome-quick">
-              <button
-                type="button"
-                disabled={!!busy || !ready}
-                onClick={() => send("本周推荐", { action: "topics" }, {})}
-              >
-                <Sparkles size={14} />
-                看看本周可以做什么
-              </button>
-            </div>
-          </div>
-        )}
-
-        {!showWelcome && <h1 className="agent-thread-name">{chat.title}</h1>}
-
-        <div className="agent-messages">
-          {messages.map((m) => {
-            if (m.kind === "task") {
-              if (latestCard.get(m.task) !== m.seq) return null;
-              const t = cards.get(m.task);
-              return (
-                t && (
-                  <AgentTask
-                    key={m.seq}
-                    writing={writing[t.id] === t.revision}
-                    writingError={
-                      writingErrors[t.id]?.revision === t.revision
-                        ? writingErrors[t.id].message
-                        : ""
-                    }
-                    onOpenMemory={() => setPanel("memory")}
-                    {...{ task: t, busy: !!busy, action, send, edit, tip }}
-                  />
-                )
-              );
-            }
-            if (m.kind === "topics")
-              return (
-                <React.Fragment key={m.seq}>{topicCards(m)}</React.Fragment>
-              );
-            if (m.kind === "pick_work")
-              return (
-                <div className="agent-bubble" key={m.seq}>
-                  {m.text}
-                  <div className="agent-links">
-                    {m.items.map((w) => (
-                      <button
-                        disabled={!!busy}
-                        key={w.id}
-                        onClick={() => {
-                          if (m.needsInstruction) {
-                            setWorkRef(w);
-                            setInput("照这个再做，");
-                            textarea.current?.focus();
-                          } else
-                            send(
-                              m.instruction,
-                              { action: "new", workRef: w },
-                              {},
-                            );
-                        }}
-                      >
-                        {w.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            if (m.kind === "switch")
-              return (
-                <div className="agent-bubble" key={m.seq}>
-                  这是一个新任务。要在哪里继续？
-                  <div className="agent-links">
-                    <button
-                      className="agent-chip-primary"
-                      disabled={!!busy}
-                      onClick={() =>
-                        send(m.text, { action: "branch" }, m.options)
-                      }
-                    >
-                      另开对话（推荐）
-                    </button>
-                    <button
-                      disabled={!!busy}
-                      onClick={() =>
-                        send(m.text, { action: "here" }, m.options)
-                      }
-                    >
-                      留在当前对话
-                    </button>
-                  </div>
-                </div>
-              );
-            return (
-              <div className={"agent-bubble " + m.role} key={m.seq}>
-                {m.asset && (
-                  <img
-                    className="agent-source-photo"
-                    src={"/api/assets/" + m.asset + "/original"}
-                    alt="本条消息的商品照片"
-                  />
-                )}
-                <div>{m.text}</div>
-                {m.recalled?.length > 0 && (
-                  <small className="agent-bubble-recalled">
-                    <BookOpen size={11} />
-                    已参考：{m.recalled.map((r) => r.name).join("、")}
-                  </small>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div ref={end} />
-      </div>
-
-      <div className="agent-dock">
-        {pendingCandidate && (
-          <div className="agent-candidate-bar" role="status">
-            <span>
-              <Sparkles size={14} />
-              需要长期记住吗？<b>{pendingCandidate.name}</b>：
-              {pendingCandidate.value}
-            </span>
-            <div>
-              <button
-                type="button"
-                className="agent-chip-primary"
-                disabled={!!busy}
-                onClick={() => decideCandidate(pendingCandidate, true)}
-              >
-                记住
-              </button>
-              <button
-                type="button"
-                disabled={!!busy}
-                onClick={() => decideCandidate(pendingCandidate, false)}
-              >
-                不用
-              </button>
-            </div>
-          </div>
-        )}
-
-        {busy && (
-          <p className="agent-feedback" role="status">
-            {busy === "send"
-              ? "正在梳理你的需求…"
-              : busy === "upload"
-                ? "正在上传照片…"
-                : busy === "voice"
-                  ? "正在把语音转成文字…"
-                  : "正在处理…"}
-          </p>
-        )}
-        {error && (
-          <p className="error" role="alert">
-            {error}{" "}
-            {!ready && (
-              <button onClick={() => location.reload()}>重新连接</button>
+              ))
             )}
-          </p>
-        )}
+          </div>
 
-        <form
-          className="agent-composer"
-          onSubmit={(e) => {
-            e.preventDefault();
-            send(
-              input ||
-                (options.ownCopy
-                  ? "使用我的文案"
-                  : options.asset
-                    ? "用这张商品图做一张海报"
-                    : ""),
-            );
-          }}
-        >
-          {(workRef ||
-            task ||
-            options.asset ||
-            options.kind ||
-            options.ownCopy) && (
-            <div className="agent-attachments">
-              {workRef && (
-                <span>
-                  沿用 · {workRef.label}
+          <div className="pa-rail-section">
+            <div className="pa-section-head">
+              <span>最近对话</span>
+            </div>
+            {home.conversations.length === 0 && (
+              <p className="pa-rail-empty">发第一句话后会自动保存</p>
+            )}
+            {home.conversations.map((c) => {
+              const pTitle = home.projects.find((p) => p.id === c.project)?.title;
+              return (
+                <div
+                  key={c.id}
+                  className={"pa-chat-row " + (c.id === chat?.id ? "active" : "")}
+                >
                   <button
                     type="button"
-                    aria-label="清除作品引用"
-                    onClick={() => setWorkRef(null)}
+                    aria-current={c.id === chat?.id}
+                    onClick={() => perform("open", () => openChat(c.id))}
                   >
-                    <X size={12} />
-                  </button>
-                </span>
-              )}
-              {task && (
-                <span>
-                  修改 · {kinds[task.kind]}
-                  <button
-                    type="button"
-                    aria-label="退出修改"
-                    onClick={() => setTarget(null)}
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              )}
-              {asset && (
-                <span>
-                  <img
-                    src={asset.original}
-                    alt=""
-                    onClick={() => setPanel("asset")}
-                    style={{ cursor: "pointer" }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPanel("asset")}
-                    title="框选需保真的标识"
-                  >
-                    {asset.name}
+                    <MessageSquare size={15} />
+                    <span className="pa-chat-meta">
+                      <b>{c.title}</b>
+                      {(c.activeStatus || pTitle) && (
+                        <small>
+                          {c.activeStatus && (
+                            <i className="pa-live-dot" title={states[c.activeStatus]} />
+                          )}
+                          {c.activeStatus ? states[c.activeStatus] : pTitle}
+                        </small>
+                      )}
+                    </span>
                   </button>
                   <button
                     type="button"
-                    aria-label="移除素材"
+                    className="pa-chat-del"
+                    aria-label={"移除对话 " + c.title}
+                    title="移除对话（后台制作继续）"
+                    disabled={!!busy}
                     onClick={() =>
-                      change({
-                        asset: "",
-                        references: [],
-                        identityRegion: null,
-                        assetConfirmed: false,
+                      perform("archive", async () => {
+                        await api(root + "/" + c.id, "DELETE");
+                        const h = await syncHome();
+                        if (c.id === chat?.id) {
+                          if (h.conversations[0])
+                            await openChat(h.conversations[0].id);
+                          else startFresh("");
+                        }
                       })
                     }
                   >
-                    <X size={12} />
+                    <X size={14} />
                   </button>
-                </span>
-              )}
-              {options.kind && <span>{kinds[options.kind]}</span>}
-              {options.ownCopy && <span>已附文案</span>}
-            </div>
-          )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
 
-          <textarea
-            ref={textarea}
-            aria-label="给营销助理发消息"
-            maxLength={1200}
-            rows={2}
-            placeholder={
-              task
-                ? "想改哪里？比如「把19元改为29元」或「换横版」"
-                : showWelcome
-                  ? "说说想推什么产品或活动，也可以直接发照片…"
-                  : "继续说说想法，或说「记住：…」"
-            }
-            value={input}
-            disabled={!!busy || !ready}
-            onChange={(e) => {
-              setInput(e.target.value);
-              if (options.topicId) change({ topicId: "", source: "对话创作" });
+        <div className="pa-rail-footer">
+          <button
+            type="button"
+            className="pa-rail-item"
+            onClick={() => {
+              setRailOpen(false);
+              setPanel("memory");
             }}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                e.preventDefault();
-                send(input);
-              }
+          >
+            <BookOpen size={16} />
+            <span>助理记忆</span>
+            {candidateTotal > 0 && (
+              <em className="pa-count-pill">{candidateTotal}</em>
+            )}
+          </button>
+          <button
+            type="button"
+            className="pa-rail-item"
+            onClick={() => {
+              setRailOpen(false);
+              onGo("works");
             }}
-          />
+          >
+            <Images size={16} />
+            <span>我的作品</span>
+            {data.works.length > 0 && <small>{data.works.length}</small>}
+          </button>
+          <button
+            type="button"
+            className="pa-rail-item"
+            onClick={() => {
+              setRailOpen(false);
+              onGo("profile");
+            }}
+          >
+            <Store size={16} />
+            <span>店铺档案</span>
+          </button>
 
-          <input
-            type="file"
-            multiple
-            accept="image/jpeg,image/png,image/webp"
-            aria-label="选择商品照片"
-            ref={file}
-            hidden
-            onChange={upload}
-          />
+          <div className="pa-rail-sublinks">
+            <button type="button" onClick={() => { setRailOpen(false); onGo("inspiration"); }}>
+              <Compass size={13} />灵感
+            </button>
+            <button type="button" onClick={() => { setRailOpen(false); onGo("promotion"); }}>
+              推广
+            </button>
+            <button type="button" onClick={() => { setRailOpen(false); onGo("studio"); }}>
+              原创作台
+            </button>
+            <button type="button" onClick={() => { setRailOpen(false); onOpenAdmin(); }}>
+              <Settings2 size={13} />后台
+            </button>
+          </div>
 
-          <div className="agent-tools">
-            <div>
+          <div className="pa-account-strip">
+            <button
+              type="button"
+              className="pa-account-btn"
+              onClick={() => {
+                setRailOpen(false);
+                onOpenAccount();
+              }}
+            >
+              <span className="pa-avatar">
+                {(data.profile.name || "店").slice(0, 1)}
+              </span>
+              <span>
+                <b>{data.profile.name || "我的小店"}</b>
+                <small>{data.login || "点击登录 / 同步"}</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="pa-credit-pill"
+              onClick={() => {
+                setRailOpen(false);
+                onOpenCredits();
+              }}
+            >
+              <Zap size={13} fill="currentColor" />
+              {data.credits}
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <section className="pa-stage">
+        <header className="pa-topbar">
+          <div className="pa-topbar-left">
+            <button
+              type="button"
+              className="pa-icon-btn mobile-only"
+              aria-label="打开对话列表"
+              onClick={() => {
+                syncHome().catch(() => {});
+                setRailOpen(true);
+              }}
+            >
+              <Menu size={20} />
+            </button>
+            {railCollapsed && (
               <button
                 type="button"
-                disabled={!!busy}
-                onClick={() => {
-                  if (assetRights) file.current?.click();
-                  else setPanel("asset");
-                }}
+                className="pa-icon-btn desktop-only"
+                aria-label="展开侧栏"
+                onClick={() => setRailCollapsed(false)}
               >
-                <ImagePlus size={17} />
-                {asset ? "换图" : "发图"}
+                <PanelLeftOpen size={18} />
               </button>
-              <button
-                type="button"
-                className="agent-spec-pill"
-                disabled={!!busy}
-                onClick={() => setPanel("spec")}
-              >
-                <SlidersHorizontal size={15} />
-                {specBadge}
-              </button>
-              {canRecord && (
+            )}
+            <div className="pa-topbar-title">
+              <strong>{showWelcome ? "营销助理" : chat?.title || "营销助理"}</strong>
+              {projectName && (
                 <button
                   type="button"
-                  className={recording ? "recording" : ""}
-                  disabled={!!busy}
-                  aria-label={recording ? "结束录音" : "语音输入"}
-                  aria-pressed={recording}
-                  onClick={voice}
+                  className="pa-project-tag"
+                  onClick={() => setPanel("project")}
                 >
-                  {recording ? <Square size={15} /> : <Mic size={17} />}
-                  {recording && <span>结束</span>}
+                  {projectName}
                 </button>
               )}
             </div>
-            <button
-              className="agent-send"
-              aria-label="发送消息"
-              disabled={
-                !!busy ||
-                !ready ||
-                !(input.trim() || options.ownCopy || options.asset)
-              }
-            >
-              {busy === "send" ? (
-                <LoaderCircle size={19} className="spin" />
-              ) : (
-                <ArrowUp size={20} />
-              )}
-            </button>
           </div>
-        </form>
 
-        <div className="agent-foot">
-          <button
-            type="button"
-            disabled={!!busy || !ready}
-            onClick={() => send("本周推荐", { action: "topics" }, {})}
-          >
-            本周选题
-          </button>
-          <a href="#works">我的作品</a>
-          <a href="#studio">原创作台</a>
-        </div>
-      </div>
-
-      {panel === "history" && (
-        <div
-          className="agent-drawer-backdrop"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setPanel("");
-          }}
-        >
-          <aside className="agent-drawer" aria-label="历史对话">
-            <header>
-              <h2>历史对话</h2>
+          <div className="pa-topbar-right">
+            <button
+              type="button"
+              className="pa-top-memory"
+              onClick={() => setPanel("memory")}
+              aria-label="助理记忆"
+              title="查看或编辑助理记忆"
+            >
+              <BookOpen size={16} />
+              <span className="desktop-only">记忆</span>
+              {candidateTotal > 0 && <i className="agent-dot" />}
+            </button>
+            <button
+              type="button"
+              className="pa-credit-pill mobile-only"
+              onClick={onOpenCredits}
+            >
+              <Zap size={13} fill="currentColor" />
+              {data.credits}
+            </button>
+            {!showWelcome && (
               <button
                 type="button"
-                className="iconbtn"
-                aria-label="关闭"
-                onClick={() => setPanel("")}
+                className="pa-icon-btn"
+                aria-label="新对话"
+                title="新对话"
+                disabled={!!busy || !ready}
+                onClick={() => startFresh("")}
               >
-                <X size={19} />
+                <Plus size={19} />
               </button>
-            </header>
-            <div className="agent-history">
-              {home.conversations.length === 0 && (
-                <p className="agent-empty-note">还没有对话记录。</p>
+            )}
+          </div>
+        </header>
+
+        {showWelcome ? (
+          <div className="pa-welcome-wrap">
+            <div className="pa-welcome-inner">
+              <div className="pa-emblem">
+                <img src="/favicon.svg" alt="" />
+              </div>
+              <h1>{greetingText(data.profile.name)}</h1>
+              <p className="pa-welcome-sub">
+                直接说话、打字或发张商品图，文案、海报和短片我来帮你一起搞定。
+              </p>
+
+              {composerEl}
+
+              {busy && (
+                <p className="agent-feedback" role="status">
+                  {busy === "send"
+                    ? "正在梳理你的需求…"
+                    : busy === "upload"
+                      ? "正在上传照片…"
+                      : busy === "voice"
+                        ? "正在把语音转成文字…"
+                        : "正在处理…"}
+                </p>
               )}
-              {home.conversations.map((c) => {
-                const pTitle = home.projects.find(
-                  (p) => p.id === c.project,
-                )?.title;
-                return (
-                  <div key={c.id}>
-                    <button
-                      aria-current={c.id === chat?.id}
-                      onClick={() => perform("open", () => openChat(c.id))}
-                    >
-                      <MessageSquare size={16} />
-                      <span className="agent-history-text">
-                        <b>{c.title}</b>
-                        {(pTitle || c.activeStatus) && (
-                          <small>
-                            {pTitle && <em>{pTitle}</em>}
-                            {c.activeStatus && (
-                              <i className="agent-status-chip">
-                                {states[c.activeStatus]}
-                              </i>
-                            )}
-                          </small>
-                        )}
-                      </span>
-                    </button>
-                    <button
-                      aria-label={"移除对话 " + c.title}
-                      title="移除对话（后台制作继续）"
-                      disabled={!!busy}
-                      onClick={() =>
-                        perform("archive", async () => {
-                          await api(root + "/" + c.id, "DELETE");
-                          const h = await syncHome();
-                          if (c.id === chat?.id) {
-                            if (h.conversations[0])
-                              await openChat(h.conversations[0].id);
-                            else {
-                              reset();
-                              display(null);
-                            }
-                          }
-                        })
+              {error && (
+                <p className="error" role="alert">
+                  {error}{" "}
+                  {!ready && (
+                    <button onClick={() => location.reload()}>重新连接</button>
+                  )}
+                </p>
+              )}
+
+              <div className="pa-prompt-chips">
+                {quickPrompts.map((q) => (
+                  <button
+                    key={q.label}
+                    type="button"
+                    disabled={!!busy || !ready}
+                    onClick={() => {
+                      if (q.action === "topics") {
+                        send("本周推荐", { action: "topics" }, {});
+                      } else {
+                        setInput(q.seed);
+                        setOptions({ kind: q.kind });
+                        textarea.current?.focus();
                       }
-                    >
-                      <X size={15} />
-                    </button>
+                    }}
+                  >
+                    <Sparkles size={13} />
+                    {q.label}
+                  </button>
+                ))}
+              </div>
+
+              {home.pending && (
+                <button
+                  type="button"
+                  className="pa-resume-card"
+                  disabled={!!busy}
+                  onClick={() =>
+                    perform("open", () => openChat(home.pending.conversation))
+                  }
+                >
+                  <div className="pa-resume-top">
+                    <span>
+                      <i className="pa-resume-dot" />
+                      接着做 · {states[home.pending.status] || "进行中"}
+                    </span>
+                    {home.pending.cost != null && (
+                      <b>{home.pending.cost} 积分</b>
+                    )}
                   </div>
-                );
-              })}
+                  <div className="pa-resume-bottom">
+                    <span>{home.pending.title || "未完成的创作任务"}</span>
+                    <em>
+                      继续处理 <ChevronRight size={15} />
+                    </em>
+                  </div>
+                </button>
+              )}
             </div>
-          </aside>
-        </div>
-      )}
+          </div>
+        ) : (
+          <>
+            <div className="pa-thread-scroll">
+              <div className="pa-thread">
+                {messages.map((m) => {
+                  if (m.kind === "task") {
+                    if (latestCard.get(m.task) !== m.seq) return null;
+                    const t = cards.get(m.task);
+                    return (
+                      t && (
+                        <div className="pa-turn assistant" key={m.seq}>
+                          <div className="pa-turn-mark">
+                            <img src="/favicon.svg" alt="" />
+                          </div>
+                          <div className="pa-turn-body">
+                            <AgentTask
+                              writing={writing[t.id] === t.revision}
+                              writingError={
+                                writingErrors[t.id]?.revision === t.revision
+                                  ? writingErrors[t.id].message
+                                  : ""
+                              }
+                              onOpenMemory={() => setPanel("memory")}
+                              {...{ task: t, busy: !!busy, action, send, edit, tip }}
+                            />
+                          </div>
+                        </div>
+                      )
+                    );
+                  }
+                  if (m.kind === "topics")
+                    return (
+                      <div className="pa-turn assistant" key={m.seq}>
+                        <div className="pa-turn-mark">
+                          <img src="/favicon.svg" alt="" />
+                        </div>
+                        <div className="pa-turn-body">{topicCards(m)}</div>
+                      </div>
+                    );
+                  if (m.kind === "pick_work")
+                    return (
+                      <div className="pa-turn assistant" key={m.seq}>
+                        <div className="pa-turn-mark">
+                          <img src="/favicon.svg" alt="" />
+                        </div>
+                        <div className="pa-turn-body">
+                          <div className="pa-prose">{m.text}</div>
+                          <div className="agent-links">
+                            {m.items.map((w) => (
+                              <button
+                                className="pa-inline-chip"
+                                disabled={!!busy}
+                                key={w.id}
+                                onClick={() => {
+                                  if (m.needsInstruction) {
+                                    setWorkRef(w);
+                                    setInput("照这个再做，");
+                                    textarea.current?.focus();
+                                  } else
+                                    send(
+                                      m.instruction,
+                                      { action: "new", workRef: w },
+                                      {},
+                                    );
+                                }}
+                              >
+                                {w.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  if (m.kind === "switch")
+                    return (
+                      <div className="pa-turn assistant" key={m.seq}>
+                        <div className="pa-turn-mark">
+                          <img src="/favicon.svg" alt="" />
+                        </div>
+                        <div className="pa-turn-body">
+                          <div className="pa-prose">
+                            这像是一个新任务，要另开对话避免和当前任务混淆吗？
+                          </div>
+                          <div className="agent-links">
+                            <button
+                              className="agent-chip-primary"
+                              disabled={!!busy}
+                              onClick={() =>
+                                send(m.text, { action: "branch" }, m.options)
+                              }
+                            >
+                              另开新对话（推荐）
+                            </button>
+                            <button
+                              className="pa-inline-chip"
+                              disabled={!!busy}
+                              onClick={() =>
+                                send(m.text, { action: "here" }, m.options)
+                              }
+                            >
+                              留在这里继续
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  if (m.role === "user")
+                    return (
+                      <div className="pa-turn user" key={m.seq}>
+                        <div className="pa-user-bubble">
+                          {m.asset && (
+                            <img
+                              className="agent-source-photo"
+                              src={"/api/assets/" + m.asset + "/original"}
+                              alt="本条消息的商品照片"
+                            />
+                          )}
+                          <div>{m.text}</div>
+                        </div>
+                      </div>
+                    );
+                  return (
+                    <div className="pa-turn assistant" key={m.seq}>
+                      <div className="pa-turn-mark">
+                        <img src="/favicon.svg" alt="" />
+                      </div>
+                      <div className="pa-turn-body">
+                        <div className="pa-prose">{m.text}</div>
+                        {m.recalled?.length > 0 && (
+                          <button
+                            type="button"
+                            className="agent-bubble-recalled"
+                            onClick={() => setPanel("memory")}
+                          >
+                            <BookOpen size={11} />
+                            已参考记忆：{m.recalled.map((r) => r.name).join("、")}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={end} />
+              </div>
+            </div>
+
+            <div className="pa-dock">
+              <div className="pa-dock-inner">
+                {pendingCandidate && (
+                  <div className="agent-candidate-bar" role="status">
+                    <span>
+                      <Sparkles size={14} />
+                      需要长期记住吗？<b>{pendingCandidate.name}</b>：
+                      {pendingCandidate.value}
+                    </span>
+                    <div>
+                      <button
+                        type="button"
+                        className="agent-chip-primary"
+                        disabled={!!busy}
+                        onClick={() => decideCandidate(pendingCandidate, true)}
+                      >
+                        记住
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!!busy}
+                        onClick={() => decideCandidate(pendingCandidate, false)}
+                      >
+                        不用
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {busy && (
+                  <p className="agent-feedback" role="status">
+                    {busy === "send"
+                      ? "助理正在整理…"
+                      : busy === "upload"
+                        ? "正在上传照片…"
+                        : busy === "voice"
+                          ? "正在把语音转成文字…"
+                          : "正在处理…"}
+                  </p>
+                )}
+                {error && (
+                  <p className="error" role="alert">
+                    {error}
+                  </p>
+                )}
+                {composerEl}
+              </div>
+            </div>
+          </>
+        )}
+      </section>
 
       {panel === "project" && (
-        <Modal title="关联营销项目" onClose={() => setPanel("")}>
+        <Modal title="营销项目" onClose={() => setPanel("")}>
           <div className="agent-fields">
             <p className="agent-hint-text">
               同一项目下的对话共享活动价格与资料，不同活动互不串用。
             </p>
             <label>
-              选择项目（开启新对话）
+              选择或新建项目
               <select
                 value={project}
                 onChange={(e) => setProject(e.target.value)}
@@ -1057,7 +1322,7 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
               <input
                 aria-label="项目名称"
                 maxLength={60}
-                placeholder="例如：端午节满减活动"
+                placeholder="例如：周末满减活动、春季上新"
                 value={projectTitle}
                 onChange={(e) => setProjectTitle(e.target.value)}
               />
@@ -1076,6 +1341,7 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
                     ).id;
                   await create(pid);
                   reset();
+                  setRailOpen(false);
                   setProject(pid);
                   setProjectTitle("");
                   textarea.current?.focus();
@@ -1187,7 +1453,7 @@ export default function PersonalAgent({ data, refresh, tip, seed, clearSeed }) {
 
       {(panel === "spec" || panel === "own") && (
         <Modal
-          title={panel === "own" ? "使用我的文案" : "选择画幅与规格"}
+          title={panel === "own" ? "使用我的文案" : "画幅与规格"}
           onClose={() => setPanel("")}
         >
           <div className="agent-fields">
