@@ -898,11 +898,11 @@ export default function PersonalAgent({
           </button>
 
           <div className="pa-rail-sublinks">
+            <button type="button" onClick={() => { setRailOpen(false); onGo("mp"); }}>
+              小程序版
+            </button>
             <button type="button" onClick={() => { setRailOpen(false); onGo("inspiration"); }}>
               <Compass size={13} />灵感
-            </button>
-            <button type="button" onClick={() => { setRailOpen(false); onGo("promotion"); }}>
-              推广
             </button>
             <button type="button" onClick={() => { setRailOpen(false); onGo("studio"); }}>
               原创作台

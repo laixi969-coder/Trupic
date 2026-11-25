@@ -9,7 +9,7 @@
     <block wx:if="{{item.kind==='topics'}}"><view class="label">本周营销主题</view><button wx:for="{{item.items}}" wx:for-item="r" wx:key="topicId" class="line" data-item="{{r}}" bindtap="topic" disabled="{{busy}}">{{r.title}} ›</button></block>
     <block wx:elif="{{item.kind==='switch'}}"><view>这是一个新任务。要在哪里继续？</view><button class="link" data-action="branch" data-item="{{item}}" bindtap="switchTask" disabled="{{busy}}">另开对话</button><button class="link" data-action="here" data-item="{{item}}" bindtap="switchTask" disabled="{{busy}}">留在这里</button></block>
     <block wx:elif="{{item.kind==='pick_work'}}"><text>{{item.text}}</text><button wx:for="{{item.items}}" wx:for-item="work" wx:key="id" data-work="{{work}}" data-question="{{item}}" bindtap="pickWork">{{work.label}}</button></block>
-    <block wx:elif="{{item.kind==='task'}}"><view class="card-state">{{item.card.stateText}}</view><view class="request-line">{{item.card.deliveryLabel}}</view><view wx:if="{{item.card.note}}" class="sub">{{item.card.note}}</view><view wx:if="{{item.card.locked}}" class="locked-copy">{{item.card.locked.title}} {{item.card.locked.body}} {{item.card.locked.cta}}</view>
+    <block wx:elif="{{item.kind==='task'}}"><view class="card-state">{{item.card.stateText}}</view><view class="request-line">{{item.card.deliveryLabel}}</view><view wx:if="{{item.card.recalledText}}" class="recalled-tag">已参考记忆：{{item.card.recalledText}}</view><view wx:if="{{item.card.note}}" class="sub">{{item.card.note}}</view><view wx:if="{{item.card.locked}}" class="locked-copy">{{item.card.locked.title}} {{item.card.locked.body}} {{item.card.locked.cta}}</view>
       <button wx:if="{{item.card.status==='waiting_script'}}" class="secondary" data-action="options" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">生成并复核脚本</button>
       <block wx:if="{{item.card.status==='waiting_copy'}}"><button wx:if="{{!item.card.options.length}}" class="secondary" data-action="options" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">获取候选文案</button>
         <button wx:for="{{item.card.options}}" wx:for-item="opt" wx:key="title" class="line" data-index="{{index}}" data-card="{{item.card}}" bindtap="choose" disabled="{{busy}}">{{opt.title}}　{{opt.body}}</button></block>
@@ -18,9 +18,13 @@
       <button wx:if="{{item.card.canCancel}}" class="link" data-action="cancel" data-card="{{item.card}}" bindtap="stage" disabled="{{busy}}">取消任务</button>
       <view wx:for="{{item.card.items}}" wx:for-item="out" wx:key="job" class="line"><text>{{out.label}}　{{out.stage}}</text>
         <view wx:if="{{out.state==='failed'}}" class="error">生成失败，积分已退回。{{out.error}}</view>
-        <block wx:if="{{out.state==='complete'}}"><text selectable>{{out.text}}</text><button wx:if="{{out.text}}" class="link" data-text="{{out.text}}" bindtap="copy">复制文案</button><button class="link" data-id="{{out.work}}" bindtap="result">查看与保存成品</button></block></view>
+        <block wx:if="{{out.state==='complete'}}"><text selectable>{{out.text}}</text><view class="quick-row"><button wx:if="{{out.text}}" class="link" data-text="{{out.text}}" bindtap="copy">复制文案</button><button class="link" data-id="{{out.work}}" bindtap="result">查看与保存</button><button wx:if="{{out.kind!=='copy'}}" class="link" data-work="{{out.work}}" data-version="{{out.version || 1}}" data-text="换一张" bindtap="quickRevise" disabled="{{busy}}">换一张</button><button class="link" data-work="{{out.work}}" data-version="{{out.version || 1}}" data-text="文案短一点" bindtap="quickRevise" disabled="{{busy}}">短一点</button></view></block></view>
     </block>
-    <text wx:else selectable>{{item.text}}</text>
+    <block wx:else><text selectable>{{item.text}}</text><view wx:if="{{item.recalledText}}" class="recalled-tag">已参考记忆：{{item.recalledText}}</view></block>
+  </view>
+  <view wx:if="{{candidate}}" class="candidate-bar">
+    <view class="candidate-text">需要长期记住吗？{{candidate.name}}：{{candidate.value}}</view>
+    <view class="candidate-actions"><button class="cand-ok" data-accept="1" bindtap="decideMemory" disabled="{{busy}}">记住</button><button class="cand-no" data-accept="0" bindtap="decideMemory" disabled="{{busy}}">不用</button></view>
   </view>
   <view wx:if="{{turns.length}}" class="reply-tools">
     <button class="small-action" bindtap="readReply" disabled="{{busy || callActive || voiceState !== 'idle'}}">{{speaking ? '停止朗读' : '朗读最近回复'}}</button>

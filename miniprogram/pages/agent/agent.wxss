@@ -49,3 +49,10 @@
 .chat-page.on-call { padding-bottom: 190rpx; }
 .conversation-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .turn .line, .chat-page .panel button.line { display: block; width: 100%; min-height: 44px; text-align: left; }
+.recalled-tag { margin-top: 10rpx; font-size: 23rpx; color: #466649; background: #eef4e9; display: inline-block; padding: 6rpx 14rpx; border-radius: 999rpx; }
+.quick-row { display: flex; flex-wrap: wrap; gap: 18rpx; margin-top: 8rpx; }
+.candidate-bar { background: #fffdf4; border: 1rpx solid #d4e2c4; border-radius: 18rpx; padding: 18rpx 20rpx; margin: 14rpx 0; }
+.candidate-text { font-size: 26rpx; color: #1d442d; margin-bottom: 12rpx; }
+.candidate-actions { display: flex; gap: 14rpx; }
+.cand-ok { background: #184b32; color: #fff; font-size: 25rpx; padding: 0 24rpx; border-radius: 999rpx; line-height: 60rpx; }
+.cand-no { background: #edf2e8; color: #3d5642; font-size: 25rpx; padding: 0 22rpx; border-radius: 999rpx; line-height: 60rpx; }

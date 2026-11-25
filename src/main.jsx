@@ -65,6 +65,7 @@ import { Promotion } from "./Growth.jsx";
 import { MerchantShop } from "./Commerce.jsx";
 import WorkHistory from "./WorkHistory.jsx";
 import PersonalAgent from "./PersonalAgent.jsx";
+import MiniProgramPreview from "./MiniProgramPreview.jsx";
 import AutoCreate from "./AutoCreate.jsx";
 import {Support} from "./Support.jsx";
 import ProductRegion from "./ProductRegion.jsx";
@@ -524,16 +525,18 @@ function App() {
     !["home", "profile"].includes(page) &&
     !page.startsWith("work/");
   const agentMode = page === "home" && data.personalAgent;
+  const mpMode = page === "mp";
+  const fullBleed = agentMode || mpMode;
   return (
-    <div className={agentMode ? "shell shell-agent" : "shell"}>
-      {!agentMode && mobile && (
+    <div className={fullBleed ? "shell shell-agent" : "shell"}>
+      {!fullBleed && mobile && (
         <button
           className="backdrop"
           aria-label="关闭导航"
           onClick={() => setMobile(false)}
         />
       )}
-      {!agentMode && (
+      {!fullBleed && (
         <aside className={"sidebar " + (mobile ? "mobileopen" : "")}>
           <button
             className="brandbtn"
@@ -568,7 +571,17 @@ function App() {
           </div>
         </aside>
       )}
-      {agentMode ? (
+      {mpMode ? (
+        <MiniProgramPreview
+          key={data.workspace}
+          data={data}
+          refresh={refresh}
+          tip={tip}
+          onGo={go}
+          onOpenCredits={() => open("credits")}
+          onOpenAccount={showAccount}
+        />
+      ) : agentMode ? (
         <PersonalAgent
           key={data.workspace}
           data={data}

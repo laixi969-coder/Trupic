@@ -31,6 +31,7 @@ function turns(chat) {
               ...card,
               deliveryLabel: (card.deliveries || []).join("、") ||
                 ({ copy: "推广文案", poster: "营销海报", video: "宣传短片" })[card.kind],
+              recalledText: (card.recalledMemories || []).map((r) => r.name).join("、"),
               stateText: labels[card.status],
               canCancel: [
                 "planning",
@@ -42,7 +43,10 @@ function turns(chat) {
               ].includes(card.status),
             },
           }
-        : m;
+        : {
+            ...m,
+            recalledText: (m.recalled || []).map((r) => r.name).join("、"),
+          };
     });
 }
 
@@ -145,7 +149,11 @@ Page({
   },
   display(c) {
     this.emptyNew = false;
-    this.setData({ chat: c, turns: turns(c) });
+    this.setData({
+      chat: c,
+      turns: turns(c),
+      candidate: (c.candidates || [])[0] || null,
+    });
     wx.setStorageSync("trupic.agent." + this.workspace, c.id);
   },
   schedule() {
@@ -348,5 +356,28 @@ Page({
   },
   copy(e) {
     wx.setClipboardData({ data: e.currentTarget.dataset.text });
+  },
+  quickRevise(e) {
+    const { work, version, text } = e.currentTarget.dataset;
+    this.switchAudioOff();
+    return this.sendText(text, {
+      action: "new",
+      workRef: { id: work, version: Number(version) || 1 },
+    });
+  },
+  decideMemory(e) {
+    const cand = this.data.candidate;
+    if (!cand) return;
+    const accept = e.currentTarget.dataset.accept === "1";
+    return this.act(async (valid) => {
+      await api.request(
+        "agent/memory/" + cand.id + (accept ? "/confirm" : "/dismiss"),
+        "POST",
+        { version: cand.version },
+      );
+      if (!valid() || !this.data.chat) return;
+      const chat = await api.request("agent/conversations/" + this.data.chat.id);
+      if (valid()) this.display(chat);
+    });
   },
 });
