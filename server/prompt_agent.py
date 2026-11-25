@@ -62,6 +62,17 @@ RATIO_COMPOSITION = {
 }
 
 
+COMMERCIAL_POSTER_AESTHETIC = (
+    "商业广告大片级审美标准：执行 60/30/10 主次留白比例，从真实商品提取克制的 2 主色 + 1 点缀色，"
+    "采用高级商业棚拍或自然定向侧光刻画材质肌理与真实接触阴影，严格遵循光学网格对齐与主副三级字阶呼吸感；"
+    "严禁塑料磨皮感、假高光、多余贴纸装饰、变形商品、错字乱码、多余水印及廉价模板拼贴感。"
+)
+COMMERCIAL_VIDEO_AESTHETIC = (
+    "商业广告级短片审美：全片统一电影感色温与自然定向光，近景使用浅景深突出商品质感与真实动态细节，"
+    "运镜克制流畅（缓推/横移/定镜），字幕简洁高对比且避开平台遮挡区；严禁廉价花字、闪烁特效与重复镜头凑时长。"
+)
+
+
 def full_poster_prompt(plan, copy):
     """Hand off the approved concept and literal final copy to a reference-image model."""
     art = plan["posterArt"]
@@ -72,13 +83,13 @@ def full_poster_prompt(plan, copy):
         copy.get("terms"), copy.get("posterDeck", copy.get("body")), copy.get("cta"),
     ))))
     brief = [
-        f"为「{plan.get('promptBrief', {}).get('reading', {}).get('product') or plan['subject']}」生成一张 {output['width']} × {output['height']} 的满幅商业海报。",
+        f"为「{plan.get('promptBrief', {}).get('reading', {}).get('product') or plan['subject']}」生成一张 {output['width']} × {output['height']} 的满幅商业广告海报。",
         art.get("modelConcept") or art["concept"],
         RATIO_COMPOSITION.get(ratio_key, RATIO_COMPOSITION["portrait"]),
         "附商品原图作为外形、颜色和标识的依据。" if plan.get("visualSource") in ("cutout", "photograph") else "以无品牌概念画面表现主题。",
         "设计字形、字距与位置，让标题与主体共用一道轮廓或明暗边界。主标题逐字写作「" + copy["title"] + "」。",
         "画面文案逐字使用 " + " / ".join("「" + w + "」" for w in words) + "。保留实物原有标识。",
-        "商业摄影级真实质感：自然接触阴影与环境反射，严禁塑料磨皮感、假光影、变形商品、错字乱码、多余水印及廉价模板拼贴感。",
+        COMMERCIAL_POSTER_AESTHETIC,
     ]
     if visual_idea := copy.get("visualIdea"):
         brief.append("与文案协同的画面构思：" + visual_idea)
@@ -366,7 +377,10 @@ def optimize(spec, *, infer=True, previous=None):
                 f"0–3 秒建立{art_direction['mechanism']}的画面关系，3–6 秒切近{focus}，停一拍后缓慢推进，字幕只说这一点。"
                 "6–9 秒回到全景并给出行动。"
             )
-        prompts["video"] = f"以「{product}」为主体，总时长 {dur} 秒。{beat}不得用重复镜头填时长。镜头节奏采用{PACE[reading['pace']]}。"
+        prompts["video"] = (
+            f"以「{product}」为主体，总时长 {dur} 秒。{beat}"
+            f"{COMMERCIAL_VIDEO_AESTHETIC}镜头节奏采用{PACE[reading['pace']]}。"
+        )
     if "video" in prompts and action:
         prompts["video"] += "末镜清楚显示本次" + action["goal"] + "行动。"
     if "video" in prompts and wenan.no_cta(plan):
@@ -393,3 +407,44 @@ def optimize(spec, *, infer=True, previous=None):
     plan["promptBrief"] = {"reading": reading, "engine": engine, "prompts": prompts}
     if kind != "copy":
         plan["promptBrief"]["visualConstraints"] = constraints
+
+
+def elevate_for_production(spec, locked_copy):
+    """Run deep LLM creative direction post-approval using the merchant's locked copy.
+
+    Keeps quoting sub-second (infer=False during quote), while unlocking full art direction
+    right before actual image/video generation without ever altering confirmed facts or copy.
+    """
+    plan = spec.get("plan")
+    if (
+        not plan
+        or spec.get("kind") not in ("poster", "video")
+        or spec.get("regionEdit")
+        or not model.engine_name()
+    ):
+        return False
+    pb = plan.get("promptBrief") or {}
+    if pb.get("elevated") or (pb.get("engine") and pb.get("engine") != "本地提示词规则"):
+        return False
+    snapshot_facts = plan.get("facts", "")
+    title = (locked_copy or {}).get("title", "").strip()
+    visual_idea = (locked_copy or {}).get("visualIdea", "").strip()
+    extra_cue = "；".join(
+        filter(
+            None,
+            [
+                f"已锁定主标题：「{title}」" if title else "",
+                f"协同画面构思：{visual_idea}" if visual_idea else "",
+            ],
+        )
+    )
+    if extra_cue:
+        plan["facts"] = "；".join(filter(None, [snapshot_facts, extra_cue]))
+    try:
+        optimize(spec, infer=True)
+        plan["promptBrief"]["elevated"] = True
+        return plan["promptBrief"].get("engine") != "本地提示词规则"
+    except Exception:
+        return False
+    finally:
+        plan["facts"] = snapshot_facts

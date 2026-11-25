@@ -271,6 +271,8 @@ def generate_copy(plan, variant=0, *, revision_note=""):
         prompt += wenan.POSTER_HEADINGS
     if creative_title:
         prompt += wenan.POSTER_CREATIVE_BRIEF
+    if plan.get("capability") and not wenan.factual_only(plan["original"]):
+        prompt += " " + wenan.SOCIAL_CURRENCY_CLOSED_LOOP
     if not action and not poster:
         prompt += " 本次没有指定交易动作，cta 留空。片名和商品名是资料，除非用户明确指定标题，否则可以另写创意标题。"
     elif action and not action["channel"]:

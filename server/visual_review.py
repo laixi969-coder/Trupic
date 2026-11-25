@@ -7,6 +7,7 @@ import json
 from fractions import Fraction
 import re
 import subprocess
+import threading
 
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
@@ -724,6 +725,107 @@ def source_images(path, region):
         return content + image_message("商家原图", im)
 
 
+def classify_repair(issues, review=None, has_generated_bg=False):
+    """Map visual inspection failures to the fastest targeted repair strategy.
+
+    Avoids blind full-scene redraws when a 1-second typography or subject-layer fix suffices.
+    """
+    joined = " ".join(str(x) for x in (issues or ()))
+    if review and review.get("status") not in (None, "pass"):
+        joined += " " + str(review.get("reason", ""))
+    subject_tokens = (
+        "抠图",
+        "蒙版",
+        "裁切",
+        "商品区域过小",
+        "与原图不一致",
+        "遮挡",
+        "遮掉",
+        "标识",
+        "包装",
+    )
+    typography_tokens = (
+        "文字过小",
+        "超出画面",
+        "文字区域过小",
+        "笔画无法分辨",
+        "对比不足",
+        "排版",
+        "字号",
+        "可读",
+    )
+    if any(tok in joined for tok in subject_tokens):
+        return dict(
+            strategy="subject_restore",
+            stage="正在恢复原图商品细节",
+            redrawBackground=False,
+            fallbackOriginal=True,
+            typographyBoost=True,
+        )
+    if any(tok in joined for tok in typography_tokens) and (
+        not review or review.get("status") == "pass"
+    ):
+        return dict(
+            strategy="typography",
+            stage="正在优化文字排版与对比",
+            redrawBackground=False,
+            fallbackOriginal=False,
+            typographyBoost=True,
+        )
+    if has_generated_bg and review and review.get("status") not in (None, "pass"):
+        return dict(
+            strategy="scene_redraw",
+            stage="正在重绘匹配背景",
+            redrawBackground=True,
+            fallbackOriginal=False,
+            typographyBoost=True,
+            hint=str(review.get("reason", ""))[:160],
+        )
+    return dict(
+        strategy="typography",
+        stage="正在调整排版",
+        redrawBackground=False,
+        fallbackOriginal=False,
+        typographyBoost=True,
+    )
+
+
+def _preflight_cache_key(cfg, spec, original, locate):
+    try:
+        mtime = original.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    payload = json.dumps(
+        [
+            cfg.get("provider", ""),
+            cfg.get("model", ""),
+            cfg.get("url", ""),
+            bool(locate),
+            mtime,
+            spec.get("identityRegion"),
+            spec.get("plan", {}).get("original", ""),
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+def prewarm_asset(spec, folder):
+    """Pre-run read-only vision preflight in background while merchant selects copy (free)."""
+    if not spec or not spec.get("asset") or spec.get("kind") == "copy":
+        return False
+
+    def _run():
+        try:
+            preflight(spec, folder)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 def preflight(spec, folder):
     from . import model
 
@@ -756,6 +858,17 @@ def preflight_with(cfg, spec, folder):
         and (not locate or previous.get("detailChecked"))
     ):
         return
+    original = folder / spec["asset"] / "original.png"
+    cache_file = folder / spec["asset"] / "preflight_cache.json"
+    cache_key = _preflight_cache_key(cfg, spec, original, locate)
+    if cache_file.is_file():
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and cached.get("key") == cache_key and cached.get("review"):
+                plan["sourceReview"] = cached["review"]
+                return
+        except (OSError, ValueError):
+            pass
     instructions = "查看商品原图和可选的局部。输出 JSON，ok 是图片可用的布尔值，reason 用一句中文点名实际看见的商品与可辨细节。若必需标识或形状确实被遮挡或模糊，描述换图原因。一般宣传照即使无商标也可接受。"
     cfg_for_review = review_schema(cfg, "ok") if compact_local_vision(cfg) else cfg
     request = plan["original"]
@@ -777,7 +890,6 @@ def preflight_with(cfg, spec, folder):
                     "claim": {"type": "string", "maxLength": 20},
                 }, "required": ["label", "region"], "additionalProperties": False,
             }
-    original = folder / spec["asset"] / "original.png"
     content = [{"type": "text", "text": request}] + source_images(original, spec.get("identityRegion"))
     try:
         result = model.chat_request(
@@ -827,3 +939,10 @@ def preflight_with(cfg, spec, folder):
             if claim and any(claim in s for s in positive) and not any(claim in s for s in excluded):
                 detail["claim"] = claim
             plan["sourceReview"]["visualDetail"] = detail
+    try:
+        cache_file.write_text(
+            json.dumps({"key": cache_key, "review": plan["sourceReview"]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass

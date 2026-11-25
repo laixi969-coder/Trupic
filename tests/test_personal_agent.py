@@ -572,5 +572,100 @@ class PersonalAgentTests(TestCase):
             {**pspec["replacement"], "title": "午后这一杯", "visualIdea": "热气升起与侧光茶汤"},
         )
         self.assertIn("16:9 横版", full)
+        self.assertIn("60/30/10", full)
         self.assertIn("塑料磨皮", full)
         self.assertIn("热气升起与侧光茶汤", full)
+
+    def test_production_elevation_prewarm_cache_targeted_repair_and_social_tiers(self):
+        from server import prompt_agent, visual_review
+
+        # 1. Targeted repair classifier picks fastest valid action without blind redraws
+        r_typo = visual_review.classify_repair(["文字与邻近背景对比不足"], {"status": "pass"}, has_generated_bg=True)
+        self.assertEqual(r_typo["strategy"], "typography")
+        self.assertFalse(r_typo["redrawBackground"])
+
+        r_subj = visual_review.classify_repair(["商品局部颜色、文字或轮廓与原图不一致"], {"status": "fail", "reason": "包装偏移"}, has_generated_bg=True)
+        self.assertEqual(r_subj["strategy"], "subject_restore")
+        self.assertTrue(r_subj["fallbackOriginal"])
+        self.assertFalse(r_subj["redrawBackground"])
+
+        r_scene = visual_review.classify_repair([], {"status": "fail", "reason": "背景与商品光影割裂"}, has_generated_bg=True)
+        self.assertEqual(r_scene["strategy"], "scene_redraw")
+        self.assertTrue(r_scene["redrawBackground"])
+
+        # 2. Multi-tier social-currency copy fields pass through task_view cleanly
+        t = self.card("为茶店做一张海报", action="new")
+        def rich_options(spec, tenant):
+            return [
+                {
+                    **spec["replacement"],
+                    "title": "下班这杯桂花茶，留给最想见的人",
+                    "body": "鲜泡桂花乌龙 · 19元",
+                    "cta": "下班顺路进店",
+                    "angle": "顾客邀约",
+                    "shareTo": "一起加班的同事",
+                    "reply": "走，六点半门口见",
+                    "socialPost": "忙了一天，最治愈的还是下班顺路喝一杯热桂花乌龙。你下班最想喊谁一起？今晚顺路来店里坐坐。",
+                    "visualIdea": "黄昏暖侧光照在琥珀茶汤与杯口热气上",
+                },
+                {
+                    **spec["replacement"],
+                    "title": "刚出炉的桂花香，路过就会停脚",
+                    "body": "手工桂花乌龙 · 19元",
+                    "cta": "到店现泡",
+                    "angle": "画面切入",
+                },
+            ]
+        with patch("server.copy_choices.write_options", side_effect=rich_options):
+            opts_task = post(self.c, "agent/tasks/" + t["id"] + "/options", revision=t["revision"]).json
+        self.assertEqual(opts_task["options"][0]["angle"], "顾客邀约")
+        self.assertEqual(opts_task["options"][0]["shareTo"], "一起加班的同事")
+        self.assertIn("最想喊谁一起", opts_task["options"][0]["socialPost"])
+        chosen = self.card("选第一组")
+        self.assertEqual(chosen["locked"]["shareTo"], "一起加班的同事")
+        self.assertIn("最想喊谁一起", chosen["locked"]["socialPost"])
+
+        # 3. Post-approval Creative Director elevation runs only when text model is enabled
+        with studio.db() as c:
+            q = c.execute("SELECT quote FROM agent_task WHERE id=?", (chosen["id"],)).fetchone()[0]
+        pspec = next(i["spec"] for i in studio.quotes.loads(q)["items"] if i["spec"]["kind"] == "poster")
+        elevate_replies = [
+            (
+                {
+                    "product": "茶店",
+                    "style": "quiet-light",
+                    "directions": {
+                        "copy": "围绕下班碰面写一句自然邀约",
+                        "image": "暖侧光落在玻璃茶杯边缘，留出右侧干净负空间承接主标题。",
+                    },
+                },
+                "director-llm",
+            ),
+            ({"ok": True}, "reviewer-llm"),
+        ]
+        with patch("server.model.engine_name", return_value="director-llm"), patch(
+            "server.model.ask", side_effect=elevate_replies
+        ):
+            elevated = prompt_agent.elevate_for_production(pspec, chosen["locked"])
+        self.assertTrue(elevated)
+        self.assertTrue(pspec["plan"]["promptBrief"]["elevated"])
+        self.assertEqual(pspec["plan"]["promptBrief"]["engine"], "director-llm")
+        self.assertIn("暖侧光", pspec["plan"]["posterArt"].get("modelConcept", ""))
+
+        # 4. Preflight disk cache avoids duplicate vision calls after pre-warming
+        from PIL import Image
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asset_dir = Path(tmp)
+            (asset_dir / "a1").mkdir()
+            Image.new("RGB", (64, 64), (210, 180, 140)).save(asset_dir / "a1" / "original.png")
+            vcfg = {"provider": "test-vis", "model": "vis-1", "url": "https://example.invalid/v1"}
+            spec1 = {"asset": "a1", "kind": "poster", "plan": {"original": "抹茶拿铁海报", "facts": "", "profile": {}}}
+            spec2 = {"asset": "a1", "kind": "poster", "plan": {"original": "抹茶拿铁海报", "facts": "", "profile": {}}}
+            with patch("server.model.chat_request", return_value={"ok": True, "reason": "杯身清晰无遮挡"}) as chat_req:
+                visual_review.preflight_with(vcfg, spec1, asset_dir)
+                visual_review.preflight_with(vcfg, spec2, asset_dir)
+            self.assertEqual(chat_req.call_count, 1)
+            self.assertEqual(spec2["plan"]["sourceReview"]["reason"], "杯身清晰无遮挡")

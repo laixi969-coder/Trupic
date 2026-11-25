@@ -39,7 +39,7 @@ from .creative import (
     generate_copy,
     prepare,
 )
-from .governance import active_rule, discover, run_tests, retrieve_method
+from .governance import active_rule, discover, run_tests, retrieve_method, validate_pinterest_settings
 from .media import ROOT, SIZES, inspect_upload, photo_layout_features, render
 from .store import DATA, TRIAL_NOTE, audit, db, dump, grant_trial, ident, init, now, secret, tenant_new
 from . import object_storage, region_edit, reference_assets, event_sources, costs, pricing, work_history, revisions, wallet, commerce, model_admission, growth, coupons, staff
@@ -56,7 +56,7 @@ from .typography import Typesetter, inspect_face
 from .lettering import OPTIONS as LETTERING_OPTIONS
 from .campaign import long_form, storyboard
 from .shot_detail import merchant_detail
-from .prompt_agent import apply_poster_layout, full_poster_prompt, optimize
+from .prompt_agent import apply_poster_layout, elevate_for_production, full_poster_prompt, optimize
 from .product_bundle import qualified_cutout, register as register_bundles
 from .auto_creation import register as register_creations
 from .auto_pipeline import shared_copy
@@ -66,6 +66,7 @@ from .skill_library import attach as attach_skills, catalog as skill_library_cat
 from .visual_review import (
     FIDELITY,
     LayoutOverflow,
+    classify_repair,
     inspect_export,
     validate_region,
     content_review,
@@ -1059,6 +1060,8 @@ def produce_job(id):
                 a = owner(c, "asset", s["asset"], t)
             filename = "original.png" if s.get("assetMode") == "original" else json.loads(a["info"])["file"]
             ap = DATA / t / "assets" / s["asset"] / filename
+        if n == 1 and s["kind"] in ("poster", "video") and not s.get("regionEdit"):
+            elevate_for_production(s, cp)
         if s["kind"] == "video":
             if not (p.get("agentTask") and s.get("copySelected")) and (longer := long_form(p, cp)):
                 cp["longForm"] = longer
@@ -1134,18 +1137,43 @@ def produce_job(id):
             visual = {"status": "checking", "attempts": previous.get("attempts", [])}
             for repair in (False, True):
                 chosen = ap
-                if repair and ap and p.get("bundleRole") != "overlay":
-                    last_issues = visual["attempts"][-1]["issues"]
-                    intact_mask = ap.name == "subject.png" and not any(
-                        "抠图" in issue or "蒙版" in issue for issue in last_issues
+                repair_plan = None
+                if repair:
+                    last_issues = visual["attempts"][-1]["issues"] if visual["attempts"] else []
+                    last_review = visual.get("content")
+                    repair_plan = classify_repair(
+                        last_issues,
+                        last_review,
+                        has_generated_bg=bool(background and not s.get("regionEdit")),
                     )
-                    chosen = ap if intact_mask else original
-                    design = p.get("design", {})
-                    if (p.get("moment") and not p.get("layoutOverride")
-                            and (not intact_mask or design.get("photoLayout") not in ("columns", "reply"))
-                            and design.get("photoLayout") in ("columns", "reply", "object", "time", "clock-object")):
-                        design["photoLayout"] = "bleed"
-                        design["readingOrder"]["layoutReason"] = "首稿复检后使用满版摄影，给标题与实拍各留独立区域。"
+                    visual["repairStrategy"] = repair_plan["strategy"]
+                    if ap and p.get("bundleRole") != "overlay":
+                        intact_mask = (
+                            ap.name == "subject.png"
+                            and not repair_plan["fallbackOriginal"]
+                            and not any("抠图" in issue or "蒙版" in issue for issue in last_issues)
+                        )
+                        chosen = ap if intact_mask else original
+                        design = p.get("design", {})
+                        if (p.get("moment") and not p.get("layoutOverride")
+                                and (not intact_mask or design.get("photoLayout") not in ("columns", "reply"))
+                                and design.get("photoLayout") in ("columns", "reply", "object", "time", "clock-object")):
+                            design["photoLayout"] = "bleed"
+                            design["readingOrder"]["layoutReason"] = "首稿复检后使用满版摄影，给标题与实拍各留独立区域。"
+                    if repair_plan["redrawBackground"] and s["kind"] == "poster":
+                        stage(repair_plan["stage"])
+                        if repair_plan.get("hint"):
+                            vc = p.setdefault("promptBrief", {}).setdefault("visualConstraints", [])
+                            if repair_plan["hint"] not in vc:
+                                vc.append("修复上版画面问题：" + repair_plan["hint"])
+                        try:
+                            background, visual_engine = make_scene(
+                                dest, p, chosen, s["kind"], True,
+                                strict=bool(p.get("autoCreation")), name=f"{scene}-repair",
+                            )
+                            cp["visualEngine"] = visual_engine
+                        except Exception:
+                            pass
                 visual.pop("content", None)
                 try:
                     layout = None
@@ -1153,7 +1181,7 @@ def produce_job(id):
                         source = DATA / t / "works" / local_edit["work"] / str(local_edit["version"])
                         layout = region_edit.original_layout(source, dest, cp)
                     if layout is None:
-                        stage("正在调整排版" if repair else "正在排版并导出成品")
+                        stage((repair_plan or {}).get("stage", "正在调整排版") if repair else "正在排版并导出成品")
                         layout = render(
                             dest,
                             p,
@@ -1840,8 +1868,7 @@ def admin_action(action):
             cfg["pinToken"] = string(v.get("pinToken"), 1200)
         if cfg["feed"] and not (cfg["feed"].startswith("https://") and cfg["license"]):
             raise ValueError("请填写 HTTPS 来源和授权条件。")
-        if cfg["board"] and not (cfg["board"].isdigit() and cfg["pinRights"] and cfg["pinToken"]):
-            raise ValueError("请填写画板数字 ID、访问令牌及使用条件。")
+        validate_pinterest_settings(cfg)
         model.save_settings(cfg)
         with db(True) as c:
             audit(c,t,"更新参考素材来源","案例订阅与授权画板")
@@ -1884,10 +1911,7 @@ def admin_action(action):
             cfg["key"] = ""
         if v.get("pinToken"):
             cfg["pinToken"] = string(v.get("pinToken"), 1200)
-        if cfg["board"] and not (
-            cfg["board"].isdigit() and cfg["pinRights"] and cfg["pinToken"]
-        ):
-            raise ValueError("请填写画板数字 ID、访问令牌及使用条件。")
+        validate_pinterest_settings(cfg)
         shared_vision = cfg.get("visionModel") and not cfg["visionUrl"]
         if bool(cfg["model"] or shared_vision) != bool(cfg["url"]):
             raise ValueError("模型名称和服务地址需要同时填写。")

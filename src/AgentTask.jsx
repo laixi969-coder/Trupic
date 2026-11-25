@@ -195,6 +195,12 @@ export default function AgentTask({
               <b>{o.title}</b>
               <span className="agent-choice-body">{o.body}</span>
               {o.cta && <span className="agent-choice-cta">{o.cta}</span>}
+              {o.shareTo && (
+                <small className="agent-choice-social">
+                  社交货币：适合发给「{o.shareTo}」
+                  {o.reply ? ` · 对方会接「${o.reply}」` : ""}
+                </small>
+              )}
             </button>
           ))}
           {!t.options.length && (
@@ -223,11 +229,34 @@ export default function AgentTask({
         </div>
       )}
       {t.locked && (
-        <blockquote>
-          {[t.locked.title, t.locked.body, t.locked.cta]
-            .filter(Boolean)
-            .join("\n")}
-        </blockquote>
+        <div className="agent-locked-tiers">
+          <blockquote>
+            {[t.locked.title, t.locked.body, t.locked.cta]
+              .filter(Boolean)
+              .join("\n")}
+          </blockquote>
+          {t.locked.socialPost && (
+            <div className="agent-social-post">
+              <div className="agent-social-post-head">
+                <small>配发社媒正文（朋友圈 / 小红书）</small>
+                <button
+                  type="button"
+                  onClick={async () =>
+                    tip(
+                      (await copyText(t.locked.socialPost))
+                        ? "发帖正文已复制"
+                        : "请长按复制",
+                    )
+                  }
+                >
+                  <Copy size={12} />
+                  复制发帖文案
+                </button>
+              </div>
+              <p>{t.locked.socialPost}</p>
+            </div>
+          )}
+        </div>
       )}
       {t.status === "quoted" && (
         <div className="agent-quote">

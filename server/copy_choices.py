@@ -179,14 +179,16 @@ def write_options(spec, tenant, previous=()):
         inputs["上一组已展示标题，请换切口"] = previous
     inputs.update(优惠=base["offer"], 条件=base["terms"])
     task = (
-        '本次商家要亲自选稿。只返回 JSON {"options":[{"title":"主标题","body":"正文","cta":"行动句","shareTo":"会发给谁","reply":"对方会怎么接"}]}，'
-        "写三组真正不同的完整中文海报文案，各用一个角度。"
-        "从原图可见细节和需求取材，保留项目或商品名、商业条件，正文和末句各说一件事。"
-        "没有指定联系渠道就沿用商家的邀约说法。指定标题逐字保留，通过正文区分选项。"
+        '本次商家要亲自选稿。只返回 JSON {"options":[{"title":"一级主标题(社交钩子)","body":"二级副标题(卖点/事实)","cta":"三级行动收口","socialPost":"四级朋友圈/小红书配发正文","angle":"4字角度标签","visualIdea":"配套商业广告画面构思","shareTo":"会发给谁","reply":"对方会怎么接"}]}，'
+        "写三组真正不同的完整中文海报多层级文案，各用一个角度。"
+        "从原图可见细节和需求取材，保留项目或商品名、商业条件，各级文案分工明确、形成从钩子→信任→行动的闭环。"
+        "没有指定联系渠道就沿用商家的邀约说法。指定标题逐字保留，通过副标题与配发正文区分选项。"
     )
     task += ("逐字使用商家给出的名称与价格，不纠正片名、不补全品牌。没有提供的档期、限时、"
              "库存、折扣、购票渠道一律不写。标题、副标题和末句合起来只写一次价格。")
     task += wenan.POSTER_HEADINGS
+    if plan.get("capability") and not wenan.factual_only(plan["original"]):
+        task += wenan.SOCIAL_CURRENCY_CLOSED_LOOP
     creative_title = wenan.wants_creative_headline(plan["original"])
     single_price = re.fullmatch(r"\d+(?:\.\d+)?元", (base["offer"] or "").strip())
     if creative_title:
@@ -324,9 +326,20 @@ def write_options(spec, tenant, previous=()):
                     if isinstance(row.get("visualIdea"), str)
                     else ""
                 )
+                social_post = (
+                    row.get("socialPost", "").strip()[:260]
+                    if isinstance(row.get("socialPost"), str)
+                    else ""
+                )
                 draft_item = {"title": title, "body": body, "cta": cta, "angle": angle_tag}
                 if visual_idea:
                     draft_item["visualIdea"] = visual_idea
+                if social_post and not unsupported_copy(social_post, known) and not wenan.cliche_error(social_post, plan["original"]):
+                    draft_item["socialPost"] = social_post
+                if isinstance(row.get("shareTo"), str) and row["shareTo"].strip():
+                    draft_item["shareTo"] = row["shareTo"].strip()[:40]
+                if isinstance(row.get("reply"), str) and row["reply"].strip():
+                    draft_item["reply"] = row["reply"].strip()[:60]
                 drafts.append(draft_item)
             if not drafts:
                 inputs["改写要求"] = (draft_error or "缺少不同角度的合规候选") + "。请生成三组新的候选。"

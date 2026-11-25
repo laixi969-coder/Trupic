@@ -8,7 +8,7 @@ import time
 
 from flask import abort, jsonify, request
 
-from . import agent_dialogue, agent_planner as planner, context_memory, copy_choices, wallet
+from . import agent_dialogue, agent_planner as planner, context_memory, copy_choices, visual_review, wallet
 from .agent_store import (
     check_revision,
     enabled,
@@ -24,7 +24,7 @@ from .agent_store import (
     run_status,
 )
 from .campaign import storyboard
-from .store import db, dump, ident, now
+from .store import DATA, db, dump, ident, now
 
 
 def checked_text(value, limit, label):
@@ -158,6 +158,13 @@ def build_plan(services, tid, tenant):
             ),
         )
         event(c, task, status, {"cost": result["cost"]})
+    if status in ("waiting_copy", "waiting_script"):
+        visual_spec = next(
+            (i["spec"] for i in result.get("items", []) if i["spec"].get("asset") and i["spec"]["kind"] != "copy"),
+            None,
+        )
+        if visual_spec:
+            visual_review.prewarm_asset(visual_spec, DATA / tenant / "assets")
 
 
 def task_view(c, services, row):
@@ -176,7 +183,11 @@ def task_view(c, services, row):
         cost=row["cost"],
         quoteId=row["quote_id"],
         options=[
-            {k: v.get(k, "") for k in ("title", "body", "cta", "angle")}
+            {
+                k: v.get(k, "")
+                for k in ("title", "body", "cta", "angle", "socialPost", "shareTo", "reply", "visualIdea")
+                if k in ("title", "body", "cta", "angle") or v.get(k)
+            }
             for v in json.loads(row["options"])
         ],
         concept=brief.get("concept", ""),
@@ -190,7 +201,11 @@ def task_view(c, services, row):
     )
     if row["locked"]:
         chosen = json.loads(row["locked"])
-        view["locked"] = {k: chosen.get(k, "") for k in ("title", "body", "cta")}
+        view["locked"] = {
+            k: chosen.get(k, "")
+            for k in ("title", "body", "cta", "socialPost", "shareTo", "reply")
+            if k in ("title", "body", "cta") or chosen.get(k)
+        }
     if row["run"]:
         run = services["owner"](c, "creative_run", row["run"], row["tenant"])
         result = services["creation_details"](c, run)
