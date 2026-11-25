@@ -544,7 +544,7 @@ class PersonalAgentTests(TestCase):
         self.assertEqual(wenan.cliche_error("匠心打造这杯好茶", "我们要写匠心打造"), "")
 
         # 2. Simple price+time promo in Personal Agent skips bureaucratic terms interrogation
-        promo = self.card("做一张周末促销海报，招牌抹茶19元，文案用「周末来喝招牌抹茶」")
+        promo = self.card("帮我做一张周末促销海报，丹东红颜草莓29.9元一盒，文案用「周末来吃丹东草莓」")
         self.assertEqual(promo["status"], "quoted", promo)
 
         # 3. Video prompt adapts to 15s / 30s / 45s with explicit 0-2s scroll-stopping hook

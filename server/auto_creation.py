@@ -124,7 +124,8 @@ def coordinate(services, c, tenant, v, *, agent_context=None):
     if route["workflow"] == "promotion" or re.search(r"促销|优惠|折扣|满减", visual_requests(brief)):
         if not OFFER.search(facts) and not re.search(r"[￥¥]\s*\d|买.{1,4}送|满.{1,6}减", facts):
             questions.append("请补充实际价格或优惠内容。")
-        if not re.search(r"\d+月\d+日|\d{4}[-/]\d|周[一二三四五六日末]|今天|明天|本周|长期", facts):
+        time_source = facts + " " + visual_requests(brief)
+        if not re.search(r"\d+月\d+日|\d{4}[-/]\d|周[一二三四五六日末]|今天|明天|本周|长期", time_source):
             questions.append("请补充活动有效期。")
         needs_terms = (
             agent_context is None

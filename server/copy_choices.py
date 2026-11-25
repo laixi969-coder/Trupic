@@ -249,7 +249,7 @@ def write_options(spec, tenant, previous=()):
             drafts, sharing = [], []
             draft_error = ""
             result, engine = ask(
-                task, inputs, 900, schema
+                task, inputs, 900 if local_photo else 1500, schema
             )
             rows = result.get("options")
             if not isinstance(rows, list):
@@ -260,8 +260,15 @@ def write_options(spec, tenant, previous=()):
                 ):
                     continue
                 title, body, cta = (row[k].strip() for k in ("title", "body", "cta"))
-                if named_subject and named_subject not in title + body + cta:
-                    body = named_subject + (" · " + body if body else "")
+                product_name = (plan["profile"].get("product") or "").strip()
+                if (
+                    named_subject
+                    and named_subject not in title + body + cta
+                    and (not product_name or product_name not in title + body + cta)
+                ):
+                    candidate_body = named_subject + (" · " + body if body else "")
+                    if len("".join(candidate_body.split())) <= 20:
+                        body = candidate_body
                 if locked:
                     title = locked.group(1)
                 if wenan.no_cta(plan):
