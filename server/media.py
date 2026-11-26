@@ -356,6 +356,7 @@ def render(
                 index,
                 source_layers,
                 repair=repair,
+                variant=variant,
             )
             if save_design:
                 from .design_source import save_source

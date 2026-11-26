@@ -669,3 +669,40 @@ class PersonalAgentTests(TestCase):
                 visual_review.preflight_with(vcfg, spec2, asset_dir)
             self.assertEqual(chat_req.call_count, 1)
             self.assertEqual(spec2["plan"]["sourceReview"]["reason"], "杯身清晰无遮挡")
+
+    def test_infinite_parametric_editorial_layout_engine(self):
+        from PIL import Image
+        from server.layout_engine import choose_recipe, compose_editorial_poster
+        from server.typography import Typesetter
+
+        hero = Image.new("RGB", (900, 1200), (195, 42, 46))
+        ts = Typesetter()
+        copy = {
+            "title": "下班路过，带盒红颜草莓回家",
+            "body": "丹东现摘直发，29.9元一盒尝鲜",
+            "cta": "就在綦江万达对面",
+            "offer": "29.9元/盒",
+        }
+        archs, splits, ornaments = set(), set(), set()
+        for idx in range(25):
+            r = choose_recipe((1080, 1440), f"fruit-seed-{idx}")
+            archs.add(r["architecture"])
+            splits.add(r["split"])
+            ornaments.add(r["ornament"])
+        self.assertEqual(len(archs), 4)
+        self.assertGreaterEqual(len(splits), 15)
+        self.assertGreaterEqual(len(ornaments), 4)
+
+        # Protected real merchant photo never uses full-bleed crop
+        for idx in range(10):
+            r_prot = choose_recipe((1080, 1440), f"protected-{idx}", protected_subject=True)
+            self.assertIn(r_prot["architecture"], ("editorial_split", "gallery_inset"))
+
+        # End-to-end render succeeds across 3:4, 16:9, and 9:16
+        for dims in ((1080, 1440), (1920, 1080), (1080, 1920)):
+            scene, layer, box, rec = compose_editorial_poster(
+                dims, hero, ts, "果小鲜水果铺  创意场景示意", copy, seed_text=f"dim-{dims}"
+            )
+            self.assertEqual(scene.size, dims)
+            self.assertEqual(layer.size, dims)
+            self.assertIsNotNone(box)

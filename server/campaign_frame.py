@@ -1,6 +1,7 @@
 """Compose the photographic plate and exact typography as separate film layers."""
 
 import re
+from pathlib import Path
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFilter, ImageOps, ImageStat
 import numpy as np
 
@@ -285,6 +286,7 @@ def campaign_frame(
     index,
     image_layers=None,
     repair=False,
+    variant=0,
 ):
     w, h = size
     wide = w > h
@@ -312,8 +314,38 @@ def campaign_frame(
         mode = design.get("photoLayout", "framed")
         first = design.get("readingOrder", {}).get("first", "offer" if mode == "bleed" and copy.get("offer") else "title")
         brand = kit.get("name") or plan["profile"].get("name", "")
-        if not asset and (background or plan.get("scenePhoto")):
-            brand = (brand + "  创意场景示意").strip()
+        # Use the infinite parametric editorial layout engine for clean commercial posters
+        # (eliminates muddy blurred edge-stretching while preserving protected product fidelity).
+        hero_path = asset or background or (SCENES / (plan["scenePhoto"] + ".webp") if plan.get("scenePhoto") else None)
+        use_editorial = (
+            not shot
+            and not plan.get("bundleRole")
+            and "moment" not in plan
+            and not plan.get("references")
+            and not (asset and asset.name == "subject.png")
+            and hero_path is not None
+            and Path(hero_path).is_file()
+        )
+        if use_editorial:
+            from .layout_engine import compose_editorial_poster
+            with Image.open(hero_path) as hero_src:
+                hero_img = hero_src.convert("RGB")
+            seed_text = f"{copy.get('title','')}|{plan.get('original','')}|{w}x{h}|v{variant}|m{mode}"
+            scene, layer, box, recipe = compose_editorial_poster(
+                size,
+                hero_img,
+                ts,
+                brand,
+                copy,
+                seed_text=seed_text,
+                logo_path=logo_path,
+                protected_subject=bool(asset),
+                repair=repair,
+                image_layers=image_layers,
+                kit=kit,
+            )
+            plan["editorialLayout"] = recipe
+            return scene, layer, box
         # The note belongs in the caption. Leave the merchant's photograph room on the card.
         grid_copy = {**copy, "body": copy.get("posterDeck", "")} if "moment" in plan else copy
         photo_area, entries = grid_layout(
@@ -465,8 +497,6 @@ def campaign_frame(
         place_logo((*pos, pos[0] + edge, pos[1] + edge))
         brand = (left + (edge + min_edge * 0.016) / w, top, right, bottom)
     brand_name = kit.get("name") or plan["profile"].get("name", "")
-    if not asset and (background or plan.get("scenePhoto")):
-        brand_name = (brand_name + "  创意场景示意").strip()
     if not shot or (index == 3 and shot.get("line") != brand_name):
         line(brand_name, brand, 36, "body")
     role = "serif" if (plan.get("design") or {}).get("id") == "editorial" else "display"
