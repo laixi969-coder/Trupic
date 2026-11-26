@@ -710,7 +710,7 @@ class PersonalAgentTests(TestCase):
             tastes.add(r["taste"])
         self.assertEqual(len(archs), len(ALL_ARCHITECTURES))
         self.assertGreaterEqual(len(ALL_ARCHITECTURES), 24)
-        self.assertGreaterEqual(len(FULL_BLEED_ARCHITECTURES), 6)
+        self.assertGreaterEqual(len(FULL_BLEED_ARCHITECTURES), 10)
         self.assertGreaterEqual(len(COLOR_BLOCK_ARCHITECTURES), 4)
         self.assertGreaterEqual(len(CURATED_CN_ARCHITECTURES), 4)
         self.assertGreaterEqual(len(splits), 25)

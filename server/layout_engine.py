@@ -74,6 +74,10 @@ FULL_BLEED_ARCHITECTURES = (
     "full_bleed_band",
     "full_bleed_editorial_edge",
     "floating_card",
+    "fresh_retail_promo",
+    "social_sticker_zine",
+    "neon_highlighter_poster",
+    "oriental_vertical_frame",
 )
 
 COLOR_BLOCK_ARCHITECTURES = (
@@ -291,7 +295,12 @@ def choose_recipe(size, seed_text, *, protected_subject=False, repair=False, arc
         archs = ("editorial_split", "ribbon", "monument")
         arch = archs[int(u[0] * len(archs)) % len(archs)]
     else:
-        arch = ALL_ARCHITECTURES[int(u[0] * len(ALL_ARCHITECTURES)) % len(ALL_ARCHITECTURES)]
+        # Mirror top commercial Pinterest/CN advertising ratio: ~65% full-bleed photography, ~35% color-block/editorial grids
+        non_fb = [a for a in ALL_ARCHITECTURES if a not in FULL_BLEED_ARCHITECTURES]
+        if u[11] < 0.65:
+            arch = FULL_BLEED_ARCHITECTURES[int(u[0] * len(FULL_BLEED_ARCHITECTURES)) % len(FULL_BLEED_ARCHITECTURES)]
+        else:
+            arch = non_fb[int(u[0] * len(non_fb)) % len(non_fb)]
 
     if wide:
         anchors = ("left", "right")
@@ -1345,61 +1354,59 @@ def compose_editorial_poster(
                 _typeset_block(draw, ts, (margin, foot_y0, w - margin, h - bot_pad), bot_blocks, pal, recipe, unit, v_align="center", align_override="left")
 
     elif arch == "fresh_retail_promo":
-        # Curated #12 (新鲜猪肉 29.9/斤) x #24 (约等于喝24杯酸奶): crisp white top + bold brand/crimson promo band + photo straddling the seam
-        paper_top = (252, 251, 248)
-        promo_band = pal["accent"] if _contrast(LIGHT_INK, pal["accent"]) >= 4.8 else (210, 34, 28)
+        # Curated #12 (新鲜猪肉 29.9/斤) x #17 (感官觉醒) x #24 (24杯酸奶):
+        # 100% FULL-WIDTH EDGE-TO-EDGE HERO PHOTO + seamless top masthead/headline + bold crimson/obsidian conversion footer band
+        promo_band = pal["accent"] if _contrast(LIGHT_INK, pal["accent"]) >= 4.8 else (204, 34, 28)
+        if _seed_floats(f"{seed_text}|frp_dark", 1)[0] > 0.62:
+            promo_band = (18, 20, 22)
         promo_ink = _ink_for(promo_band)
         promo_ink_hex = "#%02x%02x%02x" % promo_ink
-        accent_hex = "#%02x%02x%02x" % promo_band
-        pal = _enforce_contrast({**pal, "paper": paper_top, "ink": DARK_INK, "muted": (72, 74, 76), "accent": promo_band, "dark": False})
-        sd.rectangle((0, 0, w, h), fill=paper_top)
         if wide:
-            seam_x = round(w * 0.62)
+            seam_x = round(w * 0.66)
+            fitted = ImageOps.fit(photo.convert("RGB"), (seam_x, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+            fitted = _apply_directional_scrim(fitted, "top", tint=(10, 12, 11), coverage=0.42, strength=0.76)
+            scene.paste(fitted, (0, 0))
             sd.rectangle((seam_x, 0, w, h), fill=promo_band)
-            p_rect = (round(w * 0.34), round(h * 0.14), round(w * 0.72), round(h * 0.86))
-            text_box = (margin, margin, round(w * 0.32), h - margin)
+            box = (0, 0, seam_x, h)
         else:
-            seam_y = round(h * 0.66)
+            seam_y = round(h * 0.77)
+            fitted = ImageOps.fit(photo.convert("RGB"), (w, seam_y), method=Image.Resampling.LANCZOS, centering=(0.5, 0.56))
+            fitted = _apply_directional_scrim(fitted, "top", tint=(10, 12, 11), coverage=0.46, strength=0.80)
+            scene.paste(fitted, (0, 0))
             sd.rectangle((0, seam_y, w, h), fill=promo_band)
-            p_pad_x = round(w * 0.09)
-            p_rect = (p_pad_x, round(h * 0.31), w - p_pad_x, round(h * 0.76))
-            text_box = (margin, top_pad + round(unit * 0.045), w - margin, round(h * 0.29))
-        # Crisp white cutout frame so the photo cleanly straddles the white-to-crimson seam
-        border_w = max(5, round(unit * 0.010))
-        sd.rectangle((p_rect[0] - border_w, p_rect[1] - border_w, p_rect[2] + border_w, p_rect[3] + border_w), fill=paper_top)
-        fitted, rel = _fit_photo(photo, (p_rect[2] - p_rect[0], p_rect[3] - p_rect[1]), protect_full=protected_subject, backdrop_color=paper_top)
-        scene.paste(fitted, p_rect[:2])
-        box = (p_rect[0] + rel[0], p_rect[1] + rel[1], p_rect[0] + rel[2], p_rect[1] + rel[3])
+            # Crisp 3px highlight rule along the photo-to-band horizon seam
+            sd.line((0, seam_y, w, seam_y), fill=(255, 250, 242), width=max(2, round(unit * 0.0028)))
+            box = (0, 0, w, seam_y)
+        pal = _enforce_contrast({**pal, "paper": (14, 16, 15), "ink": LIGHT_INK, "muted": (232, 228, 220), "accent": promo_band, "dark": True})
         if image_layers is not None:
             image_layers.append(("stage", scene.copy(), (0, 0)))
         if wide:
-            _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.088, include_brand=True, include_sub=False, include_cta=False), pal, recipe, unit, align_override="left")
+            _typeset_block(draw, ts, (margin, margin, seam_x - margin, round(h * 0.44)), standard_blocks(seam_x - 2 * margin, 0.094, include_brand=True, include_sub=False, include_cta=False), pal, recipe, unit, v_align="top", align_override="left")
             r_pal = {**pal, "paper": promo_band, "ink": promo_ink, "muted": promo_ink}
             r_blocks = []
             if price_tag:
-                r_blocks += [("cta", "促销价", "body", 0.026, 0.0), ("title", price_tag, "numeric", 0.078, 0.008)]
+                r_blocks += [("cta", "促销特惠", "body", 0.025, 0.0), ("title", price_tag, "numeric", 0.078, 0.008)]
             if display_subtitle:
                 r_blocks.append(("sub", display_subtitle, "body", 0.028, 0.018))
             if footer and footer != display_subtitle:
                 r_blocks.append(("cta", footer, "body", 0.025, 0.010))
-            _typeset_block(draw, ts, (round(w * 0.74), margin, w - margin, h - margin), r_blocks, r_pal, recipe, unit, align_override="left")
+            _typeset_block(draw, ts, (seam_x + round(margin * 0.7), margin, w - margin, h - margin), r_blocks, r_pal, recipe, unit, v_align="center", align_override="left")
         else:
-            # Top crisp accent masthead strip ("FRESH. · 店名" left | serial right)
-            m_pts = max(18, round(unit * 0.032))
+            # Floating top masthead + bold white headline directly on the full-bleed photo's quiet upper zone
+            m_pts = max(17, round(unit * 0.028))
             masthead = f"FRESH.  {clean_brand}" if clean_brand else "FRESH."
-            ts.draw(draw, masthead, (margin, top_pad, w - margin - round(unit * 0.20), top_pad + round(m_pts * 1.4)), m_pts, "display", accent_hex, align="left")
-            ts.draw(draw, recipe["serial"], (w - margin - round(unit * 0.20), top_pad + 3, w - margin, top_pad + round(m_pts * 1.4)), max(14, round(m_pts * 0.8)), "numeric", accent_hex, align="right")
-            # Bold headline above the photo
-            _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.098, include_brand=False, include_sub=False, include_cta=False), pal, recipe, unit, v_align="center", align_override="left")
-            # Bottom crimson promo band: LEFT giant white price | RIGHT store specs + CTA
-            band_y0 = p_rect[3] + round(unit * 0.026)
-            band_y1 = h - round(bot_pad * 0.72)
-            split_x = round(w * 0.50)
+            ts.draw(draw, masthead, (margin, top_pad, w - margin - round(unit * 0.20), top_pad + round(m_pts * 1.4)), m_pts, "display", "#fffdf7", align="left")
+            ts.draw(draw, recipe["serial"], (w - margin - round(unit * 0.20), top_pad + 2, w - margin, top_pad + round(m_pts * 1.4)), max(14, round(m_pts * 0.82)), "numeric", "#e8e4dc", align="right")
+            _typeset_block(draw, ts, (margin, top_pad + round(unit * 0.048), w - margin, round(h * 0.34)), standard_blocks(w - 2 * margin, 0.102, include_brand=False, include_sub=False, include_cta=False), pal, recipe, unit, v_align="top", align_override="left")
+            # Bottom bold full-width promo conversion band: LEFT giant price | RIGHT store specs + CTA
+            band_y0 = seam_y + round(unit * 0.024)
+            band_y1 = h - round(bot_pad * 0.65)
+            split_x = round(w * 0.49)
             p_pal = {**pal, "paper": promo_band, "ink": promo_ink, "muted": promo_ink}
             if price_tag:
-                left_blocks = [("cta", "促销特惠", "body", 0.024, 0.0), ("title", price_tag, "numeric", 0.086, 0.006)]
+                left_blocks = [("cta", "促销特惠", "body", 0.024, 0.0), ("title", price_tag, "numeric", 0.088, 0.006)]
                 _typeset_block(draw, ts, (margin, band_y0, split_x - round(unit * 0.02), band_y1), left_blocks, p_pal, recipe, unit, v_align="center", align_override="left")
-                draw.line((split_x, band_y0 + round(unit * 0.015), split_x, band_y1 - round(unit * 0.015)), fill=(*promo_ink, 110), width=max(1, round(unit * 0.002)))
+                draw.line((split_x, band_y0 + round(unit * 0.012), split_x, band_y1 - round(unit * 0.012)), fill=(*promo_ink, 115), width=max(1, round(unit * 0.002)))
                 right_x0 = split_x + round(unit * 0.032)
             else:
                 right_x0 = margin
@@ -1412,105 +1419,102 @@ def compose_editorial_poster(
                 _typeset_block(draw, ts, (right_x0, band_y0, w - margin, band_y1), right_blocks, p_pal, recipe, unit, v_align="center", align_override="left")
 
     elif arch == "social_sticker_zine":
-        # Curated #03 (LINLEE 解放鸭力) x #11 (阿水大杯茶): crisp white + emerald/brand header + viewfinder brackets + tilted stickers + barcode + checkerboard
-        paper_col = (252, 252, 249)
-        zine_colors = ((12, 138, 66), (218, 42, 34), (24, 88, 214), (24, 24, 24))
-        brand_col = zine_colors[int(_seed_floats(f"{seed_text}|zine", 1)[0] * len(zine_colors)) % len(zine_colors)]
-        sticker_hi = (146, 232, 36) if brand_col[1] > 100 else (248, 214, 24)
-        pal = _enforce_contrast({**pal, "paper": paper_col, "ink": DARK_INK, "muted": (68, 70, 72), "accent": brand_col, "dark": False})
-        sd.rectangle((0, 0, w, h), fill=paper_col)
-        top_bar_h = round(h * (0.072 if not wide else 0.10))
+        # Curated #03 (LINLEE) x #04 ({不被}定义) x #11 (阿水大杯茶):
+        # 100% FULL-BLEED HERO PHOTO + neon/emerald viewfinder brackets + tilted stickers + bottom barcode & checkerboard directly over full-bleed!
+        zine_sets = (
+            ((14, 168, 78), (210, 248, 36)),   # Emerald + Acid Lime (#03 / #11)
+            ((24, 96, 232), (252, 214, 24)),   # Klein Cobalt + Bright Yellow (#08 / #09)
+            ((224, 46, 36), (252, 236, 48)),   # Electric Vermilion + Lemon
+        )
+        brand_col, sticker_hi = zine_sets[int(_seed_floats(f"{seed_text}|zine", 1)[0] * len(zine_sets)) % len(zine_sets)]
+        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.54))
+        box = (0, 0, w, h)
+        # Apply smooth optical feather only on top quiet zone & bottom barcode strip so hero subject stays radiant
+        scene = _apply_directional_scrim(fitted, "top", tint=(10, 12, 12), coverage=0.45 if not wide else 0.50, strength=0.80)
+        scene = _apply_directional_scrim(scene, "bottom", tint=(10, 12, 12), coverage=0.22 if not wide else 0.28, strength=0.86)
+        pal = _enforce_contrast({**pal, "paper": (14, 16, 15), "ink": LIGHT_INK, "muted": (232, 228, 220), "accent": brand_col, "dark": True})
+        sd = ImageDraw.Draw(scene)
+        top_bar_h = round(h * (0.062 if not wide else 0.095))
         sd.rectangle((0, 0, w, top_bar_h), fill=brand_col)
-        chk_cell = max(12, round(unit * 0.020))
+        chk_cell = max(11, round(unit * 0.019))
         chk_h = chk_cell * 2
-        _draw_checkerboard(sd, 0, h - chk_h, w, chk_h, brand_col, paper_col, cell=chk_cell)
-        if wide:
-            vf_rect = (margin, top_bar_h + margin, round(w * 0.50), round(h * 0.72))
-            p_rect = (round(w * 0.54), top_bar_h + margin, w - margin, h - chk_h - margin)
-            foot_rect = (margin, round(h * 0.75), round(w * 0.50), h - chk_h - round(margin * 0.6))
-        else:
-            vf_rect = (margin, top_bar_h + round(unit * 0.048), w - margin, round(h * 0.40))
-            p_rect = (margin, round(h * 0.44), w - margin, round(h * 0.81))
-            foot_rect = (margin, round(h * 0.83), w - margin, h - chk_h - round(unit * 0.022))
-        fitted, rel = _fit_photo(photo, (p_rect[2] - p_rect[0], p_rect[3] - p_rect[1]), protect_full=protected_subject, backdrop_color=paper_col)
-        scene.paste(fitted, p_rect[:2])
-        sd.rectangle(p_rect, outline=DARK_INK, width=max(2, round(unit * 0.0024)))
-        box = (p_rect[0] + rel[0], p_rect[1] + rel[1], p_rect[0] + rel[2], p_rect[1] + rel[3])
+        _draw_checkerboard(sd, 0, h - chk_h, w, chk_h, brand_col, (252, 252, 248), cell=chk_cell)
         if image_layers is not None:
             image_layers.append(("stage", scene.copy(), (0, 0)))
-        # Top bold brand bar
         top_ink = "#%02x%02x%02x" % _ink_for(brand_col)
-        b_pts = max(18, round(unit * 0.034))
+        b_pts = max(17, round(unit * 0.032))
         ts.draw(draw, clean_brand or "FRESH DROP", (margin, (top_bar_h - round(b_pts * 1.15)) // 2, w - margin - round(unit * 0.22), top_bar_h), b_pts, "display", top_ink, align="left")
         ts.draw(draw, recipe["serial"], (w - margin - round(unit * 0.22), (top_bar_h - round(b_pts * 1.0)) // 2, w - margin, top_bar_h), max(14, round(b_pts * 0.8)), "numeric", top_ink, align="right")
-        # Viewfinder corner brackets framing giant display social headline
-        _draw_viewfinder_brackets(draw, vf_rect, brand_col, round(unit * 0.055), max(4, round(unit * 0.007)))
+        # Viewfinder brackets floating directly over the full-bleed photo's upper negative space
+        if wide:
+            vf_rect = (margin, top_bar_h + round(unit * 0.045), round(w * 0.56), round(h * 0.64))
+            foot_rect = (margin, round(h * 0.74), w - margin, h - chk_h - round(unit * 0.018))
+        else:
+            vf_rect = (margin, top_bar_h + round(unit * 0.048), w - margin, round(h * 0.40))
+            foot_rect = (margin, round(h * 0.845), w - margin, h - chk_h - round(unit * 0.018))
+        _draw_viewfinder_brackets(draw, vf_rect, sticker_hi, round(unit * 0.052), max(4, round(unit * 0.0065)))
         vf_pad = round(unit * 0.042)
-        _typeset_block(draw, ts, (vf_rect[0] + vf_pad, vf_rect[1] + vf_pad, vf_rect[2] - vf_pad, vf_rect[3] - vf_pad), standard_blocks(vf_rect[2] - vf_rect[0] - 2 * vf_pad, 0.100 if not wide else 0.088, include_brand=False, include_sub=False, include_cta=False), pal, recipe, unit, v_align="center", align_override="center")
-        # Authentic tilted highlight stickers (price & promo hook) pinned cleanly along bracket edges
+        _typeset_block(draw, ts, (vf_rect[0] + vf_pad, vf_rect[1] + vf_pad, vf_rect[2] - vf_pad, vf_rect[3] - vf_pad), standard_blocks(vf_rect[2] - vf_rect[0] - 2 * vf_pad, 0.100 if not wide else 0.086, include_brand=False, include_sub=False, include_cta=False), pal, recipe, unit, v_align="center", align_override="center")
+        # Tilted high-contrast sticker tapes pinning the social headline to the full-bleed scene
         if price_tag:
             _draw_tilted_sticker(layer, ts, price_tag, brand_col, unit, vf_rect[2] - round(unit * 0.14), vf_rect[3] - round(unit * 0.01), angle=-6, scale=0.96)
         short_hook = footer if (footer and len(footer) <= 8) else ("本周主打" if not terms else terms[:6])
-        _draw_tilted_sticker(layer, ts, short_hook, sticker_hi, unit, vf_rect[0] + round(unit * 0.16), vf_rect[1] + round(unit * 0.01), angle=5, scale=0.84)
-        # Bottom barcode + clean subtitle/CTA
-        bc_w = round((foot_rect[2] - foot_rect[0]) * 0.30)
-        bc_h = max(28, round((foot_rect[3] - foot_rect[1]) * 0.68))
+        _draw_tilted_sticker(layer, ts, short_hook, sticker_hi, unit, vf_rect[0] + round(unit * 0.17), vf_rect[1] + round(unit * 0.01), angle=5, scale=0.84)
+        # White vector barcode + clean subtitle/CTA floating over bottom dark optical feather
+        bc_w = round((foot_rect[2] - foot_rect[0]) * 0.28)
+        bc_h = max(26, round((foot_rect[3] - foot_rect[1]) * 0.66))
         bc_y = foot_rect[1] + max(0, ((foot_rect[3] - foot_rect[1]) - bc_h) // 2)
-        _draw_barcode(draw, foot_rect[0], bc_y, bc_w, bc_h, DARK_INK, seed_text=f"{title}|{recipe['serial']}")
+        _draw_barcode(draw, foot_rect[0], bc_y, bc_w, bc_h, LIGHT_INK, seed_text=f"{title}|{recipe['serial']}")
         info_blocks = []
         if display_subtitle:
             info_blocks.append(("sub", display_subtitle, "body", 0.032, 0.0))
         if footer and footer != display_subtitle:
             info_blocks.append(("cta", footer, "body", 0.026, 0.010))
         if info_blocks:
-            _typeset_block(draw, ts, (foot_rect[0] + bc_w + round(unit * 0.032), foot_rect[1], foot_rect[2], foot_rect[3]), info_blocks, pal, recipe, unit, v_align="center", align_override="left")
+            _typeset_block(draw, ts, (foot_rect[0] + bc_w + round(unit * 0.030), foot_rect[1], foot_rect[2], foot_rect[3]), info_blocks, pal, recipe, unit, v_align="center", align_override="left")
 
     elif arch == "neon_highlighter_poster":
-        # Curated #04 ({不被}定义) x #14 (遇见达利) x #17 (感官觉醒 {新品上市}): thick chromatic frame + neon highlighter blocks + barcode + huge tabular price
-        neon_sets = (
-            ((252, 252, 249), DARK_INK, (54, 224, 34)),    # White + Black + Acid Neon Green (#14 / #16)
-            ((16, 17, 20), LIGHT_INK, (214, 248, 22)),     # Obsidian + White + Acid Chartreuse (#04)
-            ((248, 246, 241), DARK_INK, (238, 62, 36)),    # Warm Paper + Black + Electric Vermilion
+        # Curated #04 ({不被}定义) x #14 (遇见达利) x #16 (站酷) x #23 (噪音实体化):
+        # 100% FULL-BLEED PHOTOGRAPH inside thick neon/vermilion frame + solid neon highlighter blocks directly over photo!
+        neon_accents = (
+            (54, 232, 34),     # Acid Neon Green (#14 / #16)
+            (214, 250, 24),    # Acid Chartreuse (#04)
+            (244, 66, 38),     # Electric Vermilion (#21)
         )
-        bg_col, ink_col, hi_col = neon_sets[int(_seed_floats(f"{seed_text}|neon", 1)[0] * len(neon_sets)) % len(neon_sets)]
+        hi_col = neon_accents[int(_seed_floats(f"{seed_text}|neon", 1)[0] * len(neon_accents)) % len(neon_accents)]
         hi_ink = _ink_for(hi_col)
         hi_ink_hex = "#%02x%02x%02x" % hi_ink
-        pal = _enforce_contrast({**pal, "paper": bg_col, "ink": ink_col, "muted": _blend(ink_col, bg_col, 0.25), "accent": hi_col, "accent_ink": hi_ink, "dark": _luma(bg_col) < 0.35})
-        sd.rectangle((0, 0, w, h), fill=bg_col)
-        # Signature bold outer chromatic border frame (#14 遇见达利 style)
-        fw = max(10, round(unit * 0.018))
+        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.54))
+        box = (0, 0, w, h)
+        scene = _apply_directional_scrim(fitted, "top", tint=(10, 11, 13), coverage=0.42 if not wide else 0.48, strength=0.82)
+        scene = _apply_directional_scrim(scene, "bottom", tint=(10, 11, 13), coverage=0.22 if not wide else 0.28, strength=0.88)
+        pal = _enforce_contrast({**pal, "paper": (12, 13, 15), "ink": LIGHT_INK, "muted": (232, 228, 222), "accent": hi_col, "accent_ink": hi_ink, "dark": True})
+        sd = ImageDraw.Draw(scene)
+        # Signature bold neon outer frame directly wrapping the full-bleed photo
+        fw = max(10, round(unit * 0.017))
         sd.rectangle((0, 0, w - 1, h - 1), outline=hi_col, width=fw)
         inner_m = fw + round(unit * 0.036)
         inner_top = max(top_pad, inner_m)
         inner_bot = max(bot_pad, inner_m)
-        if wide:
-            p_rect = (round(w * 0.48), inner_top, w - inner_m, h - inner_bot)
-            head_rect = (inner_m, inner_top, round(w * 0.45), round(h * 0.64))
-            bot_rect = (inner_m, round(h * 0.68), round(w * 0.45), h - inner_bot)
-        else:
-            head_rect = (inner_m, inner_top, w - inner_m, round(h * 0.34))
-            p_rect = (inner_m, round(h * 0.36), w - inner_m, round(h * 0.79))
-            bot_rect = (inner_m, round(h * 0.815), w - inner_m, h - inner_bot)
-        fitted, rel = _fit_photo(photo, (p_rect[2] - p_rect[0], p_rect[3] - p_rect[1]), protect_full=protected_subject, backdrop_color=bg_col)
-        scene.paste(fitted, p_rect[:2])
-        box = (p_rect[0] + rel[0], p_rect[1] + rel[1], p_rect[0] + rel[2], p_rect[1] + rel[3])
         if image_layers is not None:
             image_layers.append(("stage", scene.copy(), (0, 0)))
-        # Top graphic bracket kicker inside neon highlighter strip (e.g. "{果小鲜水果铺 · 本期主打}")
+        head_rect = (inner_m, inner_top, round(w * 0.58) if wide else w - inner_m, round(h * (0.48 if wide else 0.35)))
+        bot_rect = (inner_m, round(h * (0.78 if wide else 0.84)), w - inner_m, h - inner_bot)
+        # Top graphic bracket kicker inside solid neon highlighter block ("{果小鲜水果铺}")
         k_txt = f"{{{clean_brand or '新品上市'}}}"
         k_pts = max(18, round(unit * 0.030))
         kw = min(head_rect[2] - head_rect[0], round(ts.width(k_txt, k_pts, "display")) + round(unit * 0.036))
-        kh = round(k_pts * 1.45)
+        kh = round(k_pts * 1.42)
         draw.rectangle((head_rect[0], head_rect[1], head_rect[0] + kw, head_rect[1] + kh), fill=(*hi_col, 255))
         ts.draw(draw, k_txt, (head_rect[0] + round(unit * 0.014), head_rect[1] + round(k_pts * 0.16), head_rect[0] + kw, head_rect[1] + kh), k_pts, "display", hi_ink_hex, align="left")
-        # Oversized display headline below kicker with crisp highlighter accent bar on lower half
+        # Oversized crisp display headline floating over the full-bleed upper negative space
         hl_box = (head_rect[0], head_rect[1] + kh + round(unit * 0.016), head_rect[2], head_rect[3])
-        _typeset_block(draw, ts, hl_box, standard_blocks(hl_box[2] - hl_box[0], 0.096 if not wide else 0.086, include_brand=False, include_sub=False, include_cta=False), pal, recipe, unit, v_align="center", align_override="left")
-        # Bottom industrial strip: barcode + copy left | giant neon-highlighted tabular price right
+        _typeset_block(draw, ts, hl_box, standard_blocks(hl_box[2] - hl_box[0], 0.102 if not wide else 0.088, include_brand=False, include_sub=False, include_cta=False), pal, recipe, unit, v_align="top", align_override="left")
+        # Bottom industrial strip over full-bleed dark feather: white barcode + copy left | giant neon price block right
         if price_tag:
             p_pts = max(24, round(unit * 0.056 if not wide else 0.048))
-            pw_box = min(round((bot_rect[2] - bot_rect[0]) * 0.44), round(ts.width(price_tag, p_pts, "numeric")) + round(unit * 0.042))
-            ph_box = min(bot_rect[3] - bot_rect[1], round(p_pts * 1.45))
+            pw_box = min(round((bot_rect[2] - bot_rect[0]) * 0.42), round(ts.width(price_tag, p_pts, "numeric")) + round(unit * 0.042))
+            ph_box = min(bot_rect[3] - bot_rect[1], round(p_pts * 1.44))
             px0 = bot_rect[2] - pw_box
             py0 = bot_rect[1] + max(0, ((bot_rect[3] - bot_rect[1]) - ph_box) // 2)
             draw.rectangle((px0, py0, bot_rect[2], py0 + ph_box), fill=(*hi_col, 255))
@@ -1520,7 +1524,7 @@ def compose_editorial_poster(
             left_x1 = bot_rect[2]
         bc_w = round((left_x1 - bot_rect[0]) * 0.34)
         bc_h = max(26, round((bot_rect[3] - bot_rect[1]) * 0.62))
-        _draw_barcode(draw, bot_rect[0], bot_rect[1] + ((bot_rect[3] - bot_rect[1]) - bc_h) // 2, bc_w, bc_h, ink_col, seed_text=f"NEON|{title}")
+        _draw_barcode(draw, bot_rect[0], bot_rect[1] + ((bot_rect[3] - bot_rect[1]) - bc_h) // 2, bc_w, bc_h, LIGHT_INK, seed_text=f"NEON|{title}")
         b_blocks = []
         if display_subtitle:
             b_blocks.append(("sub", display_subtitle, "body", 0.030, 0.0))
@@ -1530,67 +1534,48 @@ def compose_editorial_poster(
             _typeset_block(draw, ts, (bot_rect[0] + bc_w + round(unit * 0.022), bot_rect[1], max(bot_rect[0] + bc_w + 80, left_x1), bot_rect[3]), b_blocks, pal, recipe, unit, v_align="center", align_override="left")
 
     elif arch == "oriental_vertical_frame":
-        # Curated #01 (香港首家) x #02 (逃出大英博物馆) x #20 (APPLE): warm rice paper + true vertical CJK serif headline + crimson seal + tall gallery photo
-        rice_paper = (245, 241, 230)
-        seal_red = (196, 44, 34)
-        pal = _enforce_contrast({**pal, "paper": rice_paper, "ink": (24, 26, 24), "muted": (82, 80, 74), "accent": seal_red, "accent_ink": LIGHT_INK, "dark": False})
-        sd.rectangle((0, 0, w, h), fill=rice_paper)
-        ink_hex = "#%02x%02x%02x" % pal["ink"]
-        if wide:
-            v_col = (margin, margin, round(w * 0.30), h - margin)
-            p_rect = (round(w * 0.33), margin, round(w * 0.78), h - margin)
-            r_col = (round(w * 0.80), margin, w - margin, h - margin)
-        else:
-            foot_y0 = round(h * 0.85)
-            col_w = round(w * 0.27)
-            if anchor == "left":
-                v_col = (margin, top_pad, margin + col_w, foot_y0 - round(unit * 0.025))
-                p_rect = (margin + col_w + round(unit * 0.025), top_pad, w - margin, foot_y0 - round(unit * 0.025))
-            else:
-                p_rect = (margin, top_pad, w - margin - col_w - round(unit * 0.025), foot_y0 - round(unit * 0.025))
-                v_col = (w - margin - col_w, top_pad, w - margin, foot_y0 - round(unit * 0.025))
-        fitted, rel = _fit_photo(photo, (p_rect[2] - p_rect[0], p_rect[3] - p_rect[1]), protect_full=protected_subject, backdrop_color=rice_paper)
-        scene.paste(fitted, p_rect[:2])
-        sd.rectangle(p_rect, outline=_blend(pal["ink"], rice_paper, 0.70), width=max(1, round(unit * 0.002)))
-        box = (p_rect[0] + rel[0], p_rect[1] + rel[1], p_rect[0] + rel[2], p_rect[1] + rel[3])
-        if not wide:
-            sd.line((margin, foot_y0 - round(unit * 0.006), w - margin, foot_y0 - round(unit * 0.006)), fill=_blend(pal["ink"], rice_paper, 0.72), width=max(1, round(unit * 0.002)))
+        # Curated #20 (APPLE 運命の果実) x #21 (COMING SOON 長沙) x #01 (香港首家):
+        # 100% FULL-BLEED PHOTOGRAPH + floating vertical ivory Chinese serif columns + vermilion square seal directly over photo!
+        seal_red = (204, 42, 34)
+        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=(0.56 if anchor == "left" else 0.44, 0.54))
+        box = (0, 0, w, h)
+        # Gentle side optical feather on the vertical typography edge + subtle bottom anchor feather
+        side_anchor = "left" if anchor == "left" else "right"
+        scene = _apply_directional_scrim(fitted, side_anchor, tint=(12, 13, 12), coverage=0.40 if not wide else 0.36, strength=0.78)
+        scene = _apply_directional_scrim(scene, "bottom", tint=(12, 13, 12), coverage=0.20, strength=0.80)
+        pal = _enforce_contrast({**pal, "paper": (14, 15, 14), "ink": LIGHT_INK, "muted": (232, 228, 220), "accent": seal_red, "accent_ink": LIGHT_INK, "dark": True})
         if image_layers is not None:
             image_layers.append(("stage", scene.copy(), (0, 0)))
-        # Crisp crimson Chinese square editorial seal at top of vertical column
-        seal_sz = max(32, round(unit * 0.056))
+        col_w = round(w * (0.28 if not wide else 0.24))
+        foot_y0 = round(h * (0.85 if not wide else 0.80))
+        v_bot = round(h * (0.63 if not wide else 0.74))
+        if side_anchor == "left":
+            v_col = (margin, top_pad, margin + col_w, v_bot)
+        else:
+            v_col = (w - margin - col_w, top_pad, w - margin, v_bot)
+        # Authentic crimson Chinese square seal floating at top of vertical column
+        seal_sz = max(34, round(unit * 0.056))
         sx0 = v_col[0] + ((v_col[2] - v_col[0]) - seal_sz) // 2
         sy0 = v_col[1]
         draw.rectangle((sx0, sy0, sx0 + seal_sz, sy0 + seal_sz), fill=(*seal_red, 245))
         seal_char = (clean_brand or "鲜")[0]
         ts.draw(draw, seal_char, (sx0, sy0 + round(seal_sz * 0.14), sx0 + seal_sz, sy0 + seal_sz), round(seal_sz * 0.62), "serif", "#fffdf7", align="center")
-        # True vertical CJK display serif headline below the seal
-        _draw_vertical_cjk(draw, ts, title, v_col[0], sy0 + seal_sz + round(unit * 0.025), v_col[2], v_col[3], "serif", ink_hex)
-        if wide:
-            r_blocks = []
-            if clean_brand:
-                r_blocks.append(("brand", clean_brand, "body", 0.026, 0.0))
-            if display_subtitle:
-                r_blocks.append(("sub", display_subtitle, "body", 0.028, 0.016))
-            if footer and footer != display_subtitle:
-                r_blocks.append(("cta", footer, "body", 0.025, 0.012))
-            _typeset_block(draw, ts, r_col, r_blocks, pal, recipe, unit, v_align="top", align_override="left")
-            if price_tag:
-                _draw_price_badge(draw, ts, price_tag, pal, unit, r_col[0], h - margin - round(unit * 0.075), align="left", scale=0.86)
+        # Floating ivory vertical CJK serif columns directly over full-bleed photography
+        _draw_vertical_cjk(draw, ts, title, v_col[0], sy0 + seal_sz + round(unit * 0.025), v_col[2], v_col[3], "serif", "#fffdf7")
+        # Delicate bottom 1px translucent hairline + clean horizontal caption & crimson price pill
+        draw.line((margin, foot_y0 - round(unit * 0.010), w - margin, foot_y0 - round(unit * 0.010)), fill=(255, 252, 246, 130), width=max(1, round(unit * 0.0018)))
+        bot_blocks = []
+        if display_subtitle or clean_brand:
+            bot_blocks.append(("sub", display_subtitle or clean_brand, "body", 0.034, 0.0))
+        if footer and footer != display_subtitle:
+            bot_blocks.append(("cta", footer, "body", 0.028, 0.010))
+        if price_tag:
+            _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, foot_y0 + max(0, (h - bot_pad - foot_y0 - round(unit * 0.068)) // 2), align="right", scale=0.92)
+            tx1 = w - margin - round(unit * 0.34)
         else:
-            bot_blocks = []
-            if clean_brand or display_subtitle:
-                sub_line = display_subtitle or clean_brand
-                bot_blocks.append(("sub", sub_line, "body", 0.034, 0.0))
-            if footer and footer != display_subtitle:
-                bot_blocks.append(("cta", footer, "body", 0.028, 0.012))
-            if price_tag:
-                _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, foot_y0 + max(0, (h - bot_pad - foot_y0 - round(unit * 0.068)) // 2), align="right", scale=0.92)
-                tx1 = w - margin - round(unit * 0.34)
-            else:
-                tx1 = w - margin
-            if bot_blocks:
-                _typeset_block(draw, ts, (margin, foot_y0 + round(unit * 0.010), max(margin + 120, tx1), h - bot_pad), bot_blocks, pal, recipe, unit, v_align="center", align_override="left")
+            tx1 = w - margin
+        if bot_blocks:
+            _typeset_block(draw, ts, (margin, foot_y0, max(margin + 120, tx1), h - bot_pad), bot_blocks, pal, recipe, unit, v_align="center", align_override="left")
 
     elif arch == "floating_card":
         fitted, box = _fit_photo(photo, (w, h), protect_full=False)
