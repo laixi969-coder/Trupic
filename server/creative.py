@@ -271,7 +271,7 @@ def generate_copy(plan, variant=0, *, revision_note=""):
         prompt += wenan.POSTER_HEADINGS
     if creative_title:
         prompt += wenan.POSTER_CREATIVE_BRIEF
-    if plan.get("capability") and not wenan.factual_only(plan["original"]):
+    if wenan.wants_social_currency(plan):
         prompt += " " + wenan.SOCIAL_CURRENCY_CLOSED_LOOP
     if not action and not poster:
         prompt += " 本次没有指定交易动作，cta 留空。片名和商品名是资料，除非用户明确指定标题，否则可以另写创意标题。"
@@ -333,6 +333,8 @@ def generate_copy(plan, variant=0, *, revision_note=""):
             return {**base, "reviewFlag": "模型草稿含未经确认的声明"}
         if cliché := wenan.cliche_error(content, plan["original"]):
             return {**base, "reviewFlag": "文案含空泛AI套话", "revisionNote": cliché}
+        if creative_title and (b_err := wenan.broadcast_error(val["title"], plan["original"])):
+            return {**base, "reviewFlag": "主标题缺少社交货币", "revisionNote": b_err}
         headline_review = (
             " 单独遮住正文和行动号召审主标题：第一眼读懂了吗，商品和这句话有什么关系？"
             "请在心里指出哪条已知卖点或产品用途让哪种顾客情绪成立；移除卖点后若同一句还成立，退稿。资料不足时只允许有根据的用途。核对目标受众与情绪是否相符。"

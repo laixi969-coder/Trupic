@@ -187,23 +187,23 @@ def write_options(spec, tenant, previous=()):
     task += ("逐字使用商家给出的名称与价格，不纠正片名、不补全品牌。没有提供的档期、限时、"
              "库存、折扣、购票渠道一律不写。标题、副标题和末句合起来只写一次价格。")
     task += wenan.POSTER_HEADINGS
-    if plan.get("capability") and not wenan.factual_only(plan["original"]):
+    if wenan.wants_social_currency(plan):
         task += wenan.SOCIAL_CURRENCY_CLOSED_LOOP
     creative_title = wenan.wants_creative_headline(plan["original"])
     single_price = re.fullmatch(r"\d+(?:\.\d+)?元", (base["offer"] or "").strip())
     if creative_title:
         task += wenan.POSTER_CREATIVE_BRIEF
         inputs["三组选稿方向"] = [
-            "看画面：选一处最值得多看一眼的细节，用一句话点出来。",
-            "看顾客：替顾客说出与这个商品有关的一句邀约或心里话，另选切入点。",
-            "看卖点：把一条已知事实写成选择它的理由。各组选不同角度，最多一组主打票价或售价，其余在副标题标价。",
+            "① 关系嘴替（发给伴侣/闺蜜/家人/同事）：用当前商品的一个真实特征，替顾客说出一句俏皮、体贴或带点小挑衅的话，让对方看了能自然接梗或回嘴（严禁照抄「初恋」句式，须从眼前商品特性重新发明）。",
+            "② 两人动作与分工（一起吃/带去串门/互相打趣）：把商品的真实特点写进两个人之间立刻能发生的小动作或分工里，拿掉这件商品特点就不成立。",
+            "③ 实在生活观察（老客私下拍给朋友看）：说一句不吹不喊的真实观察或生活反差，让人顺手转给附近的人或引发评论区接话。最多一组在标题带价格，其余放副标题。",
         ]
-    if wenan.social_headline(plan):
+    if wenan.social_headline(plan) or wenan.wants_social_currency(plan):
         task += (
-            "三组主标题都是微信里能直接发给人的一句话。第一句从我和你的分工入手；"
-            "第二句写眼前这个物件能怎么用，带一点朋友间的玩笑；第三句说一个观察到的小细节，让对方想一起去看看。"
-            "在每个标题中放一个具体的动作或物件。正文只写商品或项目名加一个真实细节，最多20字。"
-            "把时间和预约留给末句。不要用抽象形容词和广告口号。reply 要回应标题，不得重复标题。"
+            "三组主标题都必须像微信里能直接拍给朋友看的一句话，严禁写成商家单向叫卖口号（如“下班路过带一盒”“周末特惠等你来”“品质有底气”）。"
+            "每组必须填写 shareTo（具体发给谁）和 reply（对方自然回一句有来有回的话，不得只是“看着不错/在哪买/广告写得好”，也不得重复标题）。"
+            "body 用商品名加真实细节/已确认价格接住主标题（最多20字）；cta 从顾客站的位置给唯一清楚且已确认的下一步；"
+            "socialPost 写一段可直接发朋友圈/小红书的60–120字口语配文（含钩子+真实卖点+互动接话口子+自然收口）。"
         )
     fields = ("title", "body", "cta", "shareTo", "reply")
     if plan.get("capability"):
@@ -235,9 +235,9 @@ def write_options(spec, tenant, previous=()):
             '仅返回 JSON {"approved":[0,1,2],"feedback":"未通过稿件需要修正的具体问题"}，数组只列通过的零起始序号。feedback 至多40字，不写逐稿分析，全部通过时留空。'
         )
         if creative_title:
-            review_task += "逐组检查主标题是否提出了新的观察、动作、问题或购买理由。只复述品名和价格、只换词序或加泛用赞词的退稿；价格用数字和汉字写了两遍、给普通售价加上未说明的促销或上市状态，也要退稿。写“回归、重映、返场”等上市状态必须有明确依据。全稿应能读出宣传的商品和重要条件。几句围绕同一个动作换形容词或问句算同一角度，最多保留一条。在 feedback 点出要改哪里。"
-        if wenan.social_headline(plan):
-            review_task += "逐条检验标题：顾客会把它发给谁，对方能怎么接话，和眼前的商品或场景有什么关系？空泛或换品也成立的标题退稿。"
+            review_task += "逐组检查主标题是否提出了新的观察、动作、嘴替对话或购买理由。只复述品名和价格、单向商家叫卖口号（如“下班路过带一盒”“周末特惠等你来”）、只换词序或加泛用赞词的退稿；价格用数字和汉字写了两遍、给普通售价加上未说明的促销或上市状态，也要退稿。写“回归、重映、返场”等上市状态必须有明确依据。全稿应能读出宣传的商品和重要条件。几句围绕同一个动作换形容词或问句算同一角度，最多保留一条。在 feedback 点出要改哪里。"
+        if wenan.social_headline(plan) or wenan.wants_social_currency(plan):
+            review_task += "按 hiccai-wenan 社交货币铁律逐条检验：顾客会拍给谁（shareTo），对方能怎么接话（reply），和眼前商品的真实特性有什么必然联系？若像老板单向广播、换个商品照样成立、或对方只能礼貌回复“广告写得好/看着好吃/在哪买”，一律退稿并在 feedback 说明如何改成两个人之间的真实对话或动作。"
         approved = []
         feedback = ""
         schema = option_schema(*fields)
@@ -298,6 +298,9 @@ def write_options(spec, tenant, previous=()):
                     draft_error = error
                     continue
                 if error := wenan.cliche_error(f"{title} {body} {cta}", plan["original"]):
+                    draft_error = error
+                    continue
+                if creative_title and (error := wenan.broadcast_error(title, plan["original"])):
                     draft_error = error
                     continue
                 if creative_title and wenan.copied_headline(title, plan["original"]):
@@ -415,6 +418,9 @@ def choices_for_quote(quotes, token, tenant, previous=None):
              "sourceReview": spec["plan"].get("sourceReview")}, salt="trupic-copy-choice"
         )
         option = {k: draft[k] for k in ("title", "body", "cta")}
+        for extra in ("angle", "shareTo", "reply", "socialPost", "visualIdea"):
+            if draft.get(extra):
+                option[extra] = draft[extra]
         if "spec" in q:
             from .prompt_agent import apply_poster_layout, full_poster_prompt
 

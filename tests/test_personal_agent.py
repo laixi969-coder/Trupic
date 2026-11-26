@@ -672,37 +672,58 @@ class PersonalAgentTests(TestCase):
 
     def test_infinite_parametric_editorial_layout_engine(self):
         from PIL import Image
-        from server.layout_engine import choose_recipe, compose_editorial_poster
+        from server import wenan
+        from server.layout_engine import (
+            ALL_ARCHITECTURES,
+            PROTECTED_ARCHITECTURES,
+            choose_recipe,
+            compose_editorial_poster,
+        )
         from server.typography import Typesetter
+
+        # hiccai-wenan v4.4.0 social-currency & commercial closure guardrails
+        self.assertEqual(wenan.VERSION, "4.4.0")
+        self.assertTrue(wenan.broadcast_error("下班路过带盒红颜草莓回家"))
+        self.assertEqual(wenan.broadcast_error("一人吃一半，别抢中间那颗"), "")
+        fruit_plan = {"original": "主推丹东红颜草莓，现摘现发29.9元/盒，周末促销海报", "kind": "poster", "autoCreation": True}
+        self.assertTrue(wenan.wants_social_currency(fruit_plan))
+        self.assertIn(wenan.SHARING, wenan.sections(fruit_plan))
+        self.assertIn(wenan.ACTION_CLOSING, wenan.sections(fruit_plan))
 
         hero = Image.new("RGB", (900, 1200), (195, 42, 46))
         ts = Typesetter()
         copy = {
-            "title": "下班路过，带盒红颜草莓回家",
-            "body": "丹东现摘直发，29.9元一盒尝鲜",
-            "cta": "就在綦江万达对面",
+            "title": "一人吃一半，别抢中间那颗",
+            "body": "丹东现摘直发，29.9元/盒尝鲜",
+            "cta": "周末两天到店自取",
             "offer": "29.9元/盒",
         }
-        archs, splits, ornaments = set(), set(), set()
-        for idx in range(25):
+        archs, splits, ornaments, tastes = set(), set(), set(), set()
+        for idx in range(90):
             r = choose_recipe((1080, 1440), f"fruit-seed-{idx}")
             archs.add(r["architecture"])
             splits.add(r["split"])
             ornaments.add(r["ornament"])
-        self.assertEqual(len(archs), 4)
-        self.assertGreaterEqual(len(splits), 15)
-        self.assertGreaterEqual(len(ornaments), 4)
+            tastes.add(r["taste"])
+        self.assertEqual(len(archs), len(ALL_ARCHITECTURES))
+        self.assertGreaterEqual(len(ALL_ARCHITECTURES), 12)
+        self.assertGreaterEqual(len(splits), 25)
+        self.assertGreaterEqual(len(ornaments), 5)
+        self.assertGreaterEqual(len(tastes), 4)
 
-        # Protected real merchant photo never uses full-bleed crop
-        for idx in range(10):
+        # Protected real merchant photo never uses cropping architectures
+        for idx in range(20):
             r_prot = choose_recipe((1080, 1440), f"protected-{idx}", protected_subject=True)
-            self.assertIn(r_prot["architecture"], ("editorial_split", "gallery_inset"))
+            self.assertIn(r_prot["architecture"], PROTECTED_ARCHITECTURES)
 
-        # End-to-end render succeeds across 3:4, 16:9, and 9:16
-        for dims in ((1080, 1440), (1920, 1080), (1080, 1920)):
-            scene, layer, box, rec = compose_editorial_poster(
-                dims, hero, ts, "果小鲜水果铺  创意场景示意", copy, seed_text=f"dim-{dims}"
-            )
-            self.assertEqual(scene.size, dims)
-            self.assertEqual(layer.size, dims)
-            self.assertIsNotNone(box)
+        # End-to-end render succeeds across all 12 families and 4 aspect ratios with >= 7.0:1 title contrast
+        for dims in ((960, 1280), (1280, 720), (900, 1600), (1080, 1080)):
+            for arch in ALL_ARCHITECTURES:
+                scene, layer, box, rec = compose_editorial_poster(
+                    dims, hero, ts, "果小鲜水果铺  创意场景示意", copy, seed_text=f"dim-{dims}-{arch}", architecture=arch
+                )
+                self.assertEqual(scene.size, dims)
+                self.assertEqual(layer.size, dims)
+                self.assertIsNotNone(box)
+                self.assertGreaterEqual(rec["titleContrast"], 7.0)
+                self.assertGreaterEqual(rec["bodyContrast"], 4.5)
