@@ -19,6 +19,7 @@ with commercial product photography mastery:
 """
 
 import hashlib
+import math
 import re
 
 import numpy as np
@@ -43,6 +44,11 @@ ALL_ARCHITECTURES = (
     "full_bleed_band",
     "full_bleed_editorial_edge",
     "floating_card",
+    # 4 Pinterest Commercial Color-Blocking Families (高饱和撞色与色块组合)
+    "color_block_bento",
+    "color_block_diagonal",
+    "color_block_swiss_grid",
+    "color_block_chromatic",
     # 10 Architectural / Editorial Grid Families (现代平面与画册排版)
     "editorial_split",
     "gallery_inset",
@@ -63,6 +69,24 @@ FULL_BLEED_ARCHITECTURES = (
     "full_bleed_band",
     "full_bleed_editorial_edge",
     "floating_card",
+)
+
+COLOR_BLOCK_ARCHITECTURES = (
+    "color_block_bento",
+    "color_block_diagonal",
+    "color_block_swiss_grid",
+    "color_block_chromatic",
+)
+
+# Pinterest-distilled high-craft commercial color-blocking palettes
+# Format: (id, paper, ink, block_a, block_b, accent, warm_affinity)
+PINTEREST_PALETTES = (
+    ("mustard_pop", (232, 188, 28), (18, 16, 14), (192, 38, 34), (247, 242, 230), (192, 38, 34), True),
+    ("pistils_botanical", (243, 239, 227), (28, 62, 34), (28, 62, 34), (186, 72, 42), (186, 72, 42), True),
+    ("emerald_oriental", (12, 82, 68), (249, 245, 234), (243, 238, 224), (206, 48, 38), (206, 48, 38), True),
+    ("loft_tangerine", (238, 132, 38), (14, 15, 16), (250, 245, 234), (18, 22, 26), (18, 22, 26), True),
+    ("cobalt_citrus", (15, 74, 158), (255, 253, 247), (238, 122, 34), (245, 243, 237), (238, 122, 34), False),
+    ("oxblood_cream", (237, 230, 218), (108, 20, 24), (108, 20, 24), (206, 162, 122), (108, 20, 24), True),
 )
 
 PROTECTED_ARCHITECTURES = (
@@ -269,9 +293,13 @@ def choose_recipe(size, seed_text, *, protected_subject=False, repair=False, arc
         "ledger": "international",
         "edge": "international",
         "full_bleed_editorial_edge": "international",
+        "color_block_swiss_grid": "international",
         "offset": "high_energy",
         "diagonal_bleed": "high_energy",
         "full_bleed_poster_type": "high_energy",
+        "color_block_diagonal": "high_energy",
+        "color_block_chromatic": "high_energy",
+        "color_block_bento": "material",
         "monument": "eastern",
         "window": "eastern",
         "full_bleed_clean": "eastern",
@@ -476,6 +504,107 @@ def _draw_price_badge(draw, ts, price_tag, pal, unit, anchor_x, anchor_y, *, ali
     return (px, py, px + pill_w, py + pill_h)
 
 
+def _ink_for(bg_rgb):
+    """Return high-contrast ink (DARK_INK or LIGHT_INK) for any solid color block."""
+    return LIGHT_INK if _contrast(LIGHT_INK, bg_rgb) >= _contrast(DARK_INK, bg_rgb) else DARK_INK
+
+
+def _pinterest_palette(seed_index, photo=None):
+    """Select a curated Pinterest chromatic color-blocking palette with guaranteed >= 7:1 contrast."""
+    warm = True
+    if photo is not None:
+        mean_rgb = np.asarray(photo.convert("RGB").resize((24, 24)), dtype=float).mean(axis=(0, 1))
+        warm = bool(mean_rgb[0] >= mean_rgb[2] - 8)
+    pool = [p for p in PINTEREST_PALETTES if p[6] == warm] or list(PINTEREST_PALETTES)
+    if seed_index % 5 == 4:
+        pool = list(PINTEREST_PALETTES)
+    pid, paper, ink, block_a, block_b, accent, _ = pool[seed_index % len(pool)]
+    dark = _luma(paper) < 0.35
+    muted = _blend(ink, paper, 0.24)
+    return _enforce_contrast(
+        dict(
+            paletteId=pid,
+            paper=paper,
+            ink=ink,
+            muted=muted,
+            block_a=block_a,
+            block_b=block_b,
+            accent=accent,
+            accent_ink=_ink_for(accent),
+            zone_tint=_blend(paper, block_b, 0.32),
+            dark=dark,
+        )
+    )
+
+
+def _draw_starburst_sticker(draw, ts, price_tag, fill_rgb, unit, cx, cy, *, teeth=20, radius_ratio=0.095, label="尝鲜价"):
+    """Pinterest commercial scalloped starburst price sticker (Matcha Red Bean / Retail Promo style)."""
+    if not price_tag:
+        return None
+    r_out = round(unit * radius_ratio)
+    r_in = round(r_out * 0.88)
+    pts = []
+    steps = teeth * 2
+    for i in range(steps):
+        ang = (2.0 * math.pi * i) / steps
+        r = r_out if i % 2 == 0 else r_in
+        pts.append((cx + math.cos(ang) * r, cy + math.sin(ang) * r))
+    draw.polygon(pts, fill=(*fill_rgb, 250))
+    ink = _ink_for(fill_rgb)
+    ink_hex = "#%02x%02x%02x" % ink
+    ring_r = round(r_in * 0.90)
+    draw.ellipse((cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r), outline=(*ink, 115), width=max(1, round(unit * 0.0018)))
+
+    # Fit numeric price cleanly inside sticker diameter
+    inner_w = round(r_in * 1.62)
+    p_pts = max(18, round(unit * 0.040))
+    while p_pts > 15 and ts.width(price_tag, p_pts, "numeric") > inner_w:
+        p_pts = round(p_pts * 0.88)
+    lbl_pts = max(12, round(p_pts * 0.50))
+    if label:
+        ts.draw(draw, label, (cx - inner_w // 2, cy - round(r_in * 0.52), cx + inner_w // 2, cy - round(r_in * 0.06)), lbl_pts, "body", ink_hex, align="center")
+        ts.draw(draw, price_tag, (cx - inner_w // 2, cy - round(r_in * 0.05), cx + inner_w // 2, cy + round(r_in * 0.56)), p_pts, "numeric", ink_hex, align="center")
+    else:
+        ts.draw(draw, price_tag, (cx - inner_w // 2, cy - round(p_pts * 0.65), cx + inner_w // 2, cy + round(p_pts * 0.65)), p_pts, "numeric", ink_hex, align="center")
+    return (cx - r_out, cy - r_out, cx + r_out, cy + r_out)
+
+
+def _draw_split_coupon(draw, ts, label, price_tag, pal, unit, anchor_x, anchor_y, *, align="right", scale=1.0):
+    """Pinterest two-segment commercial promo coupon badge (e.g. 周末特惠 | 29.9元/盒)."""
+    if not price_tag:
+        return None
+    l_txt = (label or "特惠价")[:5]
+    l_pts = max(14, round(unit * 0.025 * scale))
+    p_pts = max(20, round(unit * 0.038 * scale))
+    pad_x = round(unit * 0.020 * scale)
+    pad_y = round(unit * 0.011 * scale)
+    lw = round(ts.width(l_txt, l_pts, "body")) + 2 * pad_x
+    pw = round(ts.width(price_tag, p_pts, "numeric")) + 2 * pad_x
+    bh = max(round(p_pts * 1.24), round(l_pts * 1.35)) + 2 * pad_y
+    total_w = lw + pw
+    if align == "right":
+        x0 = anchor_x - total_w
+    elif align == "center":
+        x0 = anchor_x - total_w // 2
+    else:
+        x0 = anchor_x
+    y0 = anchor_y
+    left_bg = pal["accent"]
+    right_bg = pal.get("block_b") or (250, 247, 240)
+    if _contrast(right_bg, pal["paper"]) < 1.35:
+        right_bg = LIGHT_INK if pal["dark"] else DARK_INK
+    left_ink = "#%02x%02x%02x" % _ink_for(left_bg)
+    right_ink = "#%02x%02x%02x" % _ink_for(right_bg)
+    rad = round(unit * 0.012)
+    draw.rounded_rectangle((x0, y0, x0 + total_w, y0 + bh), radius=rad, fill=(*right_bg, 250), outline=(*left_bg, 255), width=max(2, round(unit * 0.0024)))
+    draw.rounded_rectangle((x0, y0, x0 + lw + rad, y0 + bh), radius=rad, fill=(*left_bg, 255))
+    draw.rectangle((x0 + lw, y0, x0 + lw + rad, y0 + bh), fill=(*right_bg, 250))
+    draw.line((x0 + lw, y0, x0 + lw, y0 + bh), fill=(*left_bg, 255), width=max(2, round(unit * 0.0022)))
+    ts.draw(draw, l_txt, (x0 + pad_x // 2, y0 + (bh - round(l_pts * 1.15)) // 2, x0 + lw - pad_x // 2, y0 + bh), l_pts, "body", left_ink, align="center")
+    ts.draw(draw, price_tag, (x0 + lw + pad_x // 2, y0 + (bh - round(p_pts * 1.15)) // 2, x0 + total_w - pad_x // 2, y0 + bh), p_pts, "numeric", right_ink, align="center")
+    return (x0, y0, x0 + total_w, y0 + bh)
+
+
 def _typeset_block(draw, ts, text_box, blocks, pal, recipe, unit, *, v_align="center", align_override=None):
     """Measure, auto-fit, and draw multi-tier typography inside text_box with zero overflow."""
     tx0, ty0, tx1, ty1 = text_box
@@ -615,7 +744,13 @@ def compose_editorial_poster(
         repair=repair,
         architecture=architecture,
     )
-    pal = extract_palette(photo, dark_bias=recipe["dark"], ground_variant=recipe["groundVariant"])
+    arch = recipe["architecture"]
+    if arch in COLOR_BLOCK_ARCHITECTURES:
+        pal_idx = int(_seed_floats(f"{seed_text}|pinpal|{arch}", 2)[0] * 100)
+        pal = _pinterest_palette(pal_idx, photo)
+        recipe["paletteId"] = pal["paletteId"]
+    else:
+        pal = extract_palette(photo, dark_bias=recipe["dark"], ground_variant=recipe["groundVariant"])
     if kit.get("color"):
         try:
             from PIL import ImageColor
@@ -629,7 +764,6 @@ def compose_editorial_poster(
         except ValueError:
             pass
 
-    arch = recipe["architecture"]
     anchor = recipe["anchor"]
     margin = round(unit * recipe["margin"])
     top_pad = round(h * recipe["safeTop"])
@@ -660,6 +794,7 @@ def compose_editorial_poster(
             (arch == "gallery_inset" and not protected_subject and anchor == "bottom" and not wide)
             or (arch in ("full_bleed_scrim", "floating_card") and not protected_subject and not wide)
             or (arch in ("full_bleed_clean", "full_bleed_poster_type", "full_bleed_band", "full_bleed_editorial_edge") and not protected_subject)
+            or (arch in COLOR_BLOCK_ARCHITECTURES)
             or (arch in ("ledger", "edge"))
             or (arch in ("offset", "ribbon", "window", "diagonal_bleed", "diptych_focus") and not wide)
         )
@@ -868,6 +1003,230 @@ def compose_editorial_poster(
             cta_y0 = bot_y
         if footer:
             _typeset_block(draw, ts, (text_box[0], cta_y0, text_box[2], h - bot_pad), [("cta", footer, "body", 0.027, 0.0)], pal, recipe, unit, v_align="top", align_override="left")
+
+    elif arch == "color_block_bento":
+        # Pinterest PISTILS / NICELAB style: bold top & bottom anchor bars + interlocking photo & contrasting promo blocks
+        block_a = pal["block_a"]
+        block_b = pal["block_b"]
+        a_ink = _ink_for(block_a)
+        b_ink = _ink_for(block_b)
+        a_ink_hex = "#%02x%02x%02x" % a_ink
+        b_ink_hex = "#%02x%02x%02x" % b_ink
+        gap = max(10, round(unit * 0.018))
+        bar_h = round(h * (0.085 if not wide else 0.11))
+        foot_h = round(h * (0.095 if not wide else 0.12))
+        # Top & bottom full-width chromatic anchor bars
+        sd.rectangle((margin, top_pad, w - margin, top_pad + bar_h), fill=block_a)
+        sd.rectangle((margin, h - bot_pad - foot_h, w - margin, h - bot_pad), fill=block_a)
+        # Mid interlocking zone
+        mid_y0 = top_pad + bar_h + gap
+        mid_y1 = h - bot_pad - foot_h - gap
+        if wide:
+            p_w = round((w - 2 * margin - gap) * 0.46)
+            p_rect = (margin, mid_y0, margin + p_w, mid_y1)
+            right_x0 = p_rect[2] + gap
+            head_rect = (right_x0, mid_y0, w - margin, mid_y0 + round((mid_y1 - mid_y0) * 0.56))
+            promo_rect = (right_x0, head_rect[3] + gap, w - margin, mid_y1)
+            sd.rectangle(promo_rect, fill=block_b)
+            fitted, rel = _fit_photo(photo, (p_rect[2] - p_rect[0], p_rect[3] - p_rect[1]), protect_full=protected_subject, backdrop_color=pal["paper"])
+            scene.paste(fitted, p_rect[:2])
+            box = (p_rect[0] + rel[0], p_rect[1] + rel[1], p_rect[0] + rel[2], p_rect[1] + rel[3])
+        else:
+            head_h = round((mid_y1 - mid_y0) * 0.30)
+            head_rect = (margin, mid_y0, w - margin, mid_y0 + head_h)
+            low_y0 = head_rect[3] + gap
+            p_w = round((w - 2 * margin - gap) * 0.60)
+            p_rect = (margin, low_y0, margin + p_w, mid_y1)
+            right_x0 = p_rect[2] + gap
+            promo_h = round((mid_y1 - low_y0) * 0.56)
+            promo_rect = (right_x0, low_y0, w - margin, low_y0 + promo_h)
+            sub_rect = (right_x0, promo_rect[3] + gap, w - margin, mid_y1)
+            sd.rectangle(promo_rect, fill=block_b)
+            sub_bg = _blend(pal["paper"], block_a, 0.14)
+            sd.rectangle(sub_rect, fill=sub_bg)
+            fitted, rel = _fit_photo(photo, (p_rect[2] - p_rect[0], p_rect[3] - p_rect[1]), protect_full=protected_subject, backdrop_color=pal["paper"])
+            scene.paste(fitted, p_rect[:2])
+            box = (p_rect[0] + rel[0], p_rect[1] + rel[1], p_rect[0] + rel[2], p_rect[1] + rel[3])
+        if image_layers is not None:
+            image_layers.append(("stage", scene.copy(), (0, 0)))
+        # Top bar: brand left + serial right
+        b_pad = round(unit * 0.024)
+        bar_pts = max(16, round(unit * 0.030))
+        if clean_brand:
+            ts.draw(draw, clean_brand, (margin + b_pad, top_pad + (bar_h - round(bar_pts * 1.15)) // 2, w - margin - round(unit * 0.22), top_pad + bar_h), bar_pts, "body", a_ink_hex, align="left")
+        ts.draw(draw, recipe["serial"], (w - margin - round(unit * 0.22), top_pad + (bar_h - round(bar_pts * 1.15)) // 2, w - margin - b_pad, top_pad + bar_h), max(14, round(bar_pts * 0.85)), "numeric", a_ink_hex, align="right")
+        # Headline in head_rect
+        _typeset_block(draw, ts, (head_rect[0] + round(unit * 0.01), head_rect[1] + round(unit * 0.01), head_rect[2] - round(unit * 0.01), head_rect[3] - round(unit * 0.01)), standard_blocks(head_rect[2] - head_rect[0], 0.098 if not wide else 0.088, include_brand=False, include_sub=False, include_cta=False), pal, recipe, unit, v_align="center", align_override="center" if not wide else "left")
+        # Bold promo price inside promo_rect
+        p_pad = round(unit * 0.022)
+        if price_tag:
+            p_pal = {**pal, "paper": block_b, "ink": b_ink, "muted": b_ink}
+            promo_blocks = [("cta", "本期主打", "body", 0.024, 0.0), ("title", price_tag, "numeric", 0.068 if not wide else 0.060, 0.010)]
+            if wide and display_subtitle:
+                promo_blocks.append(("sub", display_subtitle, "body", 0.028, 0.012))
+            _typeset_block(draw, ts, (promo_rect[0] + p_pad, promo_rect[1] + p_pad, promo_rect[2] - p_pad, promo_rect[3] - p_pad), promo_blocks, p_pal, recipe, unit, v_align="center", align_override="center")
+        if not wide and display_subtitle:
+            sub_pal = {**pal, "paper": sub_bg, "ink": _ink_for(sub_bg), "muted": _ink_for(sub_bg)}
+            _typeset_block(draw, ts, (sub_rect[0] + p_pad, sub_rect[1] + p_pad, sub_rect[2] - p_pad, sub_rect[3] - p_pad), [("sub", display_subtitle, "body", 0.028, 0.0)], sub_pal, recipe, unit, v_align="center", align_override="left")
+        # Bottom bar: CTA centered
+        if footer:
+            foot_pts = max(16, round(unit * 0.032))
+            ts.draw(draw, footer, (margin + b_pad, h - bot_pad - foot_h + (foot_h - round(foot_pts * 1.2)) // 2, w - margin - b_pad, h - bot_pad), foot_pts, "body", a_ink_hex, align="center")
+
+    elif arch == "color_block_diagonal":
+        # Pinterest COLOR SURGE / IKEA Green Friday style: bold diagonal multi-plane color split + framed hero + starburst sticker
+        block_a = pal["block_a"]
+        block_b = pal["block_b"]
+        # Draw crisp angled second color plane across lower/right canvas
+        if wide:
+            sd.polygon([(round(w * 0.48), 0), (w, 0), (w, h), (round(w * 0.34), h)], fill=block_b)
+            sd.polygon([(round(w * 0.84), 0), (w, 0), (w, round(h * 0.36))], fill=block_a)
+            p_rect = (round(w * 0.44), margin, w - margin, h - margin)
+            text_box = (margin, margin, round(w * 0.40), h - margin)
+        else:
+            sd.polygon([(0, round(h * 0.56)), (w, round(h * 0.42)), (w, h), (0, h)], fill=block_b)
+            sd.polygon([(0, round(h * 0.86)), (w, round(h * 0.78)), (w, h), (0, h)], fill=block_a)
+            p_pad_x = round(w * 0.10)
+            p_rect = (p_pad_x, round(h * 0.32), w - p_pad_x, round(h * 0.79))
+            text_box = (margin, top_pad, w - margin, round(h * 0.30))
+        # Crisp offset backing frame behind photo
+        off = max(8, round(unit * 0.015))
+        sd.rectangle((p_rect[0] + off, p_rect[1] + off, p_rect[2] + off, p_rect[3] + off), fill=_ink_for(block_b))
+        fitted, rel = _fit_photo(photo, (p_rect[2] - p_rect[0], p_rect[3] - p_rect[1]), protect_full=protected_subject, backdrop_color=pal["paper"])
+        scene.paste(fitted, p_rect[:2])
+        sd.rectangle(p_rect, outline=_ink_for(block_b), width=max(2, round(unit * 0.003)))
+        box = (p_rect[0] + rel[0], p_rect[1] + rel[1], p_rect[0] + rel[2], p_rect[1] + rel[3])
+        if image_layers is not None:
+            image_layers.append(("stage", scene.copy(), (0, 0)))
+        if wide:
+            _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.088), pal, recipe, unit, align_override="left")
+            if price_tag and not protected_subject:
+                _draw_starburst_sticker(draw, ts, price_tag, block_a, unit, p_rect[2] - round(unit * 0.11), p_rect[3] - round(unit * 0.11), radius_ratio=0.105)
+        else:
+            _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.096, include_brand=True, include_sub=False, include_cta=False), pal, recipe, unit, v_align="center", align_override="left")
+            if price_tag and not protected_subject:
+                _draw_starburst_sticker(draw, ts, price_tag, pal["accent"] if pal["accent"] != block_b else block_a, unit, p_rect[2] - round(unit * 0.04), p_rect[3] - round(unit * 0.04), radius_ratio=0.105)
+            # Bottom wedge strip: subtitle & CTA in high-contrast ink over block_a
+            bot_pal = {**pal, "paper": block_a, "ink": _ink_for(block_a), "muted": _ink_for(block_a)}
+            bot_blocks = []
+            if display_subtitle:
+                bot_blocks.append(("sub", display_subtitle, "body", 0.034, 0.0))
+            if footer and footer != display_subtitle:
+                bot_blocks.append(("cta", footer, "body", 0.028, 0.012))
+            if bot_blocks:
+                _typeset_block(draw, ts, (margin, round(h * 0.855), w - margin, h - round(bot_pad * 0.65)), bot_blocks, bot_pal, recipe, unit, v_align="center", align_override="left")
+
+    elif arch == "color_block_swiss_grid":
+        # Pinterest LOFT / Fresh egg / hello style: crisp 2px Swiss hairline grid with asymmetric chromatic cells
+        line_col = pal["ink"]
+        lw = max(2, round(unit * 0.0032))
+        block_a = pal["block_a"]
+        block_b = pal["block_b"]
+        x0, y0, x1, y1 = margin, top_pad, w - margin, h - bot_pad
+        gw, gh = x1 - x0, y1 - y0
+        if wide:
+            split_x = x0 + round(gw * 0.46)
+            split_y = y0 + round(gh * 0.68)
+            head_cell = (x0, y0, split_x, split_y)
+            price_cell = (x0, split_y, split_x, y1)
+            photo_cell = (split_x, y0, x1, y1)
+            sd.rectangle(head_cell, fill=pal["paper"])
+            sd.rectangle(price_cell, fill=block_a)
+            fitted, rel = _fit_photo(photo, (photo_cell[2] - photo_cell[0], photo_cell[3] - photo_cell[1]), protect_full=protected_subject, backdrop_color=pal["paper"])
+            scene.paste(fitted, photo_cell[:2])
+            box = (photo_cell[0] + rel[0], photo_cell[1] + rel[1], photo_cell[0] + rel[2], photo_cell[1] + rel[3])
+            sd.rectangle((x0, y0, x1, y1), outline=line_col, width=lw)
+            sd.line((split_x, y0, split_x, y1), fill=line_col, width=lw)
+            sd.line((x0, split_y, split_x, split_y), fill=line_col, width=lw)
+            if image_layers is not None:
+                image_layers.append(("stage", scene.copy(), (0, 0)))
+            pad_c = round(unit * 0.028)
+            _typeset_block(draw, ts, (head_cell[0] + pad_c, head_cell[1] + pad_c, head_cell[2] - pad_c, head_cell[3] - pad_c), standard_blocks(head_cell[2] - head_cell[0] - 2 * pad_c, 0.088, include_brand=True, include_sub=True, include_cta=False), pal, recipe, unit, align_override="left")
+            p_pal = {**pal, "paper": block_a, "ink": _ink_for(block_a), "muted": _ink_for(block_a)}
+            p_blocks = []
+            if price_tag:
+                p_blocks.append(("title", price_tag, "numeric", 0.062, 0.0))
+            if footer:
+                p_blocks.append(("cta", footer, "body", 0.028, 0.010))
+            if p_blocks:
+                _typeset_block(draw, ts, (price_cell[0] + pad_c, price_cell[1] + pad_c, price_cell[2] - pad_c, price_cell[3] - pad_c), p_blocks, p_pal, recipe, unit, align_override="left")
+        else:
+            row1_y = y0 + round(gh * 0.27)
+            row2_y = y0 + round(gh * 0.87)
+            col_x = x0 + round(gw * 0.68)
+            head_cell = (x0, y0, col_x, row1_y)
+            price_cell = (col_x, y0, x1, row1_y)
+            photo_cell = (x0, row1_y, x1, row2_y)
+            foot_l = (x0, row2_y, col_x, y1)
+            foot_r = (col_x, row2_y, x1, y1)
+            sd.rectangle(head_cell, fill=pal["paper"])
+            sd.rectangle(price_cell, fill=block_a)
+            sd.rectangle(foot_l, fill=block_b if _contrast(_ink_for(block_b), block_b) >= 7.0 else pal["paper"])
+            sd.rectangle(foot_r, fill=pal["paper"])
+            fitted, rel = _fit_photo(photo, (photo_cell[2] - photo_cell[0], photo_cell[3] - photo_cell[1]), protect_full=protected_subject, backdrop_color=pal["paper"])
+            scene.paste(fitted, photo_cell[:2])
+            box = (photo_cell[0] + rel[0], photo_cell[1] + rel[1], photo_cell[0] + rel[2], photo_cell[1] + rel[3])
+            # Draw sharp Swiss 2px grid frame
+            sd.rectangle((x0, y0, x1, y1), outline=line_col, width=lw)
+            sd.line((x0, row1_y, x1, row1_y), fill=line_col, width=lw)
+            sd.line((x0, row2_y, x1, row2_y), fill=line_col, width=lw)
+            sd.line((col_x, y0, col_x, row1_y), fill=line_col, width=lw)
+            sd.line((col_x, row2_y, col_x, y1), fill=line_col, width=lw)
+            if image_layers is not None:
+                image_layers.append(("stage", scene.copy(), (0, 0)))
+            pad_c = round(unit * 0.024)
+            _typeset_block(draw, ts, (head_cell[0] + pad_c, head_cell[1] + pad_c, head_cell[2] - pad_c, head_cell[3] - pad_c), standard_blocks(head_cell[2] - head_cell[0] - 2 * pad_c, 0.088, include_brand=True, include_sub=False, include_cta=False), pal, recipe, unit, align_override="left")
+            p_pal = {**pal, "paper": block_a, "ink": _ink_for(block_a), "muted": _ink_for(block_a)}
+            p_blocks = [("cta", recipe["serial"], "numeric", 0.022, 0.0)]
+            if price_tag:
+                p_blocks.append(("title", price_tag, "numeric", 0.056, 0.012))
+            _typeset_block(draw, ts, (price_cell[0] + pad_c, price_cell[1] + pad_c, price_cell[2] - pad_c, price_cell[3] - pad_c), p_blocks, p_pal, recipe, unit, align_override="center")
+            fl_bg = block_b if _contrast(_ink_for(block_b), block_b) >= 7.0 else pal["paper"]
+            fl_pal = {**pal, "paper": fl_bg, "ink": _ink_for(fl_bg), "muted": _ink_for(fl_bg)}
+            if display_subtitle:
+                _typeset_block(draw, ts, (foot_l[0] + pad_c, foot_l[1] + round(pad_c * 0.5), foot_l[2] - pad_c, foot_l[3] - round(pad_c * 0.5)), [("sub", display_subtitle, "body", 0.030, 0.0)], fl_pal, recipe, unit, align_override="left")
+            if footer:
+                _typeset_block(draw, ts, (foot_r[0] + pad_c, foot_r[1] + round(pad_c * 0.5), foot_r[2] - pad_c, foot_r[3] - round(pad_c * 0.5)), [("cta", footer, "body", 0.026, 0.0)], pal, recipe, unit, align_override="center")
+
+    elif arch == "color_block_chromatic":
+        # Pinterest Straw berry / Emerald Dumpling / Channel Orange style: bold saturated studio ground + offset photo block + split coupon
+        block_a = pal["block_a"]
+        if wide:
+            p_w = round(w * 0.48)
+            p_rect = (w - margin - p_w, margin, w - margin, h - margin)
+            text_box = (margin, margin, p_rect[0] - margin, h - margin)
+        else:
+            head_y1 = round(h * 0.30)
+            foot_y0 = round(h * 0.84)
+            p_pad_x = round(w * 0.085)
+            p_rect = (p_pad_x, head_y1 + round(unit * 0.018), w - p_pad_x, foot_y0 - round(unit * 0.030))
+            text_box = (margin, top_pad, w - margin, head_y1)
+        # Bold solid chromatic offset shadow block behind photo
+        off = max(10, round(unit * 0.018))
+        sd.rectangle((p_rect[0] + off, p_rect[1] + off, p_rect[2] + off, p_rect[3] + off), fill=block_a)
+        fitted, rel = _fit_photo(photo, (p_rect[2] - p_rect[0], p_rect[3] - p_rect[1]), protect_full=protected_subject, backdrop_color=pal["paper"])
+        scene.paste(fitted, p_rect[:2])
+        sd.rectangle(p_rect, outline=pal["ink"], width=max(2, round(unit * 0.0028)))
+        box = (p_rect[0] + rel[0], p_rect[1] + rel[1], p_rect[0] + rel[2], p_rect[1] + rel[3])
+        if image_layers is not None:
+            image_layers.append(("stage", scene.copy(), (0, 0)))
+        if wide:
+            _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.092, include_brand=True, include_sub=True, include_cta=False), pal, recipe, unit, v_align="top", align_override="left")
+            if price_tag:
+                _draw_split_coupon(draw, ts, "特惠价", price_tag, pal, unit, margin, h - margin - round(unit * 0.085), align="left", scale=0.92)
+        else:
+            _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.100, include_brand=True, include_sub=False, include_cta=False), pal, recipe, unit, v_align="center", align_override="left")
+            bot_blocks = []
+            if display_subtitle:
+                bot_blocks.append(("sub", display_subtitle, "body", 0.034, 0.0))
+            if footer and footer != display_subtitle:
+                bot_blocks.append(("cta", footer, "body", 0.028, 0.012))
+            if price_tag:
+                _draw_split_coupon(draw, ts, "周末特惠", price_tag, pal, unit, w - margin, foot_y0 + max(0, (h - bot_pad - foot_y0 - round(unit * 0.072)) // 2), align="right", scale=0.90)
+                if bot_blocks:
+                    _typeset_block(draw, ts, (margin, foot_y0, w - margin - round(unit * 0.44), h - bot_pad), bot_blocks, pal, recipe, unit, v_align="center", align_override="left")
+            elif bot_blocks:
+                _typeset_block(draw, ts, (margin, foot_y0, w - margin, h - bot_pad), bot_blocks, pal, recipe, unit, v_align="center", align_override="left")
 
     elif arch == "floating_card":
         fitted, box = _fit_photo(photo, (w, h), protect_full=False)
@@ -1221,7 +1580,7 @@ def compose_editorial_poster(
         _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.096), pal, recipe, unit)
 
     # Subtle Artlook-style corner registration ticks (only on light/dark paper layouts where clean)
-    if recipe["ornament"] == "corner_ticks" and arch not in FULL_BLEED_ARCHITECTURES and arch != "ribbon":
+    if recipe["ornament"] == "corner_ticks" and arch not in FULL_BLEED_ARCHITECTURES and arch not in COLOR_BLOCK_ARCHITECTURES and arch != "ribbon":
         tick = round(unit * 0.020)
         tc = (*pal["accent"], 175)
         lw = max(2, round(unit * 0.0022))

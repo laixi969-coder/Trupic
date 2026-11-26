@@ -675,6 +675,7 @@ class PersonalAgentTests(TestCase):
         from server import wenan
         from server.layout_engine import (
             ALL_ARCHITECTURES,
+            COLOR_BLOCK_ARCHITECTURES,
             FULL_BLEED_ARCHITECTURES,
             PROTECTED_ARCHITECTURES,
             choose_recipe,
@@ -700,15 +701,16 @@ class PersonalAgentTests(TestCase):
             "offer": "29.9元/盒",
         }
         archs, splits, ornaments, tastes = set(), set(), set(), set()
-        for idx in range(160):
+        for idx in range(220):
             r = choose_recipe((1080, 1440), f"fruit-seed-{idx}")
             archs.add(r["architecture"])
             splits.add(r["split"])
             ornaments.add(r["ornament"])
             tastes.add(r["taste"])
         self.assertEqual(len(archs), len(ALL_ARCHITECTURES))
-        self.assertGreaterEqual(len(ALL_ARCHITECTURES), 16)
+        self.assertGreaterEqual(len(ALL_ARCHITECTURES), 20)
         self.assertGreaterEqual(len(FULL_BLEED_ARCHITECTURES), 6)
+        self.assertGreaterEqual(len(COLOR_BLOCK_ARCHITECTURES), 4)
         self.assertGreaterEqual(len(splits), 25)
         self.assertGreaterEqual(len(ornaments), 5)
         self.assertGreaterEqual(len(tastes), 4)

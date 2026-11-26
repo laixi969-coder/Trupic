@@ -43,7 +43,7 @@ description: 为响指出片 Trupic 设计和检查商家营销海报、品牌 K
 
 按当前任务查阅[本地原片与成稿、Pinterest 案例和指定仓库的分工](references/visual-study.md)。应用内的行业、关键词、示意图匹配、色值、字体角色、镜头说明与样张文案保存在 [directions.json](references/directions.json)。原创样张的无字底图可按[摄影简报](references/plate-prompts.md)重新制作。同一行业可以因投放目的切换设计方向，手动指定的版式优先。
 
-逐张查阅[35 张海报与 Pinterest 参考拆解](references/poster-reference-review.md)。让食材或餐具带动视线时选「食欲定格」，实物较小且由局部光线交代材质时选「留白光影」，完整照片与画面边缘承担叙事时选「照片编排」。用实际商品轮廓、标题和投放条件复核选出的版式。
+逐张查阅[35 张海报与 Pinterest 参考拆解](references/poster-reference-review.md)以及[Pinterest 商业色彩与色块组合系统](references/pinterest-visual-system.md)。让食材或餐具带动视线时选「食欲定格」，实物较小且由局部光线交代材质时选「留白光影」，完整照片与画面边缘承担叙事时选「照片编排」，强促销/高吸睛信息流投放时启用高饱和彩底、撞色色块、瑞士 1px 模块网格与锯齿/双段价格贴纸。用实际商品轮廓、标题和投放条件复核选出的版式。
 
 「照片编排」的同风格改稿参照项目内的 [layout-grid](../layout-grid/SKILL.md)。作品页保留取景框原稿，可把同一张照片改成满版摄影。先用交付字体量标题和交易信息，再为原片分配空间。照片边缘的光色延展到字区，横版重新安排阅读方向。
 
