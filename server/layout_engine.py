@@ -36,9 +36,15 @@ DARK_INK = (10, 12, 14)
 LIGHT_INK = (255, 253, 247)
 
 ALL_ARCHITECTURES = (
+    # 6 Full-Bleed Photography Families (全图大片)
     "full_bleed_scrim",
-    "editorial_split",
+    "full_bleed_clean",
+    "full_bleed_poster_type",
+    "full_bleed_band",
+    "full_bleed_editorial_edge",
     "floating_card",
+    # 10 Architectural / Editorial Grid Families (现代平面与画册排版)
+    "editorial_split",
     "gallery_inset",
     "ledger",
     "offset",
@@ -48,6 +54,15 @@ ALL_ARCHITECTURES = (
     "window",
     "diagonal_bleed",
     "diptych_focus",
+)
+
+FULL_BLEED_ARCHITECTURES = (
+    "full_bleed_scrim",
+    "full_bleed_clean",
+    "full_bleed_poster_type",
+    "full_bleed_band",
+    "full_bleed_editorial_edge",
+    "floating_card",
 )
 
 PROTECTED_ARCHITECTURES = (
@@ -244,7 +259,7 @@ def choose_recipe(size, seed_text, *, protected_subject=False, repair=False, arc
 
     if wide:
         anchors = ("left", "right")
-    elif arch in ("edge", "ledger", "offset"):
+    elif arch in ("edge", "ledger", "offset", "full_bleed_editorial_edge"):
         anchors = ("left", "right")
     else:
         anchors = ("bottom", "top")
@@ -253,20 +268,24 @@ def choose_recipe(size, seed_text, *, protected_subject=False, repair=False, arc
     taste_map = {
         "ledger": "international",
         "edge": "international",
+        "full_bleed_editorial_edge": "international",
         "offset": "high_energy",
         "diagonal_bleed": "high_energy",
+        "full_bleed_poster_type": "high_energy",
         "monument": "eastern",
         "window": "eastern",
+        "full_bleed_clean": "eastern",
         "gallery_inset": "editorial",
         "ribbon": "editorial",
+        "full_bleed_scrim": "editorial",
+        "full_bleed_band": "editorial",
         "diptych_focus": "material",
         "floating_card": "material",
-        "full_bleed_scrim": "editorial",
         "editorial_split": TASTE_DIRECTIONS[int(u[8] * len(TASTE_DIRECTIONS)) % len(TASTE_DIRECTIONS)],
     }
     taste = taste_map.get(arch, "editorial")
 
-    if arch == "full_bleed_scrim":
+    if arch in ("full_bleed_scrim", "full_bleed_clean", "full_bleed_poster_type"):
         dark_bias = True
     elif arch in ("ledger", "monument", "ribbon"):
         dark_bias = u[2] > 0.72  # mostly crisp archival paper, occasionally dramatic dark
@@ -315,6 +334,23 @@ def choose_recipe(size, seed_text, *, protected_subject=False, repair=False, arc
         groundVariant=ground_variant,
         serial=serial_no,
     )
+
+
+def _quiet_vertical_anchor(photo):
+    """Detect whether the top or bottom third of the hero photo has lower visual clutter (negative space)."""
+    small = photo.convert("RGB").resize((64, 64), Image.Resampling.BILINEAR)
+    arr = np.asarray(small, dtype=float)
+    # Gradient edge energy + color saturation = visual busyness / hero saliency
+    gx = np.abs(np.diff(arr, axis=1)).mean(axis=2)
+    gy = np.abs(np.diff(arr, axis=0)).mean(axis=2)
+    energy = gx[:63, :63] + gy[:63, :63]
+    cmax = arr[:63, :63].max(axis=2)
+    cmin = arr[:63, :63].min(axis=2)
+    sat = (cmax - cmin) / np.maximum(cmax, 1.0)
+    saliency = energy + sat * 45.0
+    top_score = float(saliency[:22, :].mean())
+    bot_score = float(saliency[41:, :].mean())
+    return "top" if top_score <= bot_score else "bottom"
 
 
 def _apply_directional_scrim(image, anchor, tint=(12, 14, 13), coverage=0.46, strength=0.90):
@@ -621,7 +657,9 @@ def compose_editorial_poster(
         price_tag
         and photo is not None
         and (
-            (arch in ("full_bleed_scrim", "floating_card", "gallery_inset") and not protected_subject and anchor == "bottom" and not wide)
+            (arch == "gallery_inset" and not protected_subject and anchor == "bottom" and not wide)
+            or (arch in ("full_bleed_scrim", "floating_card") and not protected_subject and not wide)
+            or (arch in ("full_bleed_clean", "full_bleed_poster_type", "full_bleed_band", "full_bleed_editorial_edge") and not protected_subject)
             or (arch in ("ledger", "edge"))
             or (arch in ("offset", "ribbon", "window", "diagonal_bleed", "diptych_focus") and not wide)
         )
@@ -659,44 +697,188 @@ def compose_editorial_poster(
         recipe["titleContrast"] = pal["titleContrast"]
         return scene, layer, box, recipe
 
-    # ==================== 12 ARCHITECTURAL FAMILIES ====================
+    # ==================== 16 ARCHITECTURAL FAMILIES ====================
 
     if arch == "full_bleed_scrim":
-        center = (0.5, 0.34) if (not wide and anchor == "bottom") else (0.5, 0.64) if (not wide and anchor == "top") else (0.5, 0.5)
-        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=center)
+        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
         box = (0, 0, w, h)
-        # Measure local brightness in text zone and calibrate scrim strength dynamically
-        probe_y = (round(h * 0.62), h) if anchor == "bottom" else (0, round(h * 0.38))
+        eff_anchor = anchor if wide else _quiet_vertical_anchor(fitted)
+        probe_y = (round(h * 0.62), h) if eff_anchor == "bottom" else (0, round(h * 0.38))
         zone_luma = float(np.asarray(fitted.crop((0, probe_y[0], w, probe_y[1])).resize((24, 24))).mean()) / 255.0
         scrim_strength = float(np.clip(0.84 + zone_luma * 0.12, 0.84, 0.95))
-        scene = _apply_directional_scrim(fitted, anchor, tint=(10, 12, 11), coverage=0.46 if not wide else 0.52, strength=scrim_strength)
+        scene = _apply_directional_scrim(fitted, eff_anchor, tint=(10, 12, 11), coverage=0.44 if not wide else 0.52, strength=scrim_strength)
         pal["ink"] = (255, 252, 246)
         pal["muted"] = (228, 224, 216)
         pal["paper"] = (14, 16, 15)
         pal = _enforce_contrast(pal)
         if wide:
             tw = round(w * 0.44)
-            text_box = (margin, margin, margin + tw, h - margin) if anchor == "left" else (w - margin - tw, margin, w - margin, h - margin)
-        elif anchor == "top":
-            text_box = (margin, top_pad, w - margin, round(h * 0.40))
+            text_box = (margin, margin, margin + tw, h - margin) if eff_anchor == "left" else (w - margin - tw, margin, w - margin, h - margin)
+        elif eff_anchor == "top":
+            text_box = (margin, top_pad, w - margin, round(h * 0.38))
         else:
             text_box = (margin, round(h * 0.59), w - margin, h - bot_pad)
         if image_layers is not None:
             image_layers.append(("stage", scene.copy(), (0, 0)))
-        v_al = "bottom" if (not wide and anchor == "bottom") else "top" if (not wide and anchor == "top") else "center"
+        v_al = "bottom" if (not wide and eff_anchor == "bottom") else "top" if (not wide and eff_anchor == "top") else "center"
         _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.098), pal, recipe, unit, v_align=v_al)
-        if price_tag and not protected_subject and anchor == "bottom" and not wide:
-            _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, top_pad, align="right")
+        if price_tag and not protected_subject and not wide:
+            py_badge = top_pad if eff_anchor == "bottom" else (h - bot_pad - round(unit * 0.072))
+            _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, py_badge, align="right")
+
+    elif arch == "full_bleed_clean":
+        # Pure breathing full-bleed photography (Aesop / Kinfolk style): auto-locks onto photo's quietest zone
+        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+        box = (0, 0, w, h)
+        quiet = anchor if wide else _quiet_vertical_anchor(fitted)
+        probe = (
+            fitted.crop((0, 0, w, round(h * 0.36))) if quiet == "top"
+            else fitted.crop((0, round(h * 0.64), w, h)) if quiet == "bottom"
+            else fitted.crop((0, 0, round(w * 0.45), h)) if quiet == "left"
+            else fitted.crop((round(w * 0.55), 0, w, h))
+        )
+        zone_luma = float(np.asarray(probe.resize((24, 24))).mean()) / 255.0
+        # Whisper-light gradient scrim only strong enough to ensure 7:1 crisp typography without darkening the subject
+        scrim_strength = float(np.clip(0.46 + zone_luma * 0.38, 0.48, 0.82))
+        scene = _apply_directional_scrim(fitted, quiet, tint=(12, 13, 12), coverage=0.40 if not wide else 0.48, strength=scrim_strength)
+        # Subtle bottom anchor feather for bottom colophon when title is on top
+        if not wide and quiet == "top":
+            scene = _apply_directional_scrim(scene, "bottom", tint=(12, 13, 12), coverage=0.18, strength=0.68)
+        pal["ink"] = (255, 253, 248)
+        pal["muted"] = (232, 228, 220)
+        pal["paper"] = (16, 17, 16)
+        pal = _enforce_contrast(pal)
+        if image_layers is not None:
+            image_layers.append(("stage", scene.copy(), (0, 0)))
+        if wide:
+            tw = round(w * 0.42)
+            text_box = (margin, margin, margin + tw, h - margin) if quiet == "left" else (w - margin - tw, margin, w - margin, h - margin)
+            _typeset_block(draw, ts, text_box, standard_blocks(tw, 0.096), pal, recipe, unit, v_align="center", align_override="left")
+            if price_tag and not protected_subject:
+                _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin if quiet == "left" else margin, margin, align="right" if quiet == "left" else "left")
+        elif quiet == "top":
+            # Headline floats cleanly in the quiet upper third; crisp cinema colophon anchors the bottom edge
+            head_blocks = standard_blocks(w - 2 * margin, 0.098, include_brand=True, include_sub=False, include_cta=False)
+            _typeset_block(draw, ts, (margin, top_pad, w - margin, round(h * 0.36)), head_blocks, pal, recipe, unit, v_align="top", align_override="left")
+            bot_blocks = []
+            if display_subtitle:
+                bot_blocks.append(("sub", display_subtitle, "body", 0.034, 0.0))
+            if footer and footer != display_subtitle:
+                bot_blocks.append(("cta", footer, "body", 0.028, 0.012))
+            if price_tag and not protected_subject:
+                _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, h - bot_pad - round(unit * 0.072), align="right", scale=0.92)
+                if bot_blocks:
+                    _typeset_block(draw, ts, (margin, round(h * 0.84), w - margin - round(unit * 0.34), h - bot_pad), bot_blocks, pal, recipe, unit, v_align="bottom", align_override="left")
+            elif bot_blocks:
+                _typeset_block(draw, ts, (margin, round(h * 0.84), w - margin, h - bot_pad), bot_blocks, pal, recipe, unit, v_align="bottom", align_override="left")
+        else:
+            _typeset_block(draw, ts, (margin, round(h * 0.60), w - margin, h - bot_pad), standard_blocks(w - 2 * margin, 0.096), pal, recipe, unit, v_align="bottom", align_override="left")
+            if price_tag and not protected_subject:
+                _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, top_pad, align="right")
+
+    elif arch == "full_bleed_poster_type":
+        # Magazine Cover Full-Bleed (Vogue / Kinfolk): monumental centered cover title on top + sleek bottom caption bar
+        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.54))
+        box = (0, 0, w, h)
+        scene = _apply_directional_scrim(fitted, "top", tint=(10, 11, 11), coverage=0.38 if not wide else 0.44, strength=0.76)
+        scene = _apply_directional_scrim(scene, "bottom", tint=(10, 11, 11), coverage=0.20 if not wide else 0.24, strength=0.82)
+        pal["ink"] = (255, 253, 248)
+        pal["muted"] = (232, 228, 222)
+        pal["paper"] = (12, 13, 13)
+        pal = _enforce_contrast(pal)
+        if image_layers is not None:
+            image_layers.append(("stage", scene.copy(), (0, 0)))
+        # Monumental cover headline in upper third
+        head_blocks = standard_blocks(w - 2 * margin, 0.110 if not wide else 0.100, include_brand=True, include_sub=False, include_cta=False)
+        _typeset_block(draw, ts, (margin, top_pad, w - margin, round(h * (0.37 if not wide else 0.45))), head_blocks, pal, recipe, unit, v_align="top", align_override="center")
+        # Sleek bottom hairline + cinema caption row
+        cap_y0 = round(h * (0.85 if not wide else 0.78))
+        draw.line((margin, cap_y0 - round(unit * 0.012), w - margin, cap_y0 - round(unit * 0.012)), fill=(255, 252, 246, 135), width=max(1, round(unit * 0.0018)))
+        bot_blocks = []
+        if display_subtitle:
+            bot_blocks.append(("sub", display_subtitle, "body", 0.034, 0.0))
+        if footer and footer != display_subtitle:
+            bot_blocks.append(("cta", footer, "body", 0.028, 0.010))
+        if price_tag and not protected_subject:
+            _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, cap_y0 + max(0, (h - bot_pad - cap_y0 - round(unit * 0.068)) // 2), align="right", scale=0.90)
+            cta_x1 = w - margin - round(unit * 0.34)
+        else:
+            cta_x1 = w - margin
+        if bot_blocks:
+            _typeset_block(draw, ts, (margin, cap_y0, max(margin + 120, cta_x1), h - bot_pad), bot_blocks, pal, recipe, unit, v_align="center", align_override="left")
+
+    elif arch == "full_bleed_band":
+        # Full-bleed edge-to-edge photo with an architectural frosted translucent editorial waist-band
+        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+        box = (0, 0, w, h)
+        quiet = _quiet_vertical_anchor(fitted) if not wide else "bottom"
+        if wide:
+            band_y0, band_y1 = round(h * 0.62), round(h * 0.92)
+        elif quiet == "top":
+            band_y0, band_y1 = top_pad + round(unit * 0.01), round(h * 0.34)
+        else:
+            band_y0, band_y1 = round(h * 0.64), h - bot_pad
+        band_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        bd = ImageDraw.Draw(band_layer)
+        bd.rectangle((0, band_y0, w, band_y1), fill=(*pal["paper"], 226))
+        bd.line((0, band_y0, w, band_y0), fill=(*pal["accent"], 235), width=max(2, round(unit * 0.0028)))
+        bd.line((0, band_y1, w, band_y1), fill=(*pal["accent"], 235), width=max(2, round(unit * 0.0028)))
+        scene = Image.alpha_composite(fitted.convert("RGBA"), band_layer).convert("RGB")
+        if image_layers is not None:
+            image_layers.append(("stage", scene.copy(), (0, 0)))
+        pad_y = round(unit * 0.026)
+        if price_tag and not protected_subject:
+            _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, band_y0 + max(pad_y, (band_y1 - band_y0 - round(unit * 0.072)) // 2), align="right", scale=0.94)
+            tx1 = w - margin - round(unit * 0.34)
+        else:
+            tx1 = w - margin
+        band_blocks = standard_blocks(max(120, tx1 - margin), 0.084 if not wide else 0.078, include_brand=True, include_sub=True, include_cta=True, sub_ratio=0.032)
+        _typeset_block(draw, ts, (margin, band_y0 + pad_y, max(margin + 120, tx1), band_y1 - pad_y), band_blocks, pal, recipe, unit, v_align="center", align_override="left")
+
+    elif arch == "full_bleed_editorial_edge":
+        # Full-bleed edge-to-edge photography + tall architectural frosted glass side column
+        fitted = ImageOps.fit(photo.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS, centering=(0.64 if anchor == "left" else 0.36, 0.5))
+        box = (0, 0, w, h)
+        col_w = round(w * (0.40 if wide else 0.45))
+        if anchor == "left":
+            col_rect = (0, 0, col_w, h)
+            seam_x = col_w
+            text_box = (margin, top_pad, col_w - round(margin * 0.7), h - bot_pad)
+        else:
+            col_rect = (w - col_w, 0, w, h)
+            seam_x = w - col_w
+            text_box = (w - col_w + round(margin * 0.7), top_pad, w - margin, h - bot_pad)
+        glass = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glass)
+        gd.rectangle(col_rect, fill=(*pal["paper"], 224))
+        gd.line((seam_x, 0, seam_x, h), fill=(*pal["accent"], 230), width=max(2, round(unit * 0.0028)))
+        scene = Image.alpha_composite(fitted.convert("RGBA"), glass).convert("RGB")
+        if image_layers is not None:
+            image_layers.append(("stage", scene.copy(), (0, 0)))
+        tw_col = text_box[2] - text_box[0]
+        if clean_brand:
+            _typeset_block(draw, ts, (text_box[0], top_pad, text_box[2], top_pad + round(h * 0.12)), [("brand", clean_brand, "body", 0.027, 0.0)], pal, recipe, unit, v_align="top", align_override="left")
+        mid_blocks = standard_blocks(tw_col, 0.086 if not wide else 0.090, include_brand=False, include_sub=True, include_cta=False, sub_ratio=0.030)
+        _typeset_block(draw, ts, (text_box[0], top_pad + round(h * 0.14), text_box[2], h - bot_pad - round(h * 0.18)), mid_blocks, pal, recipe, unit, v_align="center", align_override="left")
+        bot_y = h - bot_pad - round(h * 0.16)
+        if price_tag and not protected_subject:
+            badge_box = _draw_price_badge(draw, ts, price_tag, pal, unit, text_box[0], bot_y, align="left", scale=0.86)
+            cta_y0 = badge_box[3] + round(unit * 0.016)
+        else:
+            cta_y0 = bot_y
+        if footer:
+            _typeset_block(draw, ts, (text_box[0], cta_y0, text_box[2], h - bot_pad), [("cta", footer, "body", 0.027, 0.0)], pal, recipe, unit, v_align="top", align_override="left")
 
     elif arch == "floating_card":
         fitted, box = _fit_photo(photo, (w, h), protect_full=False)
         scene = fitted
         card_pad = round(unit * 0.042)
+        eff_anchor = anchor if wide else _quiet_vertical_anchor(fitted)
         if wide:
             cw = round(w * 0.45)
-            cx0 = margin if anchor == "left" else w - margin - cw
+            cx0 = margin if eff_anchor == "left" else w - margin - cw
             card_rect = (cx0, margin, cx0 + cw, h - margin)
-        elif anchor == "top":
+        elif eff_anchor == "top":
             card_rect = (margin, top_pad, w - margin, round(h * 0.42))
         else:
             card_rect = (margin, round(h * 0.57), w - margin, h - bot_pad)
@@ -711,8 +893,9 @@ def compose_editorial_poster(
         if image_layers is not None:
             image_layers.append(("stage", scene.copy(), (0, 0)))
         _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.092), pal, recipe, unit)
-        if price_tag and not protected_subject and anchor == "bottom" and not wide:
-            _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, top_pad, align="right")
+        if price_tag and not protected_subject and not wide:
+            py_badge = top_pad if eff_anchor == "bottom" else (h - bot_pad - round(unit * 0.072))
+            _draw_price_badge(draw, ts, price_tag, pal, unit, w - margin, py_badge, align="right")
 
     elif arch == "gallery_inset":
         g_pad = round(unit * 0.068)
@@ -1038,7 +1221,7 @@ def compose_editorial_poster(
         _typeset_block(draw, ts, text_box, standard_blocks(text_box[2] - text_box[0], 0.096), pal, recipe, unit)
 
     # Subtle Artlook-style corner registration ticks (only on light/dark paper layouts where clean)
-    if recipe["ornament"] == "corner_ticks" and arch not in ("full_bleed_scrim", "floating_card", "ribbon"):
+    if recipe["ornament"] == "corner_ticks" and arch not in FULL_BLEED_ARCHITECTURES and arch != "ribbon":
         tick = round(unit * 0.020)
         tc = (*pal["accent"], 175)
         lw = max(2, round(unit * 0.0022))
