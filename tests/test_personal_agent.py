@@ -391,6 +391,144 @@ class PersonalAgentTests(TestCase):
             "48元",
         )
 
+    def test_product_video_intent_and_source_gate(self):
+        from server.agent_planner import explicit_kind
+
+        self.assertEqual(explicit_kind("给店里做一条15秒竖屏口播"), "video")
+        self.assertEqual(explicit_kind("只写一段15秒竖屏口播稿"), "copy")
+        task = self.card("用一张商品图做15秒带货视频")
+        self.assertEqual(task["status"], "waiting_input")
+        self.assertIn("商品的照片", task["note"])
+        self.assertFalse(self.jobs(task))
+
+    def test_product_video_keeps_approved_sentences_when_camera_detail_changes(self):
+        from server.agent_planner import provided_copy
+        from server.campaign import storyboard
+        from server.creative import stated_positions
+
+        lines = ["这一杯，先别搅。", "看杯壁，深浅两种颜色。", "想喝吗？到店点一杯。"]
+        plan = {"productNarration": True, "output": {"duration": 15}, "profile": {},
+                "original": "抹茶拿铁的分层，语气轻快一点", "facts": "", "markedDetail":
+                {"label": "杯壁纹路", "region": [.3, .3, .7, .7], "source": "商家标注"}}
+        quote = {"items": [{"spec": {"plan": plan, "replacement": {}}}]}
+        copy = provided_copy("\n".join(lines), quote)
+        board = storyboard(plan, copy)
+        self.assertEqual([shot["narration"] for shot in board], lines)
+        self.assertTrue(all(shot.get("voiceStyle") == "bright" for shot in board))
+        self.assertEqual([(s["start"], s["end"]) for s in board], [(0, 3), (3, 10), (10, 15)])
+        self.assertFalse(stated_positions("杯壁上有抹茶和牛奶的分层。"))
+        self.assertEqual(stated_positions("抹茶在上，牛奶在下。"), {"上", "下"})
+        unmarked = storyboard({**plan, "markedDetail": None, "visualSource": "photograph"}, copy)
+        self.assertEqual(unmarked[1]["evidence"]["source"], "完整原图")
+        self.assertEqual(unmarked[1]["line"], lines[1])
+        self.assertEqual("".join(provided_copy("先看看。这里有两种颜色。到店试试！", quote)[key]
+                                 for key in ("title", "detailLine", "cta")), "先看看。这里有两种颜色。到店试试！")
+        with self.assertRaisesRegex(ValueError, "放不进"):
+            provided_copy("先看看。\n" + "镜头要读完整。" * 12 + "\n到店试试。", quote)
+
+    def test_background_revision_rejects_conflicting_offer_and_locks_the_script(self):
+        from server import revisions
+        from server.agent_planner import revision_request
+        plan = dict(output={"duration":15}, productNarration=True, merchantOffer={"weekday":"周五","amount":"19.90"})
+        spec = dict(kind="video", asset="original", plan=plan)
+        copy = dict(narration={"speaker":"Vivian"}, storyboard=[{"narration":"星期五，到店十九块九。"}])
+        intent = revision_request("只用H3替换动态背景，保留周五到店价19.90元。", 2)
+        self.assertEqual(intent["action"], "h3-background")
+        with self.assertRaisesRegex(ValueError, "必须与选定版本一致"):
+            revisions.prepare(spec, copy, intent["action"], None, instruction="周五到店价18.90元")
+        revisions.prepare(spec, copy, intent["action"], None, instruction=intent["instruction"])
+        self.assertEqual(spec["replacement"], copy)
+        self.assertEqual(plan["videoMotion"], "economy")
+
+    def test_blind_brief_to_economy_video_quote_preserves_selection_before_spending(self):
+        from pathlib import Path
+        from server.agent_planner import task_input
+
+        catalog = self.c.get("/api/agent/blind-briefs").json["briefs"]
+        brief = next(b for b in catalog if b["id"] == "food-01")
+        self.assertIn("19.90", brief["creationDraft"])
+        self.assertNotIn("18.90", brief["creationDraft"])
+        self.assertEqual(task_input("不要用H3生成背景", {})["videoMotion"], "local")
+        source = Path(studio.__file__).parent / "scenes/matcha.webp"
+        with source.open("rb") as stream:
+            asset = self.c.post("/api/assets", data={"image": (stream, source.name)}).json
+        options = {"asset": asset["id"], "blindBriefId": brief["id"],
+                   "ownCopy": "先别搅。\n看杯里的分层。\n周五到店，19.90元。"}
+        with patch("server.video_api.economy_config") as configure:
+            task = self.card(brief["creationDraft"] + "\n用H3生成动态背景。", options=options)
+            self.assertEqual(task["status"], "quoted", task)
+            self.assertEqual(task["videoMotion"], "economy")
+            configure.assert_called_once()
+        with studio.db() as c:
+            signed = c.execute("SELECT quote FROM agent_task WHERE id=?", (task["id"],)).fetchone()[0]
+        video = next(item["spec"]["plan"] for item in studio.quotes.loads(signed)["items"]
+                     if item["spec"]["kind"] == "video")
+        self.assertEqual((video["blindBriefId"], video["videoMotion"]), (brief["id"], "economy"))
+        with patch("server.video_api.economy_config", side_effect=ValueError("H3 连接不可用")):
+            refused = self.approve(task)
+            self.assertEqual(refused.status_code, 400)
+            self.assertIn("H3", refused.json["error"])
+        self.assertFalse(self.jobs(task))
+        self.assertEqual(self.c.get("/api/state").json["credits"], self.state["credits"])
+
+    def test_ending_preview_is_private_and_selection_invalidates_previous_approval(self):
+        from pathlib import Path
+        from server.agent_planner import revision_request
+
+        intent = revision_request("把抹茶拿铁的周五价从18.90改成19.90，只把片尾换成轻快口吻。", 1)
+        self.assertEqual((intent["action"], intent["product"]), ("edit", "抹茶拿铁"))
+        source = Path(__file__).resolve().parents[1] / "server/scenes/matcha.webp"
+        with source.open("rb") as stream:
+            asset = self.c.post("/api/assets", data={"image": (stream, source.name)}).json
+        task = self.card("用抹茶拿铁的商品图做15秒带货视频。周五到店价18.90元。",
+                         options={"asset":asset["id"], "ownCopy":"先别搅。\n杯里能看到两层。\n周五到店，18.90元。"})
+        self.assertEqual(task["merchantOffer"]["amount"], "18.90")
+        self.assertEqual(task["status"], "quoted", task)
+        url = "agent/tasks/" + task["id"]
+
+        def audition(cache, shots, style):
+            key = ("0" if style == "warm" else "1") * 64
+            directory = cache / key
+            directory.mkdir(parents=True)
+            (directory / "voice.wav").write_bytes(b"audition")
+            return dict(takeKey=key, text=shots[-1]["narration"], seconds=1.9)
+
+        with patch("server.agent_endings.preview_ending", side_effect=audition) as synth:
+            batch = post(self.c, url + "/ending-previews", revision=task["revision"]).json["takes"]
+            again = post(self.c, url + "/ending-previews", revision=task["revision"]).json["takes"]
+            self.assertEqual(batch, again)
+            self.assertEqual(synth.call_count, 2)
+        with self.c.get(batch[0]["url"]) as response:
+            self.assertEqual(response.data, b"audition")
+        self.assertEqual(studio.app.test_client().get(batch[0]["url"]).status_code, 404)
+        self.assertEqual(post(self.c, url + "/ending-choice", revision=task["revision"], style="invalid").status_code, 400)
+        selected = post(self.c, url + "/ending-choice", revision=task["revision"], style="bright").json
+        self.assertEqual(selected["selectedEnding"], "bright")
+        self.assertNotEqual(selected["quoteId"], task["quoteId"])
+        self.assertEqual(self.approve(task).status_code, 409)
+        self.assertEqual(self.jobs(task), [])
+        self.assertEqual(self.c.get("/api/state").json["credits"], self.state["credits"])
+
+    def test_missing_product_voice_keeps_the_quote_and_balance(self):
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[1] / "server/scenes/matcha.webp"
+        with source.open("rb") as stream:
+            asset = self.c.post("/api/assets", data={"image": (stream, source.name)}).json
+        task = self.card("用这张商品图做一条15秒竖屏带货视频",
+                         options={"asset": asset["id"], "ownCopy": "先看看。\n沿着杯壁看。\n到店尝尝。"})
+        self.assertTrue(task["productNarration"])
+        with patch.dict(os.environ, TRUPIC_FILM_VOICE_ENGINE="kokoro",
+                        TRUPIC_FILM_VOICE_MODEL=str(studio.DATA / "missing-voice")):
+            reply = self.approve(task)
+        self.assertEqual(reply.status_code, 400)
+        self.assertIn("Kokoro", reply.json["error"])
+        self.assertFalse(self.jobs(task))
+        self.assertEqual(self.detail()["tasks"][-1]["status"], "quoted")
+        state = self.c.get("/api/state").json
+        self.assertEqual(state["credits"], self.state["credits"])
+        self.assertFalse(state["reservations"])
+
     def test_new_video_uses_legacy_hook_and_approved_budget(self):
         request = dict(
             brief="制作一条茶馆短片，介绍新到的茶叶",

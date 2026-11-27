@@ -1,0 +1,578 @@
+{
+  "before": {
+    "work": "9c88116b108f4f0897abb319ef874181",
+    "version": 1,
+    "inputAudioRate": 24000,
+    "pictureSHA256": "96e5084a09f51a7597ced799a75e5fcd558ece41b1f02f73637af840d9970614",
+    "unchangedVoiceWindowSeconds": [
+      0,
+      10.0
+    ],
+    "voicePrefixSHA256": "397eebcc604e22b19925af6cd6de51376fd51f267b03f03de7620c5005e80275",
+    "voiceEndingSHA256": "50e82f83b1df6a586dd1fff05eebd157f7411133fde200a696f1b71826bea26d",
+    "musicPrefixSHA256": "6e0179a5a77c7f0bcc2aab6e7905e7661ec79b70038678893bd1be9e180dded7",
+    "masterSHA256": "7d3d168250e51b79739f5cb1fd81a4fe480e7badb1a00da26c64d6e704ff1370",
+    "media": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 720,
+          "height": 1280,
+          "r_frame_rate": "24/1",
+          "nb_frames": "360"
+        },
+        {
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "r_frame_rate": "0/0",
+          "nb_frames": "705"
+        }
+      ],
+      "format": {
+        "duration": "15.000000"
+      }
+    },
+    "narration": [
+      "这一杯，先别搅。",
+      "你看，抹茶和牛奶分了层。",
+      "周五到店，18.90元。"
+    ],
+    "captions": [
+      {
+        "shotIndex": 0,
+        "start": 0.075,
+        "end": 1.861,
+        "text": "这一杯，先别搅。",
+        "layer": "spoken-1.png",
+        "startFrame": 2,
+        "endFrame": 45
+      },
+      {
+        "shotIndex": 1,
+        "start": 3.075,
+        "end": 6.947,
+        "text": "你看，抹茶和牛奶分了层。",
+        "layer": "spoken-2.png",
+        "startFrame": 74,
+        "endFrame": 167
+      },
+      {
+        "shotIndex": 2,
+        "start": 10.075,
+        "end": 13.954,
+        "text": "周五到店，18.90元。",
+        "layer": "spoken-3.png",
+        "startFrame": 242,
+        "endFrame": 335
+      }
+    ],
+    "quality": [
+      {
+        "detail": "文案、画面与分镜共用本次商品资料；原图像素和成品文字在导出后复检。",
+        "label": "事实检查"
+      },
+      {
+        "detail": "共同围绕「从生活瞬间切入」。使用商家上传的照片。",
+        "label": "文案与画面"
+      },
+      {
+        "detail": "已校验 PNG 文件及 720 × 1280 像素画幅及文案文件。",
+        "label": "导出检查"
+      },
+      {
+        "detail": "周五 18.90 元 · 活动海报、发布配文、成片口播和两种字幕已分别读回。",
+        "label": "活动价核对"
+      },
+      {
+        "detail": "FFmpeg",
+        "label": "短片渲染引擎"
+      },
+      {
+        "detail": "已检查导出 PNG及 MP4 全部 360 帧，抽查各镜头首、中、尾帧的画面、文字边界、字号与对比度。",
+        "label": "成品视觉审核"
+      },
+      {
+        "detail": "按成品中的商品位置逐区比对原图。已单独比对商家框选的标识。",
+        "label": "商品原图比对"
+      },
+      {
+        "detail": "Qwen3-VL-2B-Instruct · 封面：该图像中可以清晰地看到一个玻璃杯，里面装有抹茶拿铁，杯中混合着绿色的抹茶和白色的牛奶，杯中还有冰块。；第1镜：该图像中可以清晰地看到一杯装有抹茶拿铁的玻璃杯，杯中液体呈现出绿色和白色相间的漩涡状纹理，杯中还有冰块。；第2镜：画面清晰地展示了饮品的分层效果，可以清楚看到抹茶和牛奶混合后形成的绿色与白色漩涡，符合「抹茶拿铁分层的饮品」的描述。；第3镜：该图像中清晰可见一杯抹茶拿铁，其玻璃杯中盛有绿色的抹茶和白色的牛奶，杯中还有冰块，杯身和杯底的细节都清晰可见。",
+        "label": "画面语义复核"
+      },
+      {
+        "detail": "hiccai-poster · Editorial 遮挡 · 围绕「抹茶拿铁」：将最能代表活动的实物作为前景，与标题形成前后层次，商品标记始终可辨。",
+        "label": "海报美术指导"
+      },
+      {
+        "detail": "活动丝印 · 实际用字：Barlow Condensed Bold、Source Han Sans CN Medium。",
+        "label": "版式与用字"
+      },
+      {
+        "detail": "qwen3-mlx · Vivian · 温暖亲切 · 3 段同步字幕。",
+        "label": "逐镜口播"
+      },
+      {
+        "detail": "已核实 720 × 1280、15 秒、24 fps 画面和声音轨道。",
+        "label": "短片检查"
+      }
+    ],
+    "factReadback": {
+      "burnedCaptions": [
+        {
+          "readback": [
+            {
+              "box": [
+                233,
+                1109,
+                467,
+                1155
+              ],
+              "confidence": 0.9981,
+              "text": "这一杯，先别搅。"
+            }
+          ],
+          "second": 0.958,
+          "titleReadback": []
+        },
+        {
+          "readback": [
+            {
+              "box": [
+                177,
+                1111,
+                526,
+                1153
+              ],
+              "confidence": 0.9986,
+              "text": "你看，抹茶和牛奶分了层。"
+            }
+          ],
+          "second": 5.0,
+          "titleReadback": [
+            {
+              "box": [
+                31,
+                170,
+                634,
+                261
+              ],
+              "confidence": 0.9976,
+              "text": "抹茶和牛奶分了层"
+            }
+          ]
+        },
+        {
+          "readback": [
+            {
+              "box": [
+                212,
+                1109,
+                490,
+                1154
+              ],
+              "confidence": 0.9992,
+              "text": "周五到店，18.90元。"
+            }
+          ],
+          "second": 12.0,
+          "titleReadback": [
+            {
+              "box": [
+                36,
+                1189,
+                231,
+                1228
+              ],
+              "confidence": 0.9959,
+              "text": "18.90元·周五"
+            }
+          ]
+        }
+      ],
+      "offer": {
+        "amount": "18.90",
+        "channel": "到店",
+        "currency": "CNY",
+        "product": "抹茶拿铁",
+        "weekday": "周五"
+      },
+      "post": "这一杯，先别搅。\n\n你看，抹茶和牛奶分了层。\n\n周五到店，18.90元。",
+      "poster": {
+        "filename": "offer-poster.png",
+        "readback": [
+          {
+            "box": [
+              69,
+              39,
+              310,
+              101
+            ],
+            "confidence": 0.9999,
+            "text": "周五到店价"
+          },
+          {
+            "box": [
+              55,
+              114,
+              372,
+              222
+            ],
+            "confidence": 0.931,
+            "text": "￥18.90"
+          }
+        ]
+      },
+      "spoken": "这一杯,先别搅。你看,抹茶和牛奶分了层。周五到店,十八块九。",
+      "srt": "这一杯，先别搅。  你看，抹茶和牛奶分了层。  周五到店，18.90元。"
+    },
+    "merchantOffer": {
+      "amount": "18.90",
+      "channel": "到店",
+      "currency": "CNY",
+      "product": "抹茶拿铁",
+      "weekday": "周五"
+    },
+    "shotStyles": [
+      "warm",
+      "warm",
+      "warm"
+    ],
+    "narrator": {
+      "provider": "qwen3-mlx",
+      "speaker": "Vivian"
+    }
+  },
+  "after": {
+    "work": "9c88116b108f4f0897abb319ef874181",
+    "version": 2,
+    "inputAudioRate": 24000,
+    "pictureSHA256": "96e5084a09f51a7597ced799a75e5fcd558ece41b1f02f73637af840d9970614",
+    "unchangedVoiceWindowSeconds": [
+      0,
+      10.0
+    ],
+    "voicePrefixSHA256": "397eebcc604e22b19925af6cd6de51376fd51f267b03f03de7620c5005e80275",
+    "voiceEndingSHA256": "6d7500a03b039836bdc5c4a69a14c2f634c2c1b029a9307d467df6f311153ec0",
+    "musicPrefixSHA256": "6e0179a5a77c7f0bcc2aab6e7905e7661ec79b70038678893bd1be9e180dded7",
+    "masterSHA256": "f88299330b540755d9db91e7e918df2d5e6f5942cf88616c63a5c0f44d0e369b",
+    "media": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 720,
+          "height": 1280,
+          "r_frame_rate": "24/1",
+          "nb_frames": "360"
+        },
+        {
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "r_frame_rate": "0/0",
+          "nb_frames": "705"
+        }
+      ],
+      "format": {
+        "duration": "15.000000"
+      }
+    },
+    "narration": [
+      "这一杯，先别搅。",
+      "你看，抹茶和牛奶分了层。",
+      "周五到店，19.90元。"
+    ],
+    "captions": [
+      {
+        "shotIndex": 0,
+        "start": 0.075,
+        "end": 1.861,
+        "text": "这一杯，先别搅。",
+        "layer": "spoken-1.png",
+        "startFrame": 2,
+        "endFrame": 45
+      },
+      {
+        "shotIndex": 1,
+        "start": 3.075,
+        "end": 6.947,
+        "text": "你看，抹茶和牛奶分了层。",
+        "layer": "spoken-2.png",
+        "startFrame": 74,
+        "endFrame": 167
+      },
+      {
+        "shotIndex": 2,
+        "start": 10.075,
+        "end": 12.901,
+        "text": "周五到店，19.90元。",
+        "layer": "spoken-3.png",
+        "startFrame": 242,
+        "endFrame": 310
+      }
+    ],
+    "quality": [
+      {
+        "detail": "文案、画面与分镜共用本次商品资料；原图像素和成品文字在导出后复检。",
+        "label": "事实检查"
+      },
+      {
+        "detail": "共同围绕「从生活瞬间切入」。使用商家上传的照片。",
+        "label": "文案与画面"
+      },
+      {
+        "detail": "已校验 PNG 文件及 720 × 1280 像素画幅及文案文件。",
+        "label": "导出检查"
+      },
+      {
+        "detail": "周五 19.90 元 · 活动海报、发布配文、成片口播和两种字幕已分别读回。",
+        "label": "活动价核对"
+      },
+      {
+        "detail": "FFmpeg",
+        "label": "短片渲染引擎"
+      },
+      {
+        "detail": "已检查导出 PNG及 MP4 全部 360 帧，抽查各镜头首、中、尾帧的画面、文字边界、字号与对比度。",
+        "label": "成品视觉审核"
+      },
+      {
+        "detail": "按成品中的商品位置逐区比对原图。已单独比对商家框选的标识。",
+        "label": "商品原图比对"
+      },
+      {
+        "detail": "Qwen3-VL-2B-Instruct · 封面：该图像中可以清晰地看到一个玻璃杯，里面装有抹茶拿铁，杯中混合着绿色的抹茶和白色的牛奶，杯中还有冰块。；第1镜：该图像中可以清晰地看到一杯装有抹茶拿铁的玻璃杯，杯中液体呈现出绿色和白色相间的漩涡状纹理，杯中还有冰块。；第2镜：画面清晰地展示了饮品的分层效果，可以清楚看到抹茶和牛奶混合后形成的绿色与白色漩涡，符合「抹茶拿铁分层的饮品」的描述。；第3镜：该图像中清晰可见一杯抹茶拿铁，其玻璃杯中盛有绿色的抹茶和白色的牛奶，杯中还有冰块，杯身和杯底的细节都清晰可见。",
+        "label": "画面语义复核"
+      },
+      {
+        "detail": "hiccai-poster · Editorial 遮挡 · 围绕「抹茶拿铁」：将最能代表活动的实物作为前景，与标题形成前后层次，商品标记始终可辨。",
+        "label": "海报美术指导"
+      },
+      {
+        "detail": "活动丝印 · 实际用字：Barlow Condensed Bold、Source Han Sans CN Medium。",
+        "label": "版式与用字"
+      },
+      {
+        "detail": "qwen3-mlx · Vivian · 分镜调节 · 3 段同步字幕。",
+        "label": "逐镜口播"
+      },
+      {
+        "detail": "已核实 720 × 1280、15 秒、24 fps 画面和声音轨道。",
+        "label": "短片检查"
+      }
+    ],
+    "factReadback": {
+      "burnedCaptions": [
+        {
+          "readback": [
+            {
+              "box": [
+                233,
+                1109,
+                467,
+                1155
+              ],
+              "confidence": 0.9981,
+              "text": "这一杯，先别搅。"
+            }
+          ],
+          "second": 0.958,
+          "titleReadback": []
+        },
+        {
+          "readback": [
+            {
+              "box": [
+                177,
+                1111,
+                526,
+                1153
+              ],
+              "confidence": 0.9986,
+              "text": "你看，抹茶和牛奶分了层。"
+            }
+          ],
+          "second": 5.0,
+          "titleReadback": [
+            {
+              "box": [
+                31,
+                170,
+                634,
+                261
+              ],
+              "confidence": 0.9976,
+              "text": "抹茶和牛奶分了层"
+            }
+          ]
+        },
+        {
+          "readback": [
+            {
+              "box": [
+                212,
+                1109,
+                490,
+                1154
+              ],
+              "confidence": 0.9992,
+              "text": "周五到店，19.90元。"
+            }
+          ],
+          "second": 11.479,
+          "titleReadback": [
+            {
+              "box": [
+                37,
+                1190,
+                230,
+                1226
+              ],
+              "confidence": 0.9861,
+              "text": "19.90元·周五"
+            }
+          ]
+        }
+      ],
+      "offer": {
+        "amount": "19.90",
+        "channel": "到店",
+        "currency": "CNY",
+        "product": "抹茶拿铁",
+        "weekday": "周五"
+      },
+      "post": "这一杯，先别搅。\n\n你看，抹茶和牛奶分了层。\n\n周五到店，19.90元。",
+      "poster": {
+        "filename": "offer-poster.png",
+        "readback": [
+          {
+            "box": [
+              69,
+              39,
+              310,
+              101
+            ],
+            "confidence": 0.9999,
+            "text": "周五到店价"
+          },
+          {
+            "box": [
+              55,
+              114,
+              372,
+              221
+            ],
+            "confidence": 0.9327,
+            "text": "￥19.90"
+          }
+        ]
+      },
+      "spoken": "这一杯,先别搅。你看,抹茶和牛奶分了层。星期五,到店十九块九。",
+      "srt": "这一杯，先别搅。  你看，抹茶和牛奶分了层。  周五到店，19.90元。"
+    },
+    "merchantOffer": {
+      "amount": "19.90",
+      "channel": "到店",
+      "currency": "CNY",
+      "product": "抹茶拿铁",
+      "weekday": "周五"
+    },
+    "shotStyles": [
+      "warm",
+      "warm",
+      "bright"
+    ],
+    "narrator": {
+      "provider": "qwen3-mlx",
+      "speaker": "Vivian"
+    },
+    "identicalDecodedPrefixFrames": 240,
+    "selectedAuditionIsExactEndingPCM": true
+  },
+  "baseCharge": {
+    "quoted": 12,
+    "before": 120,
+    "after": 108,
+    "jobs": [
+      "707347ffe7624eb48671830be0b1ad8b",
+      "8785ad8a678442faa0bb4c40d7b23145"
+    ],
+    "identicalJobIdsOnThreeSubmissions": true,
+    "reservations": [
+      {
+        "action": "consume",
+        "amount": 12,
+        "created": "2026-11-27T03:02:52+00:00",
+        "job": "8785ad8a678442faa0bb4c40d7b23145"
+      },
+      {
+        "action": "reserve",
+        "amount": 12,
+        "created": "2026-11-27T03:02:22+00:00",
+        "job": "8785ad8a678442faa0bb4c40d7b23145"
+      }
+    ],
+    "debits": [
+      {
+        "created": "2026-11-27T03:02:52+00:00",
+        "delta": -12,
+        "note": "宣传短片 · 这一杯，先别搅。"
+      }
+    ]
+  },
+  "revisionCharge": {
+    "quoted": 1,
+    "before": 108,
+    "after": 107,
+    "jobs": [
+      "a3572552b8714e729a06eedd0c778317"
+    ],
+    "identicalJobIdsOnThreeSubmissions": true,
+    "reservations": [
+      {
+        "action": "consume",
+        "amount": 1,
+        "created": "2026-11-27T03:03:20+00:00",
+        "job": "a3572552b8714e729a06eedd0c778317"
+      },
+      {
+        "action": "reserve",
+        "amount": 1,
+        "created": "2026-11-27T03:03:07+00:00",
+        "job": "a3572552b8714e729a06eedd0c778317"
+      }
+    ],
+    "debits": [
+      {
+        "created": "2026-11-27T03:03:20+00:00",
+        "delta": -1,
+        "note": "宣传短片 · 这一杯，先别搅。"
+      }
+    ]
+  },
+  "auditions": [
+    {
+      "style": "warm",
+      "file": "warm.wav",
+      "sha256": "f3f7dc7f618aac8cbecdd31fd4f6e25bbb2789edc777f30d6c5dad2726c1e169",
+      "readback": "星期五 到 店 十九块九。",
+      "duration": 4.935,
+      "waveDurationSeconds": 4.935,
+      "confirmedText": "周五到店，19.90元。"
+    },
+    {
+      "style": "bright",
+      "file": "bright.wav",
+      "sha256": "7e88c6d3ccecbb9ceff219d861fe9f0a3e6243a17ee619445394182086185fa8",
+      "readback": "星期五,到店十九块九。",
+      "duration": 2.911,
+      "waveDurationSeconds": 2.911,
+      "confirmedText": "周五到店，19.90元。"
+    }
+  ],
+  "previewCharged": 0
+}

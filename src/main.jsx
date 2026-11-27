@@ -65,6 +65,7 @@ import { Promotion } from "./Growth.jsx";
 import { MerchantShop } from "./Commerce.jsx";
 import WorkHistory from "./WorkHistory.jsx";
 import PersonalAgent from "./PersonalAgent.jsx";
+import BlindWorkspace from "./BlindReview.jsx";
 import MiniProgramPreview from "./MiniProgramPreview.jsx";
 import AutoCreate from "./AutoCreate.jsx";
 import {Support} from "./Support.jsx";
@@ -1064,6 +1065,7 @@ function App() {
                       </a>
                     )}
                     {versionData.editSource && <a className="secondary" href={versionData.editSource} download>下载剪辑素材包</a>}
+                    {versionData.subtitles && <a className="secondary" href={versionData.subtitles} download>下载口播字幕</a>}
                     {versionData.designSource && <a className="secondary" href={versionData.designSource} download>下载分层 SVG</a>}
                     <a className="primary" href={versionData.download} download>
                       <Download size={16} />
@@ -1076,7 +1078,7 @@ function App() {
                     {work.kind === "video" ? (
                       <video
                         key={versionData.video}
-                        controls muted
+                        controls muted={!versionData.narration}
                         playsInline
                         src={versionData.video}
                         poster={versionData.poster}
@@ -1130,6 +1132,7 @@ function App() {
                                       {s.start}–{s.end} 秒 · {s.camera}
                                     </small>
                                     <strong>{s.line}</strong>
+                                    {s.narration && s.narration !== s.line && <span>口播　{s.narration}</span>}
                                     {s.caption && <span>{s.caption}</span>}
                                     {s.evidence && <span>{s.purpose}</span>}
                                   </li>
@@ -1909,4 +1912,23 @@ function WorkCard({ work: w, onClick }) {
     </button>
   );
 }
-createRoot(document.getElementById("root")).render(<App />);
+function WorkspaceRouter() {
+  const [path, setPath] = useState(route);
+  useEffect(() => {
+    const changed = () => setPath(route());
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, []);
+  const [page, id, version] = path.split("/");
+  const selected = React.useMemo(() => page === "blind-setup" && id ? { work:id, version:Number(version) } : null,
+    [page,id,version]);
+  if (page === "blind-review" || page === "blind-setup") {
+    return <BlindWorkspace key={path} caseId={page === "blind-review" ? id : null} preselected={selected}
+      onUse={brief => {
+        sessionStorage.setItem("trupic.blindBriefDraft", JSON.stringify({id:brief.id,kind:brief.kind,text:brief.creationDraft}));
+        location.hash = "home";
+      }}/>;
+  }
+  return <App />;
+}
+createRoot(document.getElementById("root")).render(<WorkspaceRouter />);

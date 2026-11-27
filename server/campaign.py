@@ -198,6 +198,26 @@ def storyboard(plan, copy, asset=None):
             nearby = [t for t in candidates if lower <= t <= upper]
             if nearby:
                 shots[index]["end"] = shots[index+1]["start"] = min(nearby,key=lambda t: abs(t-end))
+    if plan.get("productNarration"):
+        # The reviewed copy stays authoritative even when preflight finds a more
+        # precise product region and changes the visual description of shot two.
+        request = "。".join((plan.get("original", ""), plan.get("facts", "")))
+        styles = r"轻快|活泼|明亮|兴奋|温柔|温暖|亲切|克制|平静"
+        direction = ""
+        for clause in re.split(r"[，。；、,;\n]", request):
+            if re.search(r"不要|不用|别用|不想|避免", clause):
+                continue
+            match = re.search(rf"(?:声音|口吻|口播|配音|语气|读得|说得|语调)(?:要|改成|更|再|稍微|可以|一点|\s)*({styles})"
+                              rf"|({styles})(?:一点|一些)?的?(?:声音|口吻|口播|配音|语气|语调)", clause)
+            if match:
+                direction = match[1] or match[2]
+        for shot, field in zip(shots, ("title", "detailLine", "cta")):
+            shot["narration"] = copy.get(field, "").strip()
+            evidence = shot.get("evidence") or {}
+            if evidence.get("source") == "完整原图" and shot["line"] == evidence.get("label"):
+                shot["line"] = shot["narration"]
+            if direction:
+                shot["voiceStyle"] = "bright" if direction in ("轻快", "活泼", "明亮", "兴奋") else "warm"
     return shots
 
 

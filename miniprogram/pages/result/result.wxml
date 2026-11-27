@@ -1,7 +1,7 @@
 <view class="page"><block wx:if="{{state==='complete'}}">
 <view class="heading">{{isMoment?"今天的朋友圈":version.title}}</view>
 <image wx:if="{{work.kind==='poster' && media}}" class="{{isMoment?'moment-image':'poster'}}" src="{{media}}" mode="{{isMoment?'aspectFit':'widthFix'}}"/>
-<video wx:if="{{work.kind==='video' && media}}" class="movie" src="{{media}}" controls muted/>
+<video wx:if="{{work.kind==='video' && media}}" class="movie" src="{{media}}" controls muted="{{!version.narration}}"/>
 <view class="panel"><text selectable>{{version.body}}</text><view wx:if="{{version.cta}}" class="spaced">{{version.cta}}</view></view>
 <button wx:if="{{work.kind!=='copy'}}" class="primary" disabled="{{busy || !media}}" loading="{{busy}}" bindtap="save">保存到相册</button>
 <button class="secondary spaced" bindtap="copy">复制文案</button>

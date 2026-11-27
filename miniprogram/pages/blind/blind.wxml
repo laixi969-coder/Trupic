@@ -1,0 +1,48 @@
+<view class="page">
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <view wx:if="{{!review && busy}}" class="sub">正在打开评审…</view>
+  <block wx:if="{{!review && groupBriefs.length}}">
+    <view class="heading">商家盲评</view>
+    <view class="panel">
+      <view class="label">评审简报</view>
+      <picker range="{{groups}}" value="{{sector}}" bindchange="groupChanged"><view class="line">{{groups[sector]}} · {{groupBriefs.length}} 条</view></picker>
+      <picker range="{{groupBriefs}}" range-key="title" value="{{briefIndex}}" bindchange="briefChanged"><view class="line">{{groupBriefs[briefIndex].title}} ›</view></picker>
+      <view>{{groupBriefs[briefIndex].brief}}</view><view class="sub">Trupic 编写的试评简报，使用前请核对本店资料。</view>
+      <button class="secondary" disabled="{{busy}}" bindtap="useBrief">带入营销助理创作</button>
+      <view class="label">本店已交付作品</view>
+      <picker range="{{works}}" range-key="title" value="{{workIndex}}" bindchange="workChanged"><view class="line">{{works[workIndex].title || '选择作品'}} ›</view></picker>
+      <picker wx:if="{{versions.length}}" range="{{versions}}" range-key="label" value="{{versionIndex}}" bindchange="versionChanged"><view class="line">{{versions[versionIndex].label}} ›</view></picker>
+      <picker wx:if="{{bases.length}}" range="{{bases}}" range-key="label" value="{{baseIndex}}" bindchange="baseChanged"><view class="line">对照版本　{{bases[baseIndex].label}} ›</view></picker>
+      <button class="primary" disabled="{{busy || workIndex < 0}}" bindtap="start">进入匿名评审</button>
+    </view>
+    <view class="panel"><view class="label">本店评审记录</view><view class="sub">已回应 {{summary.answered}} / {{summary.issued}} 次；符合统计条件的首稿直接采纳 {{summary.firstDraftPublish}} / {{summary.firstDraftResponses}} 份。</view>
+      <button wx:for="{{reviews}}" wx:key="id" class="line" data-id="{{item.id}}" bindtap="resume">{{item.title}} · {{item.status==='submitted'?'查看结果':'继续盲评'}}</button></view>
+  </block>
+  <block wx:if="{{review}}">
+    <view class="heading">{{review.brief.title}}</view><view class="sub">{{review.source==='demo'?'演示评审':'商家评审'}} · {{review.brief.reviewerPrompt || review.brief.goal}}</view>
+    <view wx:for="{{samples}}" wx:key="slot" class="panel">
+      <view class="label">作品 {{item.slot}}</view>
+      <video wx:if="{{review.kind==='video'}}" src="{{item.local}}" id="film{{item.slot}}" data-slot="{{item.slot}}" bindplay="played" controls object-fit="contain"/>
+      <image wx:elif="{{review.kind==='poster'}}" mode="widthFix" src="{{item.local}}"/><text wx:else selectable>{{item.text}}</text>
+      <block wx:if="{{!review.reveal}}"><view>这份作品，你愿意直接发吗？</view>
+        <view class="actions"><button class="{{item.answer==='yes'?'picked':''}}" data-slot="{{item.slot}}" data-answer="yes" bindtap="rate">可以直接发</button>
+          <button class="{{item.answer==='no'?'picked':''}}" data-slot="{{item.slot}}" data-answer="no" bindtap="rate">需要修改</button></view>
+        <textarea wx:if="{{item.answer==='no'}}" data-slot="{{item.slot}}" value="{{item.reason}}" bindinput="reason" maxlength="400" placeholder="退稿原因（必填）"/>
+      </block>
+    </view>
+    <view wx:if="{{!review.reveal}}" class="panel">
+      <block wx:if="{{samples.length>1}}"><view>如果现在发布，你会选哪版？</view>
+        <view class="actions"><button wx:for="{{picks}}" wx:key="key" disabled="{{!allRated}}" class="{{preference===item.key?'picked':''}}" data-key="{{item.key}}" bindtap="choose">{{item.label}}</button></view>
+        <input type="digit" value="{{minutes}}" bindinput="minutesChanged" placeholder="亲自改稿分钟数（选填）"/></block>
+      <button class="primary" disabled="{{busy || !readyToSubmit}}" bindtap="submit">提交并揭晓</button>
+    </view>
+    <view wx:else class="panel"><view class="label">评审结果</view><view wx:if="{{preferred}}">你的选择　{{preferred}}</view>
+      <view wx:for="{{shown}}" wx:key="slot" class="result"><view>作品 {{item.slot}} · {{item.role}} v{{item.version}} · {{item.label}}</view>
+        <view wx:if="{{item.visualEngine}}">画面制作方式　{{item.visualEngine}}</view>
+        <view wx:if="{{item.charge}}">模型实际费用　{{item.charge}}</view>
+        <view wx:if="{{item.reason}}">退稿原因　{{item.reason}}</view><view>实际扣分　{{item.points}}</view><view>提出需求至交付　{{item.elapsed}}</view><view>确认制作至交付　{{item.rendering}}</view></view>
+      <view wx:if="{{review.reveal.revisionSlot}}">商家亲自改稿　{{minutesLabel}}</view>
+      <view wx:if="{{review.reveal.factChanges.length}}" class="sub">两次交付的活动条件有变化，本次偏好同时受到活动条件和创作表现的影响。</view>
+    </view>
+  </block>
+</view>

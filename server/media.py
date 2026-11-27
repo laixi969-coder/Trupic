@@ -1,8 +1,11 @@
+import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import wave
+from contextlib import nullcontext
 from .formats import output_spec
 from pathlib import Path
 
@@ -277,6 +280,48 @@ def soundtrack(path, optical=False, duration=9, cuts=(0,3,6)):
         f.writeframes((signal * 32767).astype("<i2").tobytes())
 
 
+def caption_layer(cue, entry, typesetter):
+    """Place a spoken phrase in free screen space throughout its camera move."""
+    from .visual_review import camera_at, map_box, LayoutOverflow
+
+    width, height = entry["size"]
+    short = min(width, height)
+    typesetter.editable_text = None
+    typesetter.audit_text = []
+    # Measure the actual wrapped glyphs before positioning their contrast plate.
+    max_width = round(width * (0.4 if width > height else 0.86))
+    label = Image.new("RGBA", (max_width, round(height * 0.12)))
+    typesetter.draw(
+        ImageDraw.Draw(label), cue["text"], (0, 0, *label.size),
+        short * 0.042, "body", "#ffffff", align="center",
+    )
+    ink, mask, font_size, words = typesetter.audit_text[0]
+    label = label.crop(ink)
+    pad = max(3, round(short * 0.009))
+    chip_w, chip_h = label.width + 2 * pad, label.height + 2 * pad
+    avoid = [box for box, *_ in entry["text"]]
+    if entry["subjectBounds"]:
+        for tick in range(entry["frameCount"]):
+            avoid.append(map_box(entry["subjectBounds"], camera_at(entry, tick), entry["size"]))
+    centers = (0.25, 0.5, 0.75) if width > height else (0.5, 0.27, 0.73)
+    for y in (0.885, 0.94, 0.815, 0.735, 0.34, 0.27, 0.17, 0.085, 0.53, 0.63, 0.43):
+        for x in centers:
+            left = max(pad, min(width - chip_w - pad, round(width * x - chip_w / 2)))
+            top = max(pad, min(height - chip_h - pad, round(height * y - chip_h / 2)))
+            right, bottom = left + chip_w, top + chip_h
+            if any(left < r and l < right and top < b and t < bottom for l, t, r, b in avoid):
+                continue
+            overlay = Image.new("RGBA", (width, height))
+            ImageDraw.Draw(overlay).rounded_rectangle(
+                (left, top, right, bottom), radius=pad, fill=(16, 16, 18, 222)
+            )
+            pos = (left + pad, top + pad)
+            overlay.alpha_composite(label, dest=pos)
+            samples = [((*pos, pos[0] + label.width, pos[1] + label.height), mask, font_size, words)]
+            return overlay, samples
+    raise LayoutOverflow("本镜字幕与商品或标题重叠，请缩短口播或调整构图。")
+
+
 def render(
     folder,
     plan,
@@ -319,9 +364,22 @@ def render(
     layers = {}
     shot_titles = {}
     video_renderer = None
+    narrated = kind == "video" and asset_path is not None and output.get("duration") == 15 and plan.get("productNarration") is True
+    narration = None
     pace = plan.get("promptBrief", {}).get("reading", {}).get("pace", "steady")
     cloud_frames = Path(plan["videoBackground"]) if plan.get("videoBackground") else None
-    if cloud_frames:
+    if plan.get("_filmRevision", {}).get("sourceEdit"):
+        cloud_frames = None
+        plan = {k: v for k, v in plan.items() if k != "videoBackground"}
+    base_archive = plan.get("_filmRevision", {}).get("backgroundArchive")
+    if base_archive:
+        from . import film_background
+        if not narrated or not cloud_frames:
+            raise ValueError("背景对照缺少原商品短片或已生成的动态背景。")
+        # Derive the protected region using the original layout. A fresh cloud layout
+        # can change product scale, typography and camera composition.
+        plan = {k: v for k, v in plan.items() if k != "videoBackground"}
+    elif cloud_frames:
         background = cloud_frames / "001.jpg"
     silhouette = None
     if asset_path and asset_path.name == "subject.png":
@@ -434,24 +492,73 @@ def render(
             tmp = Path(tmp)
             size = dims
             shots = copy.get("storyboard") or storyboard(plan, copy, asset_path)
-            drift = {"quiet": 0.0006, "steady": 0.0009, "brisk": 0.0012}[pace]
-            for i, shot in enumerate(shots):
-                movement = drift * (1.6 if i == 0 else 1.2 if i == 1 else 0.65) if directed else drift
-                image = draw_frame(i + 1, shot, movement)
-                frames[-1].update(startFrame=shot["start"]*24, frameCount=frame_count(shot))
-                if not directed:
-                    image.save(tmp / f"shot{i}.png")
             soundtrack(
                 tmp / "track.wav", optical=bool(plan.get("posterArt", {}).get("optics")),
                 duration=shots[-1]["end"], cuts=[s["start"] for s in shots]
             )
+            cues = []
+            if narrated:
+                from .film_voice import render_narration
+
+                if base_archive:
+                    narration, original_titles, original_captions = film_background.locked_tracks(tmp, base_archive, shots, output)
+                elif plan.get("_filmRevision"):
+                    from .merchant_voice_revision import render_revision
+                    narration = render_revision(tmp, shots, tmp / "track.wav", plan["_filmRevision"], dims)
+                else:
+                    narration = render_narration(tmp, shots, tmp / "track.wav", duration=output["duration"])
+                cues = narration["cues"]
+            caption_layers = []
+            drift = {"quiet": 0.0006, "steady": 0.0009, "brisk": 0.0012}[pace]
+            for i, shot in enumerate(shots):
+                movement = drift * (1.6 if i == 0 else 1.2 if i == 1 else 0.65) if directed else drift
+                display = shot
+                shot_cues = [c for c in cues if c["shotIndex"] == i]
+                if shot_cues:
+                    def normalize(s):
+                        return re.sub(r"[\W_]+", "", s or "").casefold()
+
+                    spoken = {normalize(c["text"]) for c in shot_cues} | {normalize(shot["narration"])}
+                    display = {**shot, **{k: "" for k in ("line", "caption") if normalize(shot.get(k)) in spoken}}
+                image = draw_frame(i + 1, display, movement)
+                if base_archive:
+                    plate, foreground, _ = layers[i+1]
+                    layers[i+1] = plate, foreground, original_titles[i]
+                frames[-1].update(startFrame=shot["start"]*24, frameCount=frame_count(shot))
+                for cue in shot_cues:
+                    overlay, samples = caption_layer(cue, frames[-1], typesetter)
+                    if base_archive:
+                        overlay = original_captions[len(caption_layers)]
+                    item = dict(
+                        cue, layer=f"spoken-{len(caption_layers) + 1}.png",
+                        startFrame=math.ceil(cue["start"] * 24 - 1e-8),
+                        endFrame=math.ceil(cue["end"] * 24 - 1e-8),
+                    )
+                    caption_layers.append((item, overlay))
+                    frames[-1].setdefault("spoken", []).append(
+                        dict(item, preview=overlay.resize((160, 160)), samples=samples)
+                    )
+                if not directed:
+                    image.save(tmp / f"shot{i}.png")
             if directed:
                 def motion(bg, fg, index, tick):
                     if cloud_frames:
                         with Image.open(cloud_frames / f"{shots[index-1]['start']*24+tick+1:03d}.jpg") as cloud:
+                            if base_archive:
+                                result = film_background.swap_frame(read_master(), cloud.convert("RGB"), masks[index],
+                                                                    shots[index-1], index, tick, pace)
+                                sample = result.resize((80, 80))
+                                title = original_titles[index-1].resize(sample.size)
+                                sample.paste(title, mask=title.getchannel("A"))
+                                frames[index]["sequence"].append(sample)
+                                return result
                             bg = video_stage(cloud)
                     return moving_frame(bg, fg, index, camera_tick(tick, frame_count(shots[index-1])), pace=pace)
-                if cloud_frames:
+                if base_archive:
+                    masks = {i:film_background.photo_mask(dims, frames[i]["product"], asset_path) for i in layers}
+                    for i in layers:
+                        frames[i]["sequence"] = []
+                elif cloud_frames:
                     for index, (bg, fg, overlay) in layers.items():
                         sequence = []
                         for tick in range(frame_count(shots[index-1])):
@@ -459,10 +566,12 @@ def render(
                             expected.paste(overlay, mask=overlay.getchannel("A"))
                             sequence.append(expected.resize((80,80)))
                         frames[index]["sequence"] = sequence
-                video_renderer = encode(
-                    layers, folder, tmp / "track.wav", dims, shots,
-                    motion, shot_titles, pace, dynamic=bool(cloud_frames),
-                )
+                with (film_background.master_frames(tmp / "picture.mp4", dims) if base_archive else nullcontext()) as read_master:
+                    video_renderer = encode(
+                        layers, folder, narration["mix"] if narration else tmp / "track.wav", dims, shots,
+                        motion, shot_titles, pace, dynamic=bool(cloud_frames),
+                        narration=narration, captions=caption_layers,
+                    )
             else:
                 video_renderer = "FFmpeg"
                 camera = f"zoompan=z='1+{drift}*mod(on,72)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=72:s={size[0]}x{size[1]}:fps=24"
@@ -504,6 +613,8 @@ def render(
     return dict(
         frames=frames,
         videoRenderer=video_renderer,
+        **({"narration": {key: narration[key] for key in ("provider", "speaker", "cues", "style", "styleApplied")
+                          if key in narration}} if narration else {}),
         fonts=sorted(typesetter.used),
         fallback=typesetter.fallback_used,
         poster="poster.png",

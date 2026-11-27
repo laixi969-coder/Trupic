@@ -63,6 +63,7 @@ Page({
     error: "",
     asset: null,
     assetPhoto: "",
+    blindBriefId: "",
     focusedTask: "",
     workspaceReady: false,
   },
@@ -87,7 +88,7 @@ Page({
       if (this.workspace !== home.workspace) {
         this.ref = null;
         this.workspace = home.workspace;
-        this.setData({ chat: null, turns: [], asset: null, assetPhoto: "", text: "", focusedTask: "", showHistory: false });
+        this.setData({ chat: null, turns: [], asset: null, assetPhoto: "", blindBriefId: "", text: "", focusedTask: "", showHistory: false });
       }
       this.setData({ history: home.conversations, showHistory: route.mode === "history" });
       const saved = wx.getStorageSync("trupic.agent." + this.workspace);
@@ -114,7 +115,8 @@ Page({
     const entry = this.entryDraft;
     this.entryDraft = null;
     if (entry && entry.workspace === this.workspace) {
-      this.setData({ text: entry.text || "", asset: entry.asset || null, assetPhoto: entry.photo || "" });
+      this.setData({ text: entry.text || "", asset: entry.asset || null, assetPhoto: entry.photo || "",
+        blindBriefId: entry.blindBriefId || "" });
       if (entry.send && this.data.text.trim()) await this.send();
     }
     if (route.mode === "call" && this.visible && (!entry || entry.workspace === this.workspace))
@@ -122,6 +124,7 @@ Page({
   },
   onHide() {
     this.visible = false;
+    this.stopEnding();
     clearTimeout(this.timer);
     this.serial++;
     this.switchAudioOff();
@@ -193,7 +196,7 @@ Page({
     this.switchAudioOff();
     return this.act(async (valid) => {
       await this.create(valid);
-      if (valid()) this.setData({ text: "", asset: null, assetPhoto: "", focusedTask: "", showHistory: false });
+      if (valid()) this.setData({ text: "", asset: null, assetPhoto: "", blindBriefId: "", focusedTask: "", showHistory: false });
     });
   },
   history() {
@@ -214,7 +217,7 @@ Page({
       const chat = await api.request("agent/conversations/" + e.currentTarget.dataset.id + "/visit", "POST", {});
       if (!valid()) return;
       this.display(chat);
-      this.setData({ showHistory: false, text: "", asset: null, assetPhoto: "", focusedTask: "" });
+      this.setData({ showHistory: false, text: "", asset: null, assetPhoto: "", blindBriefId: "", focusedTask: "" });
     });
   },
   async sendText(text, extra = {}, { preserveDraft = false } = {}) {
@@ -225,9 +228,10 @@ Page({
       const storage = "trupic.agent.message." + c.id;
       const payload = {
         text,
-        options: this.data.asset
-          ? { asset: this.data.asset.id, assetMode: "original" }
-          : {},
+        options: {
+          ...(this.data.asset ? { asset: this.data.asset.id, assetMode: "original" } : {}),
+          ...(this.data.blindBriefId && !preserveDraft && !extra.action ? { blindBriefId:this.data.blindBriefId } : {}),
+        },
         ...extra,
       };
       if (!extra.action && c.tasks.length) {
@@ -251,6 +255,7 @@ Page({
       this.ref = null;
       const newest = reply.tasks.find((task) => !c.tasks.some((old) => old.id === task.id));
       this.setData({ text: preserveDraft ? this.data.text : "", asset: null, assetPhoto: "",
+        blindBriefId: preserveDraft ? this.data.blindBriefId : "",
         focusedTask: newest?.id || (reply.id === c.id ? this.data.focusedTask : "") });
       return reply;
     });
@@ -311,11 +316,13 @@ Page({
     });
   },
   stage(e) {
-    const { card, action } = e.currentTarget.dataset;
+    const { card, action, style } = e.currentTarget.dataset;
+    this.stopEnding();
     this.switchAudioOff();
     return this.act(async (valid) => {
       await api.request("agent/tasks/" + card.id + "/" + action, "POST", {
         revision: card.revision,
+        ...(action === "ending-choice" ? { style } : {}),
         quoteId: card.quoteId,
         confirmedCost: card.cost,
         approvalType: "production",
@@ -324,6 +331,49 @@ Page({
       if (!valid()) return;
       const chat = await api.request("agent/conversations/" + this.data.chat.id);
       if (valid()) this.display(chat);
+    });
+  },
+  stopEnding() {
+    if (this.endingAudio) this.endingAudio.destroy();
+    this.endingAudio = null;
+  },
+  playEnding(e) {
+    this.switchAudioOff();
+    this.stopEnding();
+    return this.act(async (valid) => {
+      const local = await api.download(e.currentTarget.dataset.url);
+      if (!valid()) return;
+      const player = wx.createInnerAudioContext();
+      this.endingAudio = player;
+      player.onEnded(() => { if (this.endingAudio === player) this.stopEnding(); });
+      player.onError(() => {
+        if (this.endingAudio === player) {
+          this.stopEnding();
+          this.setData({ error: "片尾未能播放，请再试一次。" });
+        }
+      });
+      player.src = local;
+      player.play();
+    });
+  },
+  viewOfferPoster(e) {
+    return this.act(async (valid) => {
+      const local = await api.download(e.currentTarget.dataset.url);
+      if (valid()) wx.previewImage({ urls: [local] });
+    });
+  },
+  showOfferCheck(e) {
+    const record = e.currentTarget.dataset.proof;
+    wx.showModal({ title: "交付核对记录", showCancel: false, content: [
+      "活动海报　" + record.poster, "成片听写　" + record.spoken,
+      "画面字幕　" + record.burned, "字幕文件　" + record.subtitles, "发布配文　" + record.post,
+    ].join("\n") });
+  },
+  copyPost(e) {
+    return this.act(async (valid) => {
+      const local = await api.download(e.currentTarget.dataset.url);
+      const text = wx.getFileSystemManager().readFileSync(local, "utf8");
+      if (valid()) wx.setClipboardData({ data: text });
     });
   },
   requote(e) {
@@ -364,6 +414,13 @@ Page({
       action: "new",
       workRef: { id: work, version: Number(version) || 1 },
     });
+  },
+  blindReview(e) {
+    this.switchAudioOff();
+    this.stopEnding();
+    const { work, version } = e.currentTarget.dataset;
+    const query = work ? "?work="+encodeURIComponent(work)+"&version="+Number(version || 1) : "";
+    wx.navigateTo({url:"/pages/blind/blind"+query});
   },
   decideMemory(e) {
     const cand = this.data.candidate;

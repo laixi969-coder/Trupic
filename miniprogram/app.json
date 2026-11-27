@@ -10,7 +10,8 @@
     "pages/quick-confirm/quick-confirm",
     "pages/run/run",
     "pages/shop/shop",
-    "pages/agent/agent"
+    "pages/agent/agent",
+    "pages/blind/blind"
   ],
   "window": {
     "navigationBarTitleText": "响指出片 Trupic",

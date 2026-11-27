@@ -8,6 +8,7 @@ from fractions import Fraction
 import re
 import subprocess
 import threading
+import zipfile
 
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
@@ -234,7 +235,21 @@ def camera_at(entry, tick):
     return zoom_crop(entry["size"], 1 + tick * entry["movement"])
 
 
+def spoken_at(entry, tick):
+    frame = entry.get("startFrame", 0) + tick
+    return next((cue for cue in entry.get("spoken", ()) if cue["startFrame"] <= frame < cue["endFrame"]), None)
+
+
 def preview_at(entry, tick):
+    base = picture_preview(entry, tick)
+    if cue := spoken_at(entry, tick):
+        base = base.copy()
+        layer = cue["preview"].resize(base.size)
+        base.paste(layer, mask=layer.getchannel("A"))
+    return base
+
+
+def picture_preview(entry, tick):
     if "sequence" in entry:
         return entry["sequence"][tick]
     ref = entry.get("plate", entry["preview"])
@@ -330,6 +345,8 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
             or any(np.sqrt(np.mean(block**2)) < 12 for block in np.array_split(pcm, 3))
         ):
             issues.append("短片音轨缺失或镜头配乐静音")
+        if layout.get("narration"):
+            issues.extend(check_narrated_audio(dest, pcm, layout["narration"]["cues"]))
         # Check every encoded frame against its planned shot, including between the detailed samples.
         decoded = subprocess.run(
             [
@@ -374,19 +391,21 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
                         break
     for index, entry in enumerate(frames):
         dims = entry["size"]
-        actual_text = "".join(s[3] for s in entry["text"])
+        actual_text = "".join(s[3] for s in entry["text"]) + "".join(c["text"] for c in entry.get("spoken", ()))
         expected_lines = (
             [copy["title"], copy.get("terms")]
             if index == 0
             else [copy["storyboard"][index - 1][key] for key in ("line", "caption")]
         )
-        normalize = lambda value: re.sub(r"\s+", "", value or "")
+        normalize = lambda value: re.sub(r"[\W_]+" if entry.get("spoken") else r"\s+", "", value or "")
         if any(normalize(v) not in normalize(actual_text) for v in expected_lines if v):
             issues.append(
                 ("海报" if not index else f"镜头 {index}")
                 + " · 标题、字幕或交易条件不完整"
             )
-        for tick in [0] if index == 0 else [0, entry.get("frameCount",72)//2, entry.get("frameCount",72)-1]:
+        sample_ticks = {0} if index == 0 else {0, entry.get("frameCount",72)//2, entry.get("frameCount",72)-1}
+        sample_ticks.update((cue["startFrame"] + cue["endFrame"] - 1)//2 - entry["startFrame"] for cue in entry.get("spoken", ()))
+        for tick in sorted(sample_ticks):
             label = (
                 "海报"
                 if not index
@@ -406,9 +425,10 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
             got = np.asarray(image.resize((80, 80)), dtype=float)
             if np.abs(expected - got).mean() > 14 or got.std() < 3:
                 issues.append(label + " · 导出画面缺失或与分镜不符")
+            spoken = spoken_at(entry, tick)
             reason = text_check(
                 image,
-                entry["text"],
+                [*entry["text"], *(spoken["samples"] if spoken else ())],
                 (0, 0, *dims) if "overlay" in entry else zoom,
                 dims,
             )
@@ -439,6 +459,36 @@ def inspect_export(dest, layout, original, asset, region, copy, output):
                 if reason:
                     issues.append(label + " · " + reason)
     return issues
+
+
+def check_narrated_audio(dest, actual, cues):
+    """Compare the delivered AAC with the approved voice mix over each spoken phrase."""
+    try:
+        with zipfile.ZipFile(dest / "edit.zip") as bundle:
+            if bundle.read("captions.srt") != (dest / "captions.srt").read_bytes():
+                return ["交付字幕与剪辑包不一致"]
+            for stem in ("voice.wav", "music-ducked.wav"):
+                if bundle.getinfo(stem).file_size <= 44:
+                    return ["剪辑包中的口播或配乐音轨为空"]
+            mix = bundle.read("soundtrack.wav")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return ["口播剪辑包缺少音轨或字幕"]
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", "pipe:0", "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+        input=mix, capture_output=True, timeout=20,
+    )
+    reference = np.frombuffer(result.stdout, dtype="<i2").astype(float)
+    if result.returncode or not cues:
+        return ["商品口播音轨或字幕缺失"]
+    for cue in cues:
+        start, end = (round(cue[key] * 8000) for key in ("start", "end"))
+        x, y = reference[start:end], actual[start:end]
+        if not len(x) or len(x) != len(y):
+            return ["商品口播音轨未覆盖对应字幕"]
+        scale = np.linalg.norm(x) * np.linalg.norm(y)
+        if not scale or np.dot(x, y) / scale < 0.85:
+            return ["成片音轨与口播字幕对应的混音不一致"]
+    return []
 
 
 def compact_local_vision(cfg):
@@ -791,6 +841,7 @@ def classify_repair(issues, review=None, has_generated_bg=False):
 
 
 def _preflight_cache_key(cfg, spec, original, locate):
+    from .campaign import evidence_clauses
     try:
         mtime = original.stat().st_mtime_ns
     except OSError:
@@ -804,6 +855,8 @@ def _preflight_cache_key(cfg, spec, original, locate):
             mtime,
             spec.get("identityRegion"),
             spec.get("plan", {}).get("original", ""),
+            spec["kind"],
+            evidence_clauses(spec["plan"]) if locate else None,
         ],
         ensure_ascii=False,
         sort_keys=True,
@@ -851,16 +904,17 @@ def preflight_with(cfg, spec, folder):
     product_poster = spec["kind"] == "poster" and (poster_reading(plan, {}) or {}).get("first") == "product"
     locate = (spec["kind"] == "video" or product_poster) and not plan.get("markedDetail")
     endpoint = hashlib.sha256(cfg["url"].encode()).hexdigest()[:16]
+    original = folder / spec["asset"] / "original.png"
+    cache_key = _preflight_cache_key(cfg, spec, original, locate)
     if (
-        previous.get("model") == name
+        previous.get("inputKey") == cache_key
+        and previous.get("model") == name
         and previous.get("provider") == cfg["provider"]
         and previous.get("endpoint") == endpoint
         and (not locate or previous.get("detailChecked"))
     ):
         return
-    original = folder / spec["asset"] / "original.png"
     cache_file = folder / spec["asset"] / "preflight_cache.json"
-    cache_key = _preflight_cache_key(cfg, spec, original, locate)
     if cache_file.is_file():
         try:
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -918,6 +972,7 @@ def preflight_with(cfg, spec, folder):
     if not result["ok"]:
         raise ValueError("请补充商品原图：" + result["reason"][:200])
     plan["sourceReview"] = {
+        "inputKey": cache_key,
         "model": name,
         "provider": cfg["provider"],
         "endpoint": endpoint,

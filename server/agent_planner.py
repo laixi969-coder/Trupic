@@ -3,7 +3,7 @@
 import json
 import re
 
-from . import auto_creation, context_memory, providers
+from . import auto_creation, context_memory, providers, merchant_offer
 from .formats import RATIOS
 
 KINDS = {"poster": "营销海报", "copy": "推广文案", "video": "宣传短片"}
@@ -22,6 +22,8 @@ OPTIONS = {
     "assetConfirmed",
     "references",
     "videoReference",
+    "videoMotion",
+    "blindBriefId",
     "visualDetail",
     "ratio",
     "duration",
@@ -46,9 +48,11 @@ def ordinal(text):
 
 
 def explicit_kind(text):
-    if re.search(r"(只|仅)(做|写|要)?(一[份条段])?(文案|文字)|纯文案", text):
+    if medium := re.match(r"^创作形式[：:]\s*(文案|海报|视频)\s*(?:\n|$)", text):
+        return {"文案": "copy", "海报": "poster", "视频": "video"}[medium[1]]
+    if re.search(r"(只|仅)(做|写|要)?(一[份条段篇])?(文案|文字|口播稿)|(?:只要|写)(?:一[份条段篇])?.{0,12}口播稿|纯文案", text):
         return "copy"
-    if re.search(r"视频|短片|短视频|动态海报", text):
+    if re.search(r"视频|短片|动态海报|口播片|(?:做|拍|生成|制作).{0,16}口播|(?:竖屏|横屏|秒)口播", text):
         return "video"
     if re.search(r"海报|主图|封面|组图|图片", text):
         return "poster"
@@ -62,6 +66,17 @@ PRICE_EDIT = re.compile(
 
 
 def correct_price(values, locked, text):
+    change = merchant_offer.parse_change(text)
+    if change and (change["weekday"] or not PRICE_EDIT.fullmatch(text.strip())):
+        offer = merchant_offer.confirmed_offer(values.get("brief"), values.get("facts"), values.get("promotedItem"))
+        if not offer:
+            raise ValueError("请先给出要修改的原活动日期和价格。")
+        scoped = {"merchantOffer":offer, "original":values.get("brief", ""), "facts":values.get("facts", "")}
+        merchant_offer.update_copy_and_plan(scoped, locked or {}, change)
+        values.update(brief=scoped["original"], facts=scoped["facts"])
+        if values.get("ownCopy"):
+            values["ownCopy"] = merchant_offer.replace_amount(values["ownCopy"], change)
+        return True
     correction = PRICE_EDIT.fullmatch(text.strip())
     if not correction:
         return False
@@ -98,6 +113,17 @@ def task_input(text, options, previous=None):
         ):
             raise ValueError("创作选项格式无效。")
     values.update(options)
+    if "blindBriefId" in options:
+        from .merchant_blind import briefs
+        if options["blindBriefId"] not in briefs():
+            raise ValueError("请选择现有评审简报。")
+    if "videoMotion" in options and options["videoMotion"] not in ("local", "economy"):
+        raise ValueError("请选择本地商品运镜或 H3 经济动态背景。")
+    if "videoMotion" not in options:
+        if re.search(r"(?:不用|不要(?:使用|用)?|别用|无需(?:使用)?)\s*(?:海螺\s*)?H3(?![a-z0-9])", text, re.I):
+            values["videoMotion"] = "local"
+        elif re.search(r"(?:使用|用|选|采用)\s*(?:海螺\s*)?H3(?![a-z0-9])", text, re.I):
+            values["videoMotion"] = "economy"
     kind = options.get("kind") or explicit_kind(text) or values.get("kind") or "poster"
     if kind not in KINDS:
         raise ValueError("请选择文案、海报或视频。")
@@ -131,6 +157,23 @@ def provided_copy(text, plan):
     first, _, rest = text.strip().partition("\n")
     spec = plan["items"][0]["spec"]
     result = dict(spec["replacement"])
+    if any(i["spec"]["plan"].get("productNarration") for i in plan["items"]):
+        # Explicit line breaks are the merchant's shot boundaries. A paragraph
+        # can also be supplied as ordinary punctuated sentences.
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) == 1:
+            lines = re.findall(r"[^。！？!?；;]+[。！？!?；;]*", lines[0]) or lines
+        opening, *rest = lines
+        closing = rest.pop() if rest else ""
+        middle = "".join(rest)
+        if not middle and not closing and len(opening) > 12:
+            middle, opening = opening, ""
+        if any(len(line.strip()) > limit for line, limit in zip((opening, middle, closing), (15, 36, 24))):
+            raise ValueError("这段定稿放不进 15 秒。请把开场、商品细节和收尾各写一行短句，或选择较长的视频。")
+        result.update(title=opening.strip(), body=middle.strip(), detailLine=middle.strip(),
+                      cta=closing.strip(), engine="商家定稿")
+        merchant_offer.bind_script(result, plan.get("shared", {}).get("merchantOffer"), supplied=True)
+        return result
     # A long paragraph is body copy. Do not silently truncate a merchant's supplied text.
     if len(first) > 40:
         first, rest = "", text.strip()
@@ -227,13 +270,48 @@ def plan_task(services, c, tenant, project, values):
     )
     if result.get("shared") is not None:
         result["shared"]["recalledMemories"] = recalled
+        if any(i["spec"]["plan"].get("productNarration") for i in result["items"]):
+            product = values.get("promotedItem") or profile.get("product") or result["shared"]["product"]
+            offer = merchant_offer.confirmed_offer(values.get("brief"), values.get("facts"), product)
+            if offer:
+                result["shared"]["merchantOffer"] = offer
+                for item in result["items"]:
+                    item["spec"]["plan"]["merchantOffer"] = offer
     for entry in result.get("items", []):
         spec = entry["spec"]
         spec["plan"]["capability"] = CAPABILITIES[spec["kind"]]
+        if values.get("blindBriefId"):
+            spec["plan"]["blindBriefId"] = values["blindBriefId"]
     return result
 
 
 def revision_request(text, base):
+    if re.search(r"(?<![a-z0-9])H3(?![a-z0-9])", text, re.I) and "背景" in text:
+        if re.search(r"(?:不用|不要(?:使用|用)?|无需(?:使用)?|别用)\s*H3", text, re.I):
+            raise ValueError("本次操作会调用 H3，请确认需要替换动态背景。")
+        if re.search(r"改价|调价|改为\s*\d|改成\s*\d|(?:更换|重录|重写|修改)(?:字幕|配音|口播|文案)", text):
+            raise ValueError("背景对照会锁定原商品、台词与价格，请单独提交其他修改。")
+        return dict(action="h3-background", base=base, instruction=text)
+    if re.search(r"片尾|结尾|最后一[句镜]", text) and re.search(r"口吻|语气|读法|配音|试听", text):
+        from .merchant_offer import parse_change
+        price_clause = None
+        product = ""
+        for clause in re.split(r"[，,。；;\n]+", text):
+            clause = clause.strip()
+            if not clause:
+                continue
+            named = re.fullmatch(r"(?:把|将)?(.{1,60}?)的((?:周|星期|礼拜).+)", clause)
+            candidate = named[2] if named else clause
+            if parse_change(candidate):
+                if price_clause:
+                    raise ValueError("请一次修改一个活动价。")
+                price_clause = candidate
+                product = named[1] if named else ""
+            elif not (re.fullmatch(r"(?:再|请|并|然后|只|把|将|帮我|让我|先|用|给我|想|听|试|换|改|成|为|的|一下|两种|两版|一个|更|一点|轻快|明亮|活泼|温暖|温和|亲切|自然|声音|片尾|结尾|最后一句|最后一镜|口吻|语气|配音|读法|试听|读|说)+", clause)
+                      or re.fullmatch(r"保留原[画图]面?|保留前两镜|核对海报、口播、字幕和配文", clause)):
+                raise ValueError("请写明原价、新价和片尾读法，其他修改可以单独提交。")
+        return dict(action="edit" if price_clause else "ending", base=base,
+                    instruction=price_clause, product=product, endingPreview=True)
     action = "edit"
     if re.search(r"太长|短一点|精简|缩短", text):
         action = "shorten"
@@ -263,6 +341,8 @@ def revision_plan(services, c, tenant, values):
         cp.update(result["changes"])
     locked = {k: cp.get(k, "") for k in ("title", "body", "cta")}
     brief = dict(deliveries=["作品修改"], facts=[], shortOptions=result["options"])
+    if result.get("filmScope"):
+        brief.update(result["filmScope"])
     return result, brief, locked
 
 

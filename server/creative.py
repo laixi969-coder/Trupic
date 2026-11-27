@@ -252,17 +252,24 @@ def unsupported_copy(content, known):
     )
 
 
+def stated_positions(text):
+    # “杯壁上有纹路” describes a surface; “抹茶在上” asserts where an ingredient sits.
+    positions = re.findall(r"(?:在|位于)([上下左右])(?=[，。！？、,!?\s]|$)|([上下左右])(?:方|侧|层|部|边|面)", text)
+    return {short or full for short, full in positions}
+
+
 def generate_copy(plan, variant=0, *, revision_note=""):
     base = copy_inputs(plan)
     if not model.engine_name():
         raise ValueError("请在模型平台启用文字模型后生成文案。")
     spec = wenan.spec_line(plan)
-    skill = wenan.instructions(plan)
-    prompt = (
-        skill
-        + "\n按上述 Skill 和商家要求写成品。只返回 JSON 对象，含 title、body、cta、detailLine。cta 在无需行动引导时可为空。detailLine 为可选的短片中段字幕。目标篇幅按用户要求和当前交付尺寸。"
-    )
-    prompt += " 根据素材重新创作，标题不要照抄整句需求，明确指定的标题和规格须逐字保留。"
+    narrated = plan.get("productNarration") is True
+    if narrated:
+        prompt = wenan.PRODUCT_NARRATION
+    else:
+        prompt = (wenan.instructions(plan) + "\n按上述 Skill 和商家要求写成品。只返回 JSON 对象，含 title、body、cta、detailLine。"
+                  "cta 在无需行动引导时可为空。detailLine 为可选的短片中段字幕。目标篇幅按用户要求和当前交付尺寸。"
+                  " 根据素材重新创作，标题不要照抄整句需求，明确指定的标题和规格须逐字保留。")
     poster = plan.get("kind") == "poster"
     locked = LOCKED.search(plan["original"])
     action = wenan.conversion(plan)
@@ -271,27 +278,38 @@ def generate_copy(plan, variant=0, *, revision_note=""):
         prompt += wenan.POSTER_HEADINGS
     if creative_title:
         prompt += wenan.POSTER_CREATIVE_BRIEF
-    if wenan.wants_social_currency(plan):
+    if not narrated and wenan.wants_social_currency(plan):
         prompt += " " + wenan.SOCIAL_CURRENCY_CLOSED_LOOP
-    if not action and not poster:
+    if not action and not poster and not narrated:
         prompt += " 本次没有指定交易动作，cta 留空。片名和商品名是资料，除非用户明确指定标题，否则可以另写创意标题。"
-    elif action and not action["channel"]:
+    elif action and not action["channel"] and not narrated:
         prompt += " 未提供渠道，不得写点击、私信、扫码或拨打电话。"
     if revision_note:
-        prompt += " 上一稿需要重写：" + revision_note + "。围绕用户提供的主题重新写标题和正文，保留明确指定的字句和交易条件。不要复述创作需求。"
+        prompt += " 上一稿需要重写：" + revision_note
+        prompt += ("。围绕原图重写三句台词，保留商家指定字句、价格和适用条件。"
+                   if narrated else "。围绕用户提供的主题重新写标题和正文，保留明确指定的字句和交易条件。不要复述创作需求。")
     if spec:
         prompt += " 本次只交一行已给定的规格，放入 title，body 与 cta 留空。"
     try:
         directions = plan.get("promptBrief", {}).get("prompts", {})
-        val, engine = model.ask(
-            prompt,
-            {
-                "plan": {k: plan[k] for k in ("original", "facts", "profile", "sourceReview", "goal", "kind") if k in plan},
-                "writingBrief": directions.get("copy", ""),
-                "filmBrief": directions.get("video", ""),
-                "variation": variant,
-            },
-        )
+        inputs = {
+            "plan": {k: plan[k] for k in ("original", "facts", "profile", "sourceReview", "goal", "kind") if k in plan},
+            "writingBrief": directions.get("copy", ""),
+            "filmBrief": directions.get("video", ""),
+            "variation": variant,
+        }
+        if narrated:
+            source = plan.get("sourceReview", {})
+            inputs = {
+                "商家需求": plan["original"], "商家补充": plan["facts"],
+                "商品资料": {k: plan["profile"][k] for k in ("product", "facts") if plan["profile"].get(k)},
+                "原图所见": source.get("reason", ""),
+                "商品细节": (plan.get("markedDetail") or source.get("visualDetail") or {}).get("label", ""),
+            }
+        val, engine = model.ask(prompt, inputs)
+        if narrated:
+            spoken_fields = {"title": "开场台词", "detailLine": "细节台词", "cta": "收尾台词", "body": "发布配文"}
+            val = {key: val.get(label) for key, label in spoken_fields.items()}
         if poster and isinstance(val.get("title"), str) and isinstance(val.get("body"), str):
             if locked:
                 val["title"] = locked.group(1)
@@ -314,13 +332,19 @@ def generate_copy(plan, variant=0, *, revision_note=""):
             val["title"].strip() != spec or val["body"].strip() or val["cta"].strip()
         ):
             return {**base, "reviewFlag": "模型草稿格式异常"}
-        if not action and (not poster or wenan.no_cta(plan)):
+        if not action and not narrated and (not poster or wenan.no_cta(plan)):
             val["cta"] = ""
         detail = val.get("detailLine", "")
         if not isinstance(detail, str) or len(detail) > 32:
             return {**base, "reviewFlag": "模型草稿格式异常"}
         if locked:
             val["title"] = locked.group(1)
+        if narrated:
+            spoken = (val["title"], detail, val["cta"])
+            if (any(not line.strip() or len(line.strip()) > limit for line, limit in zip(spoken, (15, 36, 24)))
+                    or len({re.sub(r"\W", "", line) for line in spoken}) < 3):
+                return {**base, "reviewFlag": "三镜口播稿不合时长",
+                        "revisionNote": "请写三句简短口语，开场、中段、收尾均需有可朗读的定稿。"}
         content = " ".join((val["title"], val["body"], val["cta"], detail))
         known = (
             plan["original"]
@@ -331,6 +355,11 @@ def generate_copy(plan, variant=0, *, revision_note=""):
         )
         if unsupported_copy(content, known):
             return {**base, "reviewFlag": "模型草稿含未经确认的声明"}
+        if narrated:
+            observations = " ".join((known, inputs["原图所见"], inputs["商品细节"]))
+            if stated_positions(content) - stated_positions(observations):
+                return {**base, "reviewFlag": "口播增加了未经确认的商品位置",
+                        "revisionNote": "只描述资料里确认的视觉细节。删去位置推断，尤其不要自行指定上下层或左右侧。"}
         if cliché := wenan.cliche_error(content, plan["original"]):
             return {**base, "reviewFlag": "文案含空泛AI套话", "revisionNote": cliché}
         if creative_title and (b_err := wenan.broadcast_error(val["title"], plan["original"])):
@@ -340,7 +369,7 @@ def generate_copy(plan, variant=0, *, revision_note=""):
             "请在心里指出哪条已知卖点或产品用途让哪种顾客情绪成立；移除卖点后若同一句还成立，退稿。资料不足时只允许有根据的用途。核对目标受众与情绪是否相符。"
             "想象一个具体接收人和一句自然的接话。只有成立才返回 headlineOk 为 true。"
             "靠正文解释、换个商品照样成立、只催转发的标题都应退稿。"
-            if wenan.social_headline(plan)
+            if not narrated and wenan.social_headline(plan)
             else ""
         )
         action_review = (
@@ -355,18 +384,24 @@ def generate_copy(plan, variant=0, *, revision_note=""):
             + (" 主标题仅重排品名和价格或加泛用赞词也应退稿。" if creative_title else "")
             + headline_review + action_review
         )
-        review, _ = model.ask(
-            review_prompt,
-            {
-                "source": known,
-                "visual": plan["shot"],
-                "上传图片可见内容": plan.get("sourceReview", {}).get("reason", ""),
-                "goal": plan["goal"],
-                "closing": action,
-                "draft": val,
-            },
-            450,
-        )
+        evidence = {
+            "source": known,
+            "visual": plan["shot"],
+            "上传图片可见内容": plan.get("sourceReview", {}).get("reason", ""),
+            "goal": plan["goal"],
+            "closing": action,
+            "draft": val,
+        }
+        if narrated:
+            review_prompt = (
+                wenan.FORMATS["短视频、品牌片、声音广告"] + "\n你是商品事实核对员。商家需求本身就是已经确认的资料，图上可见的细节也可采用。"
+                "将三句台词和配文与这些资料比对。核对已写出的品名、数字、优惠、限制条件和购买途径。"
+                "需求和草稿均未提价格或优惠时，这一项通过。若商家邀请到店，到店即为已有渠道。"
+                "聊天式问句和邀请允许。若确有错误，请指出原句和与之冲突的资料。"
+                "返回 JSON：ok 为事实准确与否，closingOk 为收尾符合需求与已有渠道与否，reason 写简短依据。"
+            )
+            evidence = {**inputs, "待核对定稿": {label: val[key] for key, label in spoken_fields.items()}}
+        review, _ = model.ask(review_prompt, evidence, 450)
         if (
             review.get("ok") is not True
             or (headline_review and review.get("headlineOk") is not True)
@@ -409,7 +444,8 @@ def generate_copy(plan, variant=0, *, revision_note=""):
             "body": body,
             "cta": val["cta"].strip(),
             "detailLine": detail or base["detailLine"],
-            "writingSkill": wenan.record(plan, "模型创作与复核"),
+            "writingSkill": ({**wenan.record(plan, "逐镜口播创作与复核"),
+                              "sections": ["短视频、品牌片、声音广告"]} if narrated else wenan.record(plan, "模型创作与复核")),
             "engine": engine,
             "review": str(review.get("reason", "已复核创意与经营事实。"))[:200],
         }

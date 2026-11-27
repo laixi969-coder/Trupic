@@ -6,3 +6,6 @@ fonttools>=4.59,<5
 qrcode>=8,<9
 cos-python-sdk-v5>=1.9,<2
 cryptography>=45,<47
+sherpa-onnx==2.0.3
+rapidocr==3.10.0
+onnxruntime>=1.21,<2

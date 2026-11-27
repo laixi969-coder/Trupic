@@ -438,13 +438,18 @@ def elevate_for_production(spec, locked_copy):
             ],
         )
     )
+    from copy import deepcopy
+    candidate = deepcopy(spec)
     if extra_cue:
-        plan["facts"] = "；".join(filter(None, [snapshot_facts, extra_cue]))
+        candidate["plan"]["facts"] = "；".join(filter(None, [snapshot_facts, extra_cue]))
     try:
-        optimize(spec, infer=True)
-        plan["promptBrief"]["elevated"] = True
-        return plan["promptBrief"].get("engine") != "本地提示词规则"
+        optimize(candidate, infer=True)
+        refined = candidate["plan"]
+        if refined["promptBrief"].get("engine") == "本地提示词规则":
+            return False
+        refined["facts"] = snapshot_facts
+        refined["promptBrief"]["elevated"] = True
+        plan.update(refined)
+        return True
     except Exception:
         return False
-    finally:
-        plan["facts"] = snapshot_facts

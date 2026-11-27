@@ -39,7 +39,7 @@ const choiceKey = () =>
 const quickPrompts = [
   { label: "做张周末促销海报", kind: "poster", seed: "想做一张周末促销海报，主打" },
   { label: "写条新品朋友圈", kind: "copy", seed: "想写一条新品朋友圈文案，介绍" },
-  { label: "剪个15秒揽客短片", kind: "video", seed: "想做一条15秒揽客短片，介绍" },
+  { label: "一张商品图做带货视频", kind: "video", seed: "用商品图做一条15秒带货视频，介绍" },
   { label: "看看本周灵感", action: "topics" },
 ];
 
@@ -159,6 +159,16 @@ export default function PersonalAgent({
     live.current = true;
     (async () => {
       const h = await syncHome();
+      const brief = sessionStorage.getItem("trupic.blindBriefDraft");
+      if (brief && live.current) {
+        sessionStorage.removeItem("trupic.blindBriefDraft");
+        display(null);
+        const draft = JSON.parse(brief);
+        setOptions({blindBriefId:draft.id,kind:draft.kind});
+        setInput(draft.text);
+        setReady(true);
+        return;
+      }
       const stored = sessionStorage.getItem(storage);
       const id = h.conversations.find((c) => c.id === stored)?.id;
       if (id && live.current) await openChat(id);
@@ -372,6 +382,7 @@ export default function PersonalAgent({
       else
         await api("/agent/tasks/" + t.id + "/" + verb, "POST", {
           option,
+          ...(verb === "ending-choice" ? { style: job } : {}),
           revision: t.revision,
           quoteId: t.quoteId,
           confirmedCost: t.cost,
@@ -398,7 +409,11 @@ export default function PersonalAgent({
   function edit(t, copy) {
     setTarget(t.id);
     setInput("");
-    setOptions(t.asset ? { asset: t.asset } : {});
+    const draft = t.asset ? { asset: t.asset } : {};
+    if (copy && t.productNarration && t.locked) {
+      draft.ownCopy = t.storyboard.map((shot) => shot.narration || "").join("\n");
+    }
+    setOptions(draft);
     setPanel(copy ? "own" : "");
     setError("");
     requestAnimationFrame(() => {
@@ -521,7 +536,7 @@ export default function PersonalAgent({
             (options.ownCopy
               ? "使用我的文案"
               : options.asset
-                ? "用这张商品图做一张海报"
+                ? activeKind === "video" ? "用这张商品图做带货视频" : "用这张商品图做一张海报"
                 : ""),
         );
       }}
@@ -859,6 +874,7 @@ export default function PersonalAgent({
         </div>
 
         <div className="pa-rail-footer">
+          <a className="pa-rail-item" href="#blind-review"><BookOpen size={16}/><span>商家盲评</span></a>
           <button
             type="button"
             className="pa-rail-item"
@@ -1480,6 +1496,13 @@ export default function PersonalAgent({
                     </button>
                   ))}
                 </fieldset>
+                {activeKind === "video" && (options.duration || 15) === 15 && (
+                  <fieldset className="spec-picker"><legend>商品图口播短片的画面</legend>
+                    {[["local","本地商品运镜"],["economy","H3 经济动态背景"]].map(([value,label])=>
+                      <button type="button" key={value} aria-pressed={(options.videoMotion || "local")===value}
+                        onClick={()=>change({videoMotion:value})}>{label}</button>)}
+                  </fieldset>
+                )}
                 {activeKind !== "copy" && (
                   <RatioPicker
                     value={activeRatio}
@@ -1528,7 +1551,9 @@ export default function PersonalAgent({
               已有文案（选填，填写后跳过候选直接报价）
               <textarea
                 maxLength={360}
-                placeholder="第一行写标题，可换行填写正文"
+                placeholder={activeKind === "video" && (options.asset || task?.asset) && (options.duration || task?.duration || 15) === 15
+                  ? "可分三行填写口播：开场、商品细节、收尾"
+                  : "第一行写标题，可换行填写正文"}
                 value={options.ownCopy || ""}
                 onChange={(e) => change({ ownCopy: e.target.value })}
               />

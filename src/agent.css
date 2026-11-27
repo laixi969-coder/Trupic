@@ -1405,3 +1405,12 @@
     grid-template-columns: 1fr;
   }
 }
+
+.agent-ending-picker { display: grid; gap: .5rem; min-width: 0; margin: .75rem 0; padding: .75rem; border: 1px solid #cfded4; border-radius: .75rem; }
+.agent-ending-picker legend, .agent-offer-summary strong { font-weight: 650; }
+.agent-ending-picker p, .agent-offer-summary p { margin: .2rem 0; }
+.agent-ending-take, .agent-offer-edit { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.agent-ending-take audio { width: min(100%, 15rem); height: 36px; }
+.agent-ending-take button[aria-pressed="true"] { background: #e2f3e8; color: #174d31; }
+.agent-offer-edit { margin-top: .7rem; }
+.agent-offer-edit input { width: 6.2rem; margin-left: .35rem; }

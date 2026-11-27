@@ -1,0 +1,196 @@
+{
+  "origin": "本机隔离账户的实际上传、制作、修改及积分账本",
+  "source": "demo",
+  "briefId": "food-01",
+  "playbackReadback": {
+    "A": "这一杯,先别搅。你看,抹茶和牛奶分了层。星期五,到店十九块九。",
+    "B": "这一杯,先别搅。你看,抹茶和牛奶分了层。周五到店,十八块九。"
+  },
+  "requestEvidence": [
+    {
+      "method": "GET",
+      "status": 200,
+      "path": "/api/agent/blind-reviews/<review>"
+    },
+    {
+      "method": "GET",
+      "status": 206,
+      "path": "/api/agent/blind-reviews/<review>/media/B.mp4"
+    },
+    {
+      "method": "GET",
+      "status": 206,
+      "path": "/api/agent/blind-reviews/<review>/media/A.mp4"
+    },
+    {
+      "method": "GET",
+      "status": 206,
+      "path": "/api/agent/blind-reviews/<review>/media/A.mp4"
+    },
+    {
+      "method": "GET",
+      "status": 206,
+      "path": "/api/agent/blind-reviews/<review>/media/B.mp4"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "path": "/api/agent/blind-reviews/<review>/answer"
+    }
+  ],
+  "reviewerSawNeutralPayload": true,
+  "foreignTenantMediaBlocked": true,
+  "rangedVideoPlayback": true,
+  "openingBalance": 107,
+  "closingBalance": 107,
+  "reveal": {
+    "factChanges": [
+      {
+        "after": "19.90",
+        "before": "18.90",
+        "field": "amount"
+      }
+    ],
+    "firstDraftEvidence": "changed_facts",
+    "firstDraftPublish": false,
+    "firstDraftReason": "本次周五到店价是19.90元，片尾仍报18.90元，需要改价。",
+    "firstDraftSlot": "B",
+    "merchantEditMinutes": null,
+    "preference": "A",
+    "ratings": {
+      "A": {
+        "publish": true,
+        "reason": ""
+      },
+      "B": {
+        "publish": false,
+        "reason": "本次周五到店价是19.90元，片尾仍报18.90元，需要改价。"
+      }
+    },
+    "reviewSeconds": 39.0,
+    "revisionSlot": "A",
+    "versions": {
+      "A": {
+        "credits": 1,
+        "deliveredAt": "2026-11-27T03:03:20+00:00",
+        "offer": {
+          "amount": "19.90",
+          "channel": "到店",
+          "currency": "CNY",
+          "product": "抹茶拿铁",
+          "weekday": "周五"
+        },
+        "productionSeconds": 13.0,
+        "requestToDeliverySeconds": 28.0,
+        "role": "revision",
+        "version": 2,
+        "workCredits": 1
+      },
+      "B": {
+        "credits": 12,
+        "deliveredAt": "2026-11-27T03:02:52+00:00",
+        "offer": {
+          "amount": "18.90",
+          "channel": "到店",
+          "currency": "CNY",
+          "product": "抹茶拿铁",
+          "weekday": "周五"
+        },
+        "productionSeconds": 30.0,
+        "requestToDeliverySeconds": 31.0,
+        "role": "first",
+        "version": 1,
+        "workCredits": 12
+      }
+    }
+  },
+  "summaryBefore": {
+    "answered": 0,
+    "bySector": {
+      "food": {
+        "answered": 0,
+        "excludedFactChanged": 0,
+        "firstDraftPublish": 0,
+        "firstDraftRate": null,
+        "firstDraftResponses": 0,
+        "issued": 0,
+        "responseRate": null,
+        "retrospectiveFirstDrafts": 0
+      },
+      "retail": {
+        "answered": 0,
+        "excludedFactChanged": 0,
+        "firstDraftPublish": 0,
+        "firstDraftRate": null,
+        "firstDraftResponses": 0,
+        "issued": 0,
+        "responseRate": null,
+        "retrospectiveFirstDrafts": 0
+      },
+      "service": {
+        "answered": 0,
+        "excludedFactChanged": 0,
+        "firstDraftPublish": 0,
+        "firstDraftRate": null,
+        "firstDraftResponses": 0,
+        "issued": 0,
+        "responseRate": null,
+        "retrospectiveFirstDrafts": 0
+      }
+    },
+    "excludedFactChanged": 0,
+    "firstDraftPublish": 0,
+    "firstDraftRate": null,
+    "firstDraftResponses": 0,
+    "issued": 0,
+    "responseRate": null,
+    "retrospectiveFirstDrafts": 0
+  },
+  "summaryAfter": {
+    "answered": 0,
+    "bySector": {
+      "food": {
+        "answered": 0,
+        "excludedFactChanged": 0,
+        "firstDraftPublish": 0,
+        "firstDraftRate": null,
+        "firstDraftResponses": 0,
+        "issued": 0,
+        "responseRate": null,
+        "retrospectiveFirstDrafts": 0
+      },
+      "retail": {
+        "answered": 0,
+        "excludedFactChanged": 0,
+        "firstDraftPublish": 0,
+        "firstDraftRate": null,
+        "firstDraftResponses": 0,
+        "issued": 0,
+        "responseRate": null,
+        "retrospectiveFirstDrafts": 0
+      },
+      "service": {
+        "answered": 0,
+        "excludedFactChanged": 0,
+        "firstDraftPublish": 0,
+        "firstDraftRate": null,
+        "firstDraftResponses": 0,
+        "issued": 0,
+        "responseRate": null,
+        "retrospectiveFirstDrafts": 0
+      }
+    },
+    "excludedFactChanged": 0,
+    "firstDraftPublish": 0,
+    "firstDraftRate": null,
+    "firstDraftResponses": 0,
+    "issued": 0,
+    "responseRate": null,
+    "retrospectiveFirstDrafts": 0
+  },
+  "recording": {
+    "sampleAPlaybackStartSeconds": 0.7,
+    "sampleBPlaybackStartSeconds": 16.53,
+    "screenRecordingSeconds": 36.1
+  }
+}

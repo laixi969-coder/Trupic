@@ -1,0 +1,98 @@
+{
+  "fps": 24,
+  "size": [
+    720,
+    1280
+  ],
+  "shots": [
+    {
+      "shot": 1,
+      "startFrame": 0,
+      "endFrameExclusive": 72,
+      "camera": "近景切入",
+      "line": "这一杯，先别搅。",
+      "caption": "",
+      "narration": "这一杯，先别搅。",
+      "titleLayer": "title-1.png",
+      "inspiration": "https://github.com/Vincentwei1021/video-shotcraft/tree/59f3e9b9e936ff2bce0e18446226d770a3f2f61f/references/shots/camera/depth-layer-moves.md",
+      "adaptation": "先交代商品和环境，主体与远景以不同速度移动。",
+      "purpose": "围绕「抹茶拿铁」：保留整张原片的真实环境与光线，从照片边缘延续色调，在画外余量安排准确标题，让顾客看清原片里的商品。"
+    },
+    {
+      "shot": 2,
+      "startFrame": 72,
+      "endFrameExclusive": 240,
+      "camera": "原图慢推",
+      "line": "杯壁上的抹茶纹路",
+      "caption": "",
+      "narration": "顺着杯壁看，抹茶和牛奶留下了两种颜色。",
+      "titleLayer": "title-2.png",
+      "inspiration": "https://github.com/Vincentwei1021/video-shotcraft/tree/59f3e9b9e936ff2bce0e18446226d770a3f2f61f/references/shots/camera/tension-camera-moves.md",
+      "adaptation": "先让眼睛找到细节，再向它缓慢推近。",
+      "purpose": "先在「杯壁上的抹茶纹路」上停一拍，再向这处细节缓慢推近。",
+      "evidence": {
+        "label": "杯壁上的抹茶纹路",
+        "region": [
+          0.32,
+          0.31,
+          0.7,
+          0.65
+        ],
+        "source": "商家框选"
+      }
+    },
+    {
+      "shot": 3,
+      "startFrame": 240,
+      "endFrameExclusive": 360,
+      "camera": "全景收束",
+      "line": "想喝抹茶拿铁？到店点一杯。",
+      "caption": "",
+      "narration": "想喝抹茶拿铁？到店点一杯。",
+      "titleLayer": "title-3.png",
+      "inspiration": "https://github.com/Vincentwei1021/video-shotcraft/tree/59f3e9b9e936ff2bce0e18446226d770a3f2f61f/references/shots/outro/logo-shrink-wordmark-lockup.md",
+      "adaptation": "缓缓收回完整商品，末尾停住供阅读型号或行动信息。",
+      "purpose": "退回完整外形并停住，让观众读完「想喝抹茶拿铁？到店点一杯。」。"
+    }
+  ],
+  "captions": [
+    {
+      "shotIndex": 0,
+      "start": 0.075,
+      "end": 1.861,
+      "text": "这一杯，先别搅。",
+      "layer": "spoken-1.png",
+      "startFrame": 2,
+      "endFrame": 45
+    },
+    {
+      "shotIndex": 1,
+      "start": 3.075,
+      "end": 7.914,
+      "text": "顺着杯壁看，抹茶和牛奶留下了两种颜色。",
+      "layer": "spoken-2.png",
+      "startFrame": 74,
+      "endFrame": 190
+    },
+    {
+      "shotIndex": 2,
+      "start": 10.075,
+      "end": 11.714,
+      "text": "想喝抹茶拿铁？",
+      "layer": "spoken-3.png",
+      "startFrame": 242,
+      "endFrame": 282
+    },
+    {
+      "shotIndex": 2,
+      "start": 11.844,
+      "end": 12.822,
+      "text": "到店点一杯。",
+      "layer": "spoken-4.png",
+      "startFrame": 285,
+      "endFrame": 308
+    }
+  ],
+  "voiceTrack": "voice.wav",
+  "musicTrack": "music-ducked.wav"
+}

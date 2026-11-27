@@ -60,6 +60,7 @@ export default function AgentTask({
   onOpenMemory,
 }) {
   const [shortOption, setShortOption] = useState(0);
+  const [newPrice, setNewPrice] = useState("");
   const Icon = { poster: ImageIcon, copy: FileText, video: Film }[t.kind];
   const open = [
     "waiting_copy",
@@ -144,7 +145,14 @@ export default function AgentTask({
           <p>{t.concept}</p>
         </details>
       )}
-      {t.storyboard?.length > 0 && open && (
+      {t.productNarration && t.locked && open ? (
+        <div className="agent-locked-tiers">
+          <strong>逐镜口播</strong>
+          {t.storyboard.map((s) => (
+            <p key={s.start}><small>{s.start}–{s.end} 秒</small>　{s.narration || "仅展示商品"}</p>
+          ))}
+        </div>
+      ) : t.storyboard?.length > 0 && open && (
         <details>
           <summary>查看短片分镜</summary>
           {t.storyboard.map((shot, i) => (
@@ -228,7 +236,7 @@ export default function AgentTask({
           </div>
         </div>
       )}
-      {t.locked && (
+      {t.locked && !t.productNarration && (
         <div className="agent-locked-tiers">
           <blockquote>
             {[t.locked.title, t.locked.body, t.locked.cta]
@@ -260,6 +268,32 @@ export default function AgentTask({
       )}
       {t.status === "quoted" && (
         <div className="agent-quote">
+          {t.videoMotion && <p>{t.videoMotion === "economy" ? "H3 经济动态背景 · 商品与字幕本地合成" : "本地商品运镜 · 无视频模型调用"}</p>}
+          {t.merchantOffer && (
+            <div className="agent-offer-summary">
+              <strong>{t.merchantOffer.product} · {t.merchantOffer.weekday}{t.merchantOffer.channel}价</strong>
+              <p>{t.previousOffer && t.previousOffer.amount !== t.merchantOffer.amount && (
+                <><del>¥{t.previousOffer.amount}</del> → </>)}¥{t.merchantOffer.amount}</p>
+              <small>这次确认的金额用于活动海报、口播、字幕和配文。</small>
+            </div>
+          )}
+          {t.productNarration && t.storyboard?.at(-1)?.narration && (
+            <fieldset className="agent-ending-picker">
+              <legend>片尾读法</legend>
+              <p>「{t.storyboard.at(-1).narration}」</p>
+              {t.endingTakes?.length ? t.endingTakes.map((take) => (
+                <div key={take.style} className="agent-ending-take">
+                  <button type="button" disabled={busy} aria-pressed={t.selectedEnding === take.style}
+                    onClick={() => action(t, "ending-choice", take.style)}>
+                    {t.selectedEnding === take.style ? "已选" : "选用"}{take.label}
+                  </button>
+                  <audio controls preload="none" aria-label={take.label} src={take.url} />
+                </div>
+              )) : <button type="button" disabled={busy} onClick={() => action(t, "ending-previews")}>
+                {busy === "ending-previews" ? "正在生成试听…" : "试听两种片尾读法"}
+              </button>}
+            </fieldset>
+          )}
           <div className="agent-quote-summary">
             <span>{t.deliveries.join(" + ")}</span>
             <strong>{t.cost} 积分</strong>
@@ -282,7 +316,7 @@ export default function AgentTask({
           )}
           <button
             className="primary agent-approve-btn"
-            disabled={busy}
+            disabled={busy || (t.voiceRevision && !t.selectedEnding)}
             onClick={() => action(t, "approve", null, shortOption)}
           >
             <Check size={17} />
@@ -304,6 +338,9 @@ export default function AgentTask({
             <button disabled={busy} onClick={() => edit(t, false)}>
               补充或修改
             </button>
+          )}
+          {t.status === "quoted" && t.productNarration && (
+            <button disabled={busy} onClick={() => edit(t, true)}>改口播台词</button>
           )}
           {t.status === "quoted" && (
             <button
@@ -349,7 +386,7 @@ export default function AgentTask({
                   src={i.video}
                   poster={i.preview}
                   controls
-                  muted
+                  muted={!i.subtitles}
                   playsInline
                 />
               ) : (
@@ -360,6 +397,16 @@ export default function AgentTask({
                 )
               )}
               {i.text && <p className="agent-copy-result">{i.text}</p>}
+              {i.offerReadback && (
+                <details>
+                  <summary>查看交付核对记录</summary>
+                  <p>海报读字　{i.offerReadback.poster}</p>
+                  <p>成片听写　{i.offerReadback.spoken}</p>
+                  <p>画面字幕　{i.offerReadback.burned}</p>
+                  <p>字幕文件　{i.offerReadback.subtitles}</p>
+                  <p>发布配文　{i.offerReadback.post}</p>
+                </details>
+              )}
               <div className="agent-delivery-primary">
                 {i.download && (
                   <a className="primary agent-dl-btn" href={i.download} download>
@@ -367,6 +414,13 @@ export default function AgentTask({
                     保存成品
                   </a>
                 )}
+                {i.subtitles && (
+                  <a className="secondary agent-copy-btn" href={i.subtitles} download>
+                    下载字幕
+                  </a>
+                )}
+                {i.offerPoster && <a className="secondary agent-copy-btn" href={i.offerPoster} download>保存活动海报</a>}
+                {i.post && <a className="secondary agent-copy-btn" href={i.post} download>保存发布配文</a>}
                 {i.text && (
                   <button
                     type="button"
@@ -385,6 +439,12 @@ export default function AgentTask({
                 )}
               </div>
               <div className="agent-quick-edits">
+                <a href={"#blind-setup/" + i.work + "/" + (i.version || 1)}>{i.version > 1 ? "盲评这两版" : "评价首稿"}</a>
+                {i.subtitles && (
+                  <button type="button" disabled={busy} onClick={() => quickRevise(i, "只换片尾口吻")}>
+                    只换片尾口吻
+                  </button>
+                )}
                 {i.kind !== "copy" && (
                   <button
                     type="button"
@@ -413,6 +473,18 @@ export default function AgentTask({
                 </button>
                 <a href={"#work/" + i.work}>精修与旧版</a>
               </div>
+              {i.offerPoster && t.merchantOffer && (
+                <form className="agent-offer-edit" onSubmit={(e) => {
+                  e.preventDefault();
+                  quickRevise(i, t.merchantOffer.weekday + "价从" + t.merchantOffer.amount + "改成" + newPrice + "，试听两种片尾读法");
+                }}>
+                  <label>{t.merchantOffer.weekday}新价（元）
+                    <input inputMode="decimal" required pattern="[0-9]{1,8}(\.[0-9]{1,2})?"
+                      value={newPrice} placeholder={t.merchantOffer.amount} onChange={(e) => setNewPrice(e.target.value)} />
+                  </label>
+                  <button type="submit" disabled={busy || !newPrice}>改价并试听片尾</button>
+                </form>
+              )}
             </>
           ) : i.state === "failed" ? (
             <div className="agent-failed-box">

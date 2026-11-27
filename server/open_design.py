@@ -8,6 +8,7 @@ import subprocess
 import zipfile
 from html import escape
 from pathlib import Path
+from PIL import Image, ImageDraw
 
 from .film_timing import camera_tick
 from .campaign_frame import camera_window
@@ -20,11 +21,14 @@ GSAP_VERSION = "3.15.1"
 LOG = logging.getLogger(__name__)
 
 
-def composition(folder, dims, plates, titles, shots, audio, pace):
+def composition(folder, dims, plates, titles, shots, audio, pace, captions=(), narration=None, motion_master=False):
     folder.mkdir(parents=True)
     assets = folder / "assets"
     assets.mkdir()
     shutil.copyfile(audio, assets / "soundtrack.wav")
+    if narration:
+        shutil.copyfile(narration["voice"], assets / "voice.wav")
+        shutil.copyfile(narration["music"], assets / "music-ducked.wav")
     gsap = NODE_MODULES / "gsap" / "dist" / "gsap.min.js"
     gsap_url = f"https://cdn.jsdelivr.net/npm/gsap@{GSAP_VERSION}/dist/gsap.min.js"
     if gsap.is_file():
@@ -35,6 +39,9 @@ def composition(folder, dims, plates, titles, shots, audio, pace):
     duration = shots[-1]["end"]
     clips = []
     camera = {}
+    if motion_master:
+        clips.append(f'<video id="picture-master" class="master clip" src="assets/picture.mp4" muted playsinline '
+                     f'data-start="0" data-duration="{duration}" data-track-index="0" data-volume="0"></video>')
     for index, shot in enumerate(shots, 1):
         background, foreground, title = plates[index]
         start, length = shot["start"], shot["end"] - shot["start"]
@@ -44,7 +51,7 @@ def composition(folder, dims, plates, titles, shots, audio, pace):
             ("picture", background, 0, 0.45 if foreground else 1),
             ("product", foreground, 1, 1),
         ):
-            if image is None:
+            if image is None or motion_master:
                 continue
             key = f"{plane}-{index}"
             image.save(assets / f"{key}.png")
@@ -63,14 +70,30 @@ def composition(folder, dims, plates, titles, shots, audio, pace):
             )
         key = f"title-{index}"
         title.save(assets / f"{key}.png")
-        save_source(assets / f"{key}.svg", dims, [], titles[index])
-        words = escape(
-            " · ".join(filter(None, (shot["line"], shot.get("caption")))), quote=True
-        )
+        backing_layers = []
+        for rect, radius in title.info.get("titleBackings", []):
+            left, top, right, bottom = rect
+            patch = Image.new("RGBA", (right - left + 1, bottom - top + 1))
+            ImageDraw.Draw(patch).rounded_rectangle((0, 0, right-left, bottom-top), radius=radius, fill=(20, 20, 24, 218))
+            backing_layers.append((f"label-{len(backing_layers)+1}", patch, (left, top)))
+        save_source(assets / f"{key}.svg", dims, backing_layers, titles[index])
+        words = escape(" · ".join("".join(run[1] for run in line) for line in titles[index]), quote=True)
         clips.append(
             f'<img id="{key}" class="clip title" {timing} data-track-index="2" data-track-kind="captions" src="assets/{key}.png" alt="{words}">'
         )
 
+    for cue, layer in captions:
+        layer.save(assets / cue["layer"])
+        start, end = cue["startFrame"] / FPS, cue["endFrame"] / FPS
+        clips.append(
+            f'<img id="{Path(cue["layer"]).stem}" class="clip title" data-start="{start}" '
+            f'data-duration="{end-start}" data-track-index="3" data-track-kind="captions" '
+            f'src="assets/{cue["layer"]}" alt="{escape(cue["text"], quote=True)}">'
+        )
+    tracks = ("voice.wav", "music-ducked.wav") if narration else ("soundtrack.wav",)
+    for index, track in enumerate(tracks, 4 if narration else 3):
+        clips.append(f'<audio id="{Path(track).stem}" class="clip" src="assets/{track}" data-start="0" '
+                     f'data-duration="{duration}" data-track-index="{index}" data-volume="1"></audio>')
     markup = "\n    ".join(clips)
     (folder / "index.html").write_text(
         f"""<!doctype html>
@@ -86,6 +109,7 @@ def composition(folder, dims, plates, titles, shots, audio, pace):
     html, body {{ margin: 0; width: {width}px; height: {height}px; overflow: hidden; background: #000; }}
     #root {{ position: relative; width: {width}px; height: {height}px; overflow: hidden; }}
     .plane, .title {{ position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transform-origin: 0 0; }}
+    .master {{ position: absolute; inset: 0; width: 100%; height: 100%; }}
     .title {{ z-index: 2; }}
   </style>
 </head>
@@ -93,8 +117,6 @@ def composition(folder, dims, plates, titles, shots, audio, pace):
   <main id="root" data-composition-id="main" data-start="0" data-duration="{duration}"
     data-width="{width}" data-height="{height}" data-fps="{FPS}" data-od-motion-layout="stage">
     {markup}
-    <audio id="soundtrack" class="clip" src="assets/soundtrack.wav" data-start="0"
-      data-duration="{duration}" data-track-index="3" data-volume="1"></audio>
   </main>
   <script id="camera-windows" type="application/json">{json.dumps(camera, separators=(",", ":"))}</script>
   <script>
@@ -133,7 +155,7 @@ def write_json(path, content):
     )
 
 
-def archive_project(folder, target, video, captions):
+def archive_project(folder, target, video, captions, narrated=False):
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=2) as archive:
         archive.write(video, "video.mp4", compress_type=zipfile.ZIP_STORED)
         files = [
@@ -147,8 +169,10 @@ def archive_project(folder, target, video, captions):
             "使用说明.txt",
             "解压后，在 Open Design 桌面端打开解压目录作为项目，打开 index.html 预览。video.mp4 是原始成片。\n"
             "编辑 index.html 中各片段的 data-start、data-duration、素材路径，或修改音轨 data-volume。"
-            "文字图层默认使用已验收的 PNG。可用 captions.srt 改字幕，或安装对应字体，编辑同名 SVG 后把该轨道的 src 改为 SVG。\n"
-            "可在 Open Design 中让创作助手以当前目录（.）为合成目录重新导出 video.mp4。"
+            "标题图层默认使用已验收的 PNG。安装对应字体后，可编辑同名 SVG，并将标题轨道的 src 改为该 SVG。\n"
+            + ("voice.wav 与 music-ducked.wav 分别控制口播和配乐。替换口播字幕时，用 captions.srt 替换 spoken PNG 轨道，保留 title 标题层。\n"
+               if narrated else "可用 captions.srt 替换 PNG 字幕轨。\n")
+            + "可在 Open Design 中让创作助手以当前目录（.）为合成目录重新导出 video.mp4。"
             "也可在解压目录运行 npx hyperframes@0.9.40 preview 打开时间线，"
             "再通过 npx hyperframes@0.9.40 render --fps 24 -o video.mp4 导出。\n",
         )

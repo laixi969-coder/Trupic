@@ -1,0 +1,7 @@
+video, image { display: block; width: 100%; margin: 16rpx 0; }
+video { height: 560rpx; background: #18221e; }
+.actions { display: flex; flex-wrap: wrap; gap: 10rpx; margin: 14rpx 0; }
+.actions button { margin: 0; font-size: 26rpx; }
+.picked { color: #184b32; background: #dceee1; }
+textarea, input { box-sizing: border-box; width: 100%; background: #f5f7f2; margin: 14rpx 0; padding: 10rpx; }
+.result { padding: 16rpx 0; border-bottom: 1px solid #d5ded7; }

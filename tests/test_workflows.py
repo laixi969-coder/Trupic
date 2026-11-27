@@ -2632,13 +2632,15 @@ class WorkflowTests(unittest.TestCase):
         req = dict(kind="video", brief="给抹茶饮品制作商品短片。", facts="杯壁能看到茶奶分层",
                    asset=asset, assetConfirmed=True, assetMode="original")
         detail = dict(region=[0.52, 0.35, 0.78, 0.58], label="茶奶分层", claim=req["facts"])
-        for observation, accepted, line in (
+        for index, (observation, accepted, line) in enumerate((
             (detail, True, req["facts"]),
             ({**detail, "claim": "口感更香浓"}, True, detail["label"]),
             ({**detail, "region": [0.2, 0.1, 0.20001, 0.7]}, False, "商品实拍"),
             ({**detail, "region": [0, 0, 800, 600]}, False, "商品实拍"),
-        ):
-            with patch.dict(os.environ, TRUPIC_VISION_MODEL="视觉测试"), patch(
+        )):
+            # Each fixture represents a different model response. Identical inputs
+            # to the same configured model intentionally reuse the preflight result.
+            with patch.dict(os.environ, TRUPIC_VISION_MODEL=f"视觉测试-{index}"), patch(
                 "server.model.chat_request", return_value=dict(ok=True, reason="饮品可见", visualDetail=observation)
             ):
                 plan = post(self.c, "preview", **req).json["plan"]

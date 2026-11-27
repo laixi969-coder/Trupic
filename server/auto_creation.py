@@ -103,6 +103,8 @@ def coordinate(services, c, tenant, v, *, agent_context=None):
         route = dict(workflow=None, roles=["copy"])
     asset_id = services["string"](v.get("asset"), 60)
     asset = json.loads(services["owner"](c, "asset", asset_id, tenant)["info"]) if asset_id else {}
+    if agent_context and mode == "video" and not asset and re.search(r"商品图|单图带货|带货(?:短)?视频", brief):
+        return dict(ready=False, message="请上传这件商品的照片，我会用原图编排镜头和口播。", questions=[])
     roles = list(route["roles"])
     visual = roles != ["copy"]
     fidelity = visual and services["FIDELITY"].search(brief)
@@ -225,6 +227,19 @@ def coordinate(services, c, tenant, v, *, agent_context=None):
             if type(duration) is not int or duration not in (15,30,45) or duration > 15 and not commerce.subscription(c,tenant):
                 raise ValueError("当前体验视频支持 15 秒。")
             p["output"]["duration"] = duration
+            if (agent_context and asset and duration == 15
+                    and not re.search(r"纯配乐|只要配乐|只配乐|(?:不要|不用|无需|不加|无)(?:人声|口播|旁白|配音)|静音|无声(?:短片|视频)", brief)):
+                p["productNarration"] = True
+                motion = v.get("videoMotion") or "local"
+                if motion not in ("local", "economy"):
+                    raise ValueError("请选择有效的商品视频背景。")
+                if motion == "economy":
+                    from .video_api import economy_config
+                    economy_config()
+                p["videoMotion"] = motion
+                common["videoMotion"] = motion
+            elif v.get("videoMotion") == "economy" and agent_context:
+                raise ValueError("H3 经济背景用于上传商品图的 15 秒口播短片。")
         attach(p,kind,workflow=route["workflow"], overrides=overrides)
         # Recompile the visual brief for each output, retaining the shared facts
         # and exact copy. No model/API calls are needed for this path.
@@ -249,13 +264,22 @@ def coordinate(services, c, tenant, v, *, agent_context=None):
         seconds = p["output"].get("duration",9)
         pricing.snapshot(spec, rates, f"video{seconds}" if kind == "video" and seconds > 15 else kind)
         label = f"{seconds} 秒商品短片" if mode == "video" and role == "motion" else "另一版海报" if role == "alternate" else LABELS[role]
+        if p.get("productNarration"):
+            label = f"{seconds} 秒商品口播短片"
         specs.append(dict(role=role,label=label,spec=spec))
     from . import model
     notes = ["已采用商家提供的商品图与资料。" if asset else "根据经营需求与已确认资料创作，配图使用示意场景或文字构图。"]
     if model.route("text")["model"]:
         notes.append("文案由后台所选模型制作，并统一用于图片和短片。")
     if "motion" in roles:
-        notes.append("视频使用所选视频接口生成动态环境，再合成商品、字幕与配乐。" if model.route("video")["model"] else "视频按确认的时长制作，合成字幕与配乐。")
+        if common.get("videoMotion") == "local":
+            notes.append("商品原图在本地编排运镜、字幕与声音。")
+        elif common.get("videoMotion") == "economy":
+            notes.append("H3 生成 9 秒动态环境，随后在本地编排成 15 秒商品口播片。")
+        else:
+            notes.append("视频使用所选视频接口生成动态环境，再合成商品、字幕与配乐。" if model.route("video")["model"] else "视频按确认的时长制作，合成字幕与配乐。")
+        if any(row["spec"]["plan"].get("productNarration") for row in specs):
+            notes.append("确认三镜台词后逐镜配音，字幕跟随实际发声，剪辑包内可分别调整人声与配乐。")
     return dict(ready=True,deliveryMode=mode,title=cp["title"] or brief[:40],brief=brief,shared=common,items=specs,cost=sum(pricing.quoted_cost(row["spec"]) for row in specs),notes=notes)
 
 
@@ -278,7 +302,17 @@ def register(app, services):
                                           (job["work"], job["version"])).fetchone()[0])
             else:
                 cp = json.loads(job["copy_checkpoint"]) if job["copy_checkpoint"] else spec["replacement"]
+            proof = cp.get("merchantOfferProof") if done and spec["kind"] == "video" else None
+            readback = None
+            if proof:
+                readback = dict(poster=" ".join(line["text"] for line in proof["poster"]["readback"]),
+                                spoken=proof["spoken"], post=proof["post"], subtitles=proof["srt"],
+                                burned=" ".join(line["text"] for cue in proof["burnedCaptions"] for line in cue["readback"]))
             items.append({**item, "stage":job["stage"], "cost":job["cost"], "promptEngine":spec["plan"].get("promptBrief", {}).get("engine"),
+                          "offerReadback": readback,
+                          "offerPoster": base + "/offer-poster" if done and spec["kind"] == "video" and cp.get("merchantOfferProof") else None,
+                          "post": base + "/post" if done and spec["kind"] == "video" else None,
+                          "subtitles": base + "/subtitles" if done and spec["kind"] == "video" and cp.get("narration") else None,
                           "directions":spec["plan"].get("promptBrief", {}).get("prompts", {}),
                           "copyEngine":cp.get("engine") if cp else None, "kind":spec["kind"],"state":job["state"],"copyReady":bool(job["copy_checkpoint"]),"error":job["error"],"work":job["work"],"preview":base+"/poster" if done and spec["kind"]!="copy" else None,"video":base+"/video" if done and spec["kind"]=="video" else None,"text":"\n\n".join(cp[k] for k in ("title","body","cta") if cp.get(k)) if done and spec["kind"]=="copy" else None,"download":base+"/download" if done else None})
         complete=bool(items) and all(i["state"]=="complete" for i in items)
@@ -329,6 +363,12 @@ def register(app, services):
             visual_spec = next((s for s in visuals if s["kind"] == "video"), next(iter(visuals), None))
             if visual_spec and visual_spec["asset"]:
                 owner(c, "asset", visual_spec["asset"], t)
+        if visual_spec and visual_spec["plan"].get("productNarration"):
+            if visual_spec["plan"].get("videoMotion") == "economy":
+                from .video_api import economy_config
+                economy_config()
+            from .film_voice import ensure_available
+            ensure_available()
         if visual_spec and visual_spec["asset"]:
             services["preflight"](visual_spec, DATA / t / "assets")
             if review := visual_spec["plan"].get("sourceReview"):
@@ -390,7 +430,7 @@ def register(app, services):
                     path=folder/name
                     if not path.is_file(): raise ValueError("成品文件缺失，请联系管理员恢复。")
                     archive.write(path,f"{n:02d}-{item['label']}{path.suffix}")
-                    for optional in ("edit.zip","open-design.zip") if item["kind"]=="video" else ():
+                    for optional in ("offer-poster.png","copy.txt","captions.srt","edit.zip","open-design.zip") if item["kind"]=="video" else ():
                         if (folder/optional).is_file(): archive.write(folder/optional,f"{n:02d}-{item['label']}-{optional}")
                     c.execute("""INSERT INTO downloads VALUES(?,?,1)
                                  ON CONFLICT(work,n) DO UPDATE SET count=count+1""",

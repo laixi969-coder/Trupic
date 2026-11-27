@@ -1,0 +1,376 @@
+{
+  "inputMode": "商家三行定稿",
+  "brief": "用这张抹茶拿铁的商品原图做一条15秒竖屏短片，保留商品原样，想让顾客到店点一杯。",
+  "source": "server/scenes/matcha.webp",
+  "region": [
+    0.32,
+    0.31,
+    0.7,
+    0.65
+  ],
+  "uploaded": {
+    "name": "抹茶拿铁.webp",
+    "width": 512,
+    "height": 512,
+    "action": "主体抠图",
+    "risk": false
+  },
+  "confirmedScript": [
+    "这一杯，先别搅。",
+    "顺着杯壁看，抹茶和牛奶留下了两种颜色。",
+    "想喝抹茶拿铁？到店点一杯。"
+  ],
+  "deliveries": [
+    "推广文案",
+    "15 秒商品口播短片"
+  ],
+  "status": "delivered",
+  "modelCalls": [],
+  "before": 120,
+  "afterQuote": 120,
+  "confirmedCost": 12,
+  "after": 108,
+  "ledger": [
+    {
+      "created": "2026-11-27T02:12:01+00:00",
+      "delta": -12,
+      "note": "宣传短片 · 这一杯，先别搅。"
+    },
+    {
+      "created": "2026-11-27T02:11:48+00:00",
+      "delta": 120,
+      "note": "开通工作室体验积分"
+    }
+  ],
+  "reservations": [
+    {
+      "action": "consume",
+      "amount": 12,
+      "created": "2026-11-27T02:12:01+00:00",
+      "job": "e3f7a1a4deab497898193c1fdd1f2fe6"
+    },
+    {
+      "action": "reserve",
+      "amount": 12,
+      "created": "2026-11-27T02:11:50+00:00",
+      "job": "e3f7a1a4deab497898193c1fdd1f2fe6"
+    }
+  ],
+  "replayReturnedSameJobs": true,
+  "approvalMethod": "网页确认按钮",
+  "events": [
+    {
+      "eventId": 1,
+      "payload": {},
+      "revision": 1,
+      "seq": 1,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:48+00:00",
+      "type": "planning"
+    },
+    {
+      "eventId": 2,
+      "payload": {
+        "cost": 12
+      },
+      "revision": 1,
+      "seq": 2,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:48+00:00",
+      "type": "quoted"
+    },
+    {
+      "eventId": 3,
+      "payload": {
+        "cost": 12,
+        "run": "491cc481fc18406d9c6ae985cfd28c53"
+      },
+      "revision": 1,
+      "seq": 3,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:50+00:00",
+      "type": "reserved"
+    },
+    {
+      "eventId": 4,
+      "payload": {
+        "error": null,
+        "job": "e3f7a1a4deab497898193c1fdd1f2fe6",
+        "stage": null,
+        "state": "running"
+      },
+      "revision": 1,
+      "seq": 4,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:50.010Z",
+      "type": "job"
+    },
+    {
+      "eventId": 5,
+      "payload": {
+        "error": null,
+        "job": "e3f7a1a4deab497898193c1fdd1f2fe6",
+        "stage": "正在准备素材和文案",
+        "state": "running"
+      },
+      "revision": 1,
+      "seq": 5,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:50.011Z",
+      "type": "job"
+    },
+    {
+      "eventId": 6,
+      "payload": {
+        "error": null,
+        "job": "5e49f8ee3126418a99c256f6842e2b2d",
+        "stage": null,
+        "state": "running"
+      },
+      "revision": 1,
+      "seq": 6,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:50.013Z",
+      "type": "job"
+    },
+    {
+      "eventId": 7,
+      "payload": {
+        "error": null,
+        "job": "5e49f8ee3126418a99c256f6842e2b2d",
+        "stage": "正在准备素材和文案",
+        "state": "running"
+      },
+      "revision": 1,
+      "seq": 7,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:50.016Z",
+      "type": "job"
+    },
+    {
+      "eventId": 8,
+      "payload": {
+        "error": null,
+        "job": "e3f7a1a4deab497898193c1fdd1f2fe6",
+        "stage": "正在生成视频画面",
+        "state": "running"
+      },
+      "revision": 1,
+      "seq": 8,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:50.032Z",
+      "type": "job"
+    },
+    {
+      "eventId": 9,
+      "payload": {
+        "error": null,
+        "job": "e3f7a1a4deab497898193c1fdd1f2fe6",
+        "stage": "正在合成逐镜口播、字幕与配乐",
+        "state": "running"
+      },
+      "revision": 1,
+      "seq": 9,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:50.035Z",
+      "type": "job"
+    },
+    {
+      "eventId": 10,
+      "payload": {
+        "error": null,
+        "job": "5e49f8ee3126418a99c256f6842e2b2d",
+        "stage": "正在准备素材和文案",
+        "state": "complete"
+      },
+      "revision": 1,
+      "seq": 10,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:11:50.233Z",
+      "type": "job"
+    },
+    {
+      "eventId": 11,
+      "payload": {
+        "error": null,
+        "job": "e3f7a1a4deab497898193c1fdd1f2fe6",
+        "stage": "正在审核成品画面",
+        "state": "running"
+      },
+      "revision": 1,
+      "seq": 11,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:12:01.103Z",
+      "type": "job"
+    },
+    {
+      "eventId": 12,
+      "payload": {
+        "error": null,
+        "job": "e3f7a1a4deab497898193c1fdd1f2fe6",
+        "stage": "正在审核成品画面",
+        "state": "complete"
+      },
+      "revision": 1,
+      "seq": 12,
+      "task": "e7dc495dfb0f433a8d72e5492244ee8f",
+      "timestamp": "2026-11-27T02:12:01.106Z",
+      "type": "job"
+    }
+  ],
+  "media": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 720,
+        "height": 1280,
+        "avg_frame_rate": "24/1",
+        "nb_frames": "360"
+      },
+      {
+        "codec_name": "aac",
+        "codec_type": "audio",
+        "avg_frame_rate": "0/0",
+        "nb_frames": "705"
+      }
+    ],
+    "format": {
+      "duration": "15.000000"
+    }
+  },
+  "storyboard": [
+    {
+      "camera": "近景切入",
+      "caption": "",
+      "end": 3,
+      "line": "这一杯，先别搅。",
+      "narration": "这一杯，先别搅。",
+      "purpose": "围绕「抹茶拿铁」：保留整张原片的真实环境与光线，从照片边缘延续色调，在画外余量安排准确标题，让顾客看清原片里的商品。",
+      "start": 0
+    },
+    {
+      "camera": "原图慢推",
+      "caption": "",
+      "end": 10,
+      "evidence": {
+        "label": "杯壁上的抹茶纹路",
+        "region": [
+          0.32,
+          0.31,
+          0.7,
+          0.65
+        ],
+        "source": "商家框选"
+      },
+      "line": "杯壁上的抹茶纹路",
+      "narration": "顺着杯壁看，抹茶和牛奶留下了两种颜色。",
+      "purpose": "先在「杯壁上的抹茶纹路」上停一拍，再向这处细节缓慢推近。",
+      "start": 3
+    },
+    {
+      "camera": "全景收束",
+      "caption": "",
+      "end": 15,
+      "line": "想喝抹茶拿铁？到店点一杯。",
+      "narration": "想喝抹茶拿铁？到店点一杯。",
+      "purpose": "退回完整外形并停住，让观众读完「想喝抹茶拿铁？到店点一杯。」。",
+      "start": 10
+    }
+  ],
+  "editFiles": [
+    "picture.mp4",
+    "soundtrack.wav",
+    "voice.wav",
+    "music-ducked.wav",
+    "spoken-1.png",
+    "spoken-2.png",
+    "spoken-3.png",
+    "spoken-4.png",
+    "title-1.png",
+    "title-2.png",
+    "title-3.png",
+    "captions.srt",
+    "cuts.edl",
+    "timeline.json",
+    "使用说明.txt"
+  ],
+  "narration": {
+    "cues": [
+      {
+        "end": 1.715,
+        "shotIndex": 0,
+        "start": 0.075,
+        "text": "这一杯，先别搅。"
+      },
+      {
+        "end": 7.224,
+        "shotIndex": 1,
+        "start": 3.075,
+        "text": "顺着杯壁看，抹茶和牛奶留下了两种颜色。"
+      },
+      {
+        "end": 11.739,
+        "shotIndex": 2,
+        "start": 10.075,
+        "text": "想喝抹茶拿铁？"
+      },
+      {
+        "end": 13.258,
+        "shotIndex": 2,
+        "start": 11.869,
+        "text": "到店点一杯。"
+      }
+    ],
+    "provider": "kokoro-zh-local",
+    "speaker": 59,
+    "style": null,
+    "styleApplied": false
+  },
+  "aacToVoiceCorrelation": 0.9477,
+  "quality": [
+    {
+      "detail": "文案、画面与分镜共用本次商品资料；原图像素和成品文字在导出后复检。",
+      "label": "事实检查"
+    },
+    {
+      "detail": "共同围绕「从生活瞬间切入」。使用商家上传的照片。",
+      "label": "文案与画面"
+    },
+    {
+      "detail": "已校验 PNG 文件及 720 × 1280 像素画幅及文案文件。",
+      "label": "导出检查"
+    },
+    {
+      "detail": "FFmpeg",
+      "label": "短片渲染引擎"
+    },
+    {
+      "detail": "已检查导出 PNG及 MP4 全部 360 帧，抽查各镜头首、中、尾帧的画面、文字边界、字号与对比度。",
+      "label": "成品视觉审核"
+    },
+    {
+      "detail": "按成品中的商品位置逐区比对原图。已单独比对商家框选的标识。",
+      "label": "商品原图比对"
+    },
+    {
+      "detail": "hiccai-poster · 原片取景 · 围绕「抹茶拿铁」：保留整张原片的真实环境与光线，从照片边缘延续色调，在画外余量安排准确标题，让顾客看清原片里的商品。",
+      "label": "海报美术指导"
+    },
+    {
+      "detail": "全幅商品主视觉 · 实际用字：Source Han Sans CN Medium。",
+      "label": "版式与用字"
+    },
+    {
+      "detail": "kokoro-zh-local · 4 段同步字幕。",
+      "label": "逐镜口播"
+    },
+    {
+      "detail": "已核实 720 × 1280、15 秒、24 fps 画面和声音轨道。",
+      "label": "短片检查"
+    }
+  ],
+  "independentTranscript": "这一杯先别搅。顺着杯壁看,抹茶和牛奶留下了两种颜色。想喝抹茶拿铁,倒电点一杯。"
+}

@@ -642,6 +642,52 @@ test(
     await restored.stage(click({card, action:"approve"}));
     assert.ok(restored.data.chat.tasks[0].items.length);
     restored.onUnload();
+    // A catalog brief opens as an editable draft, travels with the quote and matches the delivered work.
+    const index = page("blind");
+    await index.onLoad({});
+    index.selectSector(2);
+    index.briefChanged(input(3));
+    const brief = index.data.groupBriefs[3];
+    await index.useBrief();
+    assert.equal(route, "/pages/agent/agent?mode=new");
+    index.onHide();
+    const composer = page("agent");
+    composer.onLoad({mode:"new"});
+    await composer.onShow();
+    assert.equal(composer.data.text, brief.creationDraft);
+    assert.equal(composer.data.blindBriefId, brief.id);
+    assert.equal(composer.data.chat, null);
+    composer.input(input("只写推广文案，文案用「周五到店看看」"));
+    await composer.send();
+    const linkedCard = composer.data.chat.tasks[0];
+    assert.equal(linkedCard.status,"quoted");
+    assert.equal(composer.data.blindBriefId, "");
+    await composer.stage(click({card:linkedCard,action:"approve"}));
+    const linkedWork = composer.data.chat.tasks[0].items[0].work;
+    for (let n=0; n<100; n++) {
+      const result=await api.request("agent/tasks/"+linkedCard.id+"/events");
+      if (result.task.status==="delivered") break;
+      assert.notEqual(result.task.status,"failed");
+      await delay(100);
+    }
+    composer.onUnload();
+    await index.onShow();
+    const workIndex = index.data.works.findIndex(w=>w.work===linkedWork);
+    assert.notEqual(workIndex,-1);
+    assert.equal(index.data.works[workIndex].briefId, brief.id);
+    index.selectSector(0);
+    index.workChanged(input(workIndex));
+    assert.equal(index.data.groupBriefs[index.data.briefIndex].id,brief.id);
+    index.onHide();
+    const feedback=await api.request("agent/blind-reviews","POST",{
+      work:linkedWork,briefId:brief.id,revisionVersion:1,source:"demo",
+    });
+    await api.request("agent/blind-reviews/"+feedback.id+"/answer","POST",{
+      ratings:{A:{publish:true,reason:""}},preference:null,
+    });
+    await index.onShow();
+    assert.equal(index.data.reviews.find(r=>r.id===feedback.id).status,"submitted");
+    index.onUnload();
     // The account changes without the page-level logout that clears the stored draft.
     // Another merchant on this device must not inherit the earlier brief or photo.
     await api.request("account/logout", "POST", {});

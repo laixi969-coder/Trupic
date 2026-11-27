@@ -152,6 +152,14 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts, d
         scale = max(scale, min(feature_fit * 0.86, scale * 2.4))
         scale = min(scale, (safe_x[1] - safe_x[0]) / ((right - left) * aw),
                     (safe_y[1] - safe_y[0]) / ((bottom - top) * ah))
+    # Leave a strip of the set outside the photographed SKU, including during
+    # the detail push. The subtitle is fitted into that strip after typesetting.
+    spoken = index and plan.get("productNarration") is True and plan.get("output", {}).get("duration") == 15
+    if spoken:
+        # The detail view can be larger than the opening and end card while the
+        # stationary headline and lower caption remain outside its camera sweep.
+        max_height = (0.52 if index == 2 else 0.46) * h
+        scale = min(scale, 0.44 * w / (r - l) if wide else max_height / (b - t))
     pw, ph = max(1, round(aw * scale)), max(1, round(ah * scale))
     cx, cy = (0.70, 0.51) if wide else (0.51, 0.57)
     if art.get("print") and not wide:
@@ -172,6 +180,11 @@ def photograph(plan, asset, background, size, index, image_layers, repair, ts, d
     if detail:
         x = round(max(safe_x[0] - left * pw, min(x, safe_x[1] - right * pw)))
         y = round(max(safe_y[0] - top * ph, min(y, safe_y[1] - bottom * ph)))
+    if spoken:
+        if wide:
+            x = round(max(x, 0.49 * w - l * pw / aw))
+        else:
+            y = round(max(0.30 * h - t * ph / ah, min(y, 0.825 * h - b * ph / ah)))
     box = (x, y, x + pw, y + ph)
     visible = (max(x, 0), max(y, 0), min(w, x + pw), min(h, y + ph))
     if detail:
@@ -319,6 +332,8 @@ def campaign_frame(
         hero_path = asset or background or (SCENES / (plan["scenePhoto"] + ".webp") if plan.get("scenePhoto") else None)
         use_editorial = (
             not shot
+            and not plan.get("layoutOverride")
+            and "取景框" not in plan.get("original", "")
             and not plan.get("bundleRole")
             and "moment" not in plan
             and not plan.get("references")
@@ -481,6 +496,16 @@ def campaign_frame(
         area = tuple(round(v * size[i % 2]) for i, v in enumerate(rect))
 
         def ink(bounds):
+            if (shot and plan.get("productNarration") is True and
+                    plan.get("output", {}).get("duration") == 15):
+                # The photo moves under the fixed type. A small opaque backing
+                # keeps the headline and offer readable throughout the push.
+                padding = max(2, round(min_edge * 0.006))
+                left, top, right, bottom = bounds
+                rect = (left - padding, top - padding, right + padding, bottom + padding)
+                draw.rounded_rectangle(rect, radius=padding, fill=(20, 20, 24, 218))
+                layer.info.setdefault("titleBackings", []).append((rect, padding))
+                return "#fffaf3"
             if plan.get("videoBackground"):
                 return "#fff8ee"
             region = scene.crop(bounds).resize((1, 1), Image.Resampling.BOX)

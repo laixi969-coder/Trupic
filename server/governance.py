@@ -177,6 +177,14 @@ def discover_feed():
     return added
 
 
+def validate_pinterest_settings(cfg):
+    board = cfg["board"]
+    if board and not re.fullmatch(r"[0-9]+", board):
+        raise ValueError("Pinterest 画板 ID 应为数字。")
+    if board and cfg["pinToken"] and not cfg["pinRights"]:
+        raise ValueError("启用 Pinterest 画板同步前，请填写画板内容的引用条件。")
+
+
 def discover():
     cfg = settings()
     entries = []

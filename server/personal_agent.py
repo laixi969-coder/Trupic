@@ -138,6 +138,7 @@ def build_plan(services, tid, tenant):
             brief["storyboard"] = storyboard(
                 video["plan"], locked or video["replacement"]
             )
+            brief["productNarration"] = bool(video["plan"].get("productNarration"))
         status = (
             {"poster": "waiting_copy", "video": "waiting_script"}.get(
                 values["kind"], "quoted"
@@ -163,7 +164,8 @@ def build_plan(services, tid, tenant):
             (i["spec"] for i in result.get("items", []) if i["spec"].get("asset") and i["spec"]["kind"] != "copy"),
             None,
         )
-        if visual_spec:
+        # The narrated script reads the source before drafting in agent_options.
+        if visual_spec and not visual_spec["plan"].get("productNarration"):
             visual_review.prewarm_asset(visual_spec, DATA / tenant / "assets")
 
 
@@ -197,6 +199,7 @@ def task_view(c, services, row):
         shortOptions=brief.get("shortOptions", []),
         workRef=data.get("workRef"),
         storyboard=brief.get("storyboard", []),
+        productNarration=brief.get("productNarration", False),
         asset=data.get("asset", ""),
     )
     if row["locked"]:
@@ -206,6 +209,9 @@ def task_view(c, services, row):
             for k in ("title", "body", "cta", "socialPost", "shareTo", "reply")
             if k in ("title", "body", "cta") or chosen.get(k)
         }
+    for field in ("merchantOffer", "previousOffer", "voiceRevision", "selectedEnding", "endingTakes", "videoMotion"):
+        if brief.get(field):
+            view[field] = brief[field]
     if row["run"]:
         run = services["owner"](c, "creative_run", row["run"], row["tenant"])
         result = services["creation_details"](c, run)
@@ -220,6 +226,10 @@ def task_view(c, services, row):
             "work",
             "preview",
             "video",
+            "subtitles",
+            "offerPoster",
+            "offerReadback",
+            "post",
             "text",
             "download",
         )
@@ -238,6 +248,8 @@ def task_view(c, services, row):
 
 def register(app, services):
     initialize()
+    from . import agent_endings
+    agent_endings.register(app, services, task_view)
     owner, tenant, body = (services[k] for k in ("owner", "reqtenant", "body"))
 
     @app.before_request
@@ -832,8 +844,8 @@ def register(app, services):
             and task
             and task["run"]
             and re.search(
-                r"换一张|换张图|换图|太长|短一点|精简|缩短|换个创意|改[成为]|修改|排版|照这个再做",
-                text,
+                r"换一张|换张图|换图|太长|短一点|精简|缩短|换个创意|改[成为]|修改|排版|照这个再做|片尾|结尾.*(?:口吻|读法)|H3.*背景|背景.*H3",
+                text, re.I,
             )
         ):
             items = [
@@ -981,7 +993,14 @@ def register(app, services):
             )
         try:
             if script:
+                narrated = spec["plan"].get("productNarration") is True
+                if narrated:
+                    visual_review.preflight(spec, DATA / t / "assets")
                 draft = services["generate_copy"](spec["plan"])
+                if narrated and draft.get("reviewFlag") and not draft.get("callError"):
+                    draft = services["generate_copy"](
+                        spec["plan"], revision_note=draft.get("revisionNote") or draft["reviewFlag"]
+                    )
                 if draft.get("reviewFlag"):
                     raise ValueError(
                         draft.get("callError")
@@ -989,6 +1008,11 @@ def register(app, services):
                         or "脚本未通过复核，请补充商品信息后重试。"
                     )
                 draft = {**spec["replacement"], **draft}
+                if offer := spec["plan"].get("merchantOffer"):
+                    from .merchant_offer import bind_script
+                    bind_script(draft, offer)
+                if narrated and spec["plan"].get("sourceReview"):
+                    draft["_source"] = (spec["asset"], spec["plan"]["sourceReview"])
                 if longer := services["long_form"](spec["plan"], draft):
                     draft["longForm"] = longer
                 outline = storyboard(spec["plan"], draft)
@@ -1050,6 +1074,9 @@ def register(app, services):
                 abort(409, description="报价已变动，请按当前任务卡确认。")
             if task["run"] and task["approval_key"] == key:
                 return
+            brief = json.loads(task["brief"])
+            if brief.get("voiceRevision") and not brief.get("selectedEnding"):
+                abort(409, description="请先试听并选定片尾读法。")
             if task["status"] != "quoted" or task["run"]:
                 abort(409, description="任务当前不能确认制作。")
 

@@ -27,7 +27,7 @@ from io import BytesIO
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import model, moments, providers, personal_agent
+from . import model, moments, providers, personal_agent, merchant_blind
 from .copy_choices import apply_choice, choices_for_quote, selected_copy
 from .background import make_scene
 from .creative import (
@@ -286,6 +286,8 @@ def pack(c, w, all_versions=False):
                 asset=spec["asset"],
                 ratio=spec["ratio"],
                 poster=base + "/poster",
+                offerPoster=base + "/offer-poster" if copy.get("merchantOfferProof") and w["kind"] == "video" else None,
+                post=base + "/post" if w["kind"] == "video" else None,
                 download=base + "/download",
                 designSource=base + "/design-source"
                 if w["kind"] == "poster"
@@ -294,6 +296,7 @@ def pack(c, w, all_versions=False):
                 editSource=base + "/edit-source"
                 if w["kind"] == "video" and (folder / "edit.zip").is_file()
                 else None,
+                subtitles=base + "/subtitles" if copy.get("narration") else None,
                 openDesignSource=base + "/open-design-source"
                 if w["kind"] == "video" and (folder / "open-design.zip").is_file()
                 else None,
@@ -808,22 +811,49 @@ def enqueue(t, v, work=None, *, moment=False, agent_reserve=None):
                 q = quotes.loads(v.get("quote") or "", salt="revision", max_age=1800)
             except BadSignature:
                 raise ValueError("请先查看并确认修改报价。")
-            if agent_reserve and q.get("currentAtQuote") != w["current"]:
-                abort(409, description="原作品已有新版本，请刷新修改报价。")
             if q["tenant"] != t or q["work"] != work:
                 abort(403)
+            if (agent_reserve or q["action"] == "h3-background") and q.get("currentAtQuote") != w["current"]:
+                abort(409, description="原作品已有新版本，请刷新修改报价。")
             if type(v.get("confirmedCost")) is not int or v["confirmedCost"] != q["cost"] or v.get("confirmed") is not True:
                 raise ValueError("请确认本次修改的总积分。")
             r = c.execute("SELECT spec,copy FROM version WHERE work=? AND n=?", (work,q["base"])).fetchone()
             s = json.loads(r["spec"])
             s["plan"].pop("agentTask", None)
+            s.pop("filmSourceVersion", None)
+            s.pop("backgroundSourceVersion", None)
+            s.pop("backgroundApproval", None)
+            s["plan"].pop("videoProviderReceipt", None)
+            s.pop("endingTake", None)
             cost = q["cost"]
             s["pricingSnapshot"] = q["pricingSnapshot"]
             nxt = c.execute("SELECT MAX(n)+1 FROM version WHERE work=?", (work,)).fetchone()[0]
             s["variant"] = nxt - 1
             revisions.prepare(s, json.loads(r["copy"]), q["action"], q.get("ratio"), v.get("option", 0),q.get("instruction"),q.get("field"),q.get("region"))
+            s.pop("reuseCloudSet", None)
+            if q["action"] != "h3-background" and s["plan"].get("videoMotion") == "economy":
+                s["reuseCloudSet"] = True
+            if q["action"] == "h3-background":
+                from .video_api import economy_config
+                approval = hashlib.sha256(v["quote"].encode()).hexdigest()
+                if c.execute("SELECT 1 FROM job WHERE tenant=? AND work=? AND json_extract(spec,'$.backgroundApproval')=?",
+                             (t, work, approval)).fetchone():
+                    abort(409, description="此背景报价已提交，请查看原任务或从原任务重试。")
+                economy_config()
+                s["variant"] = json.loads(r["spec"])["variant"]
+                s["backgroundSourceVersion"] = q["base"]
+                s["backgroundApproval"] = approval
             if q.get("rewrite"):
                 s["replacement"] = q["rewrite"]
+            if q.get("reuseFilm"):
+                s["variant"] = json.loads(r["spec"])["variant"]
+                s["filmSourceVersion"] = q["base"]
+            if q.get("endingPreview") and not q.get("endingTake"):
+                raise ValueError("请先试听并选择片尾读法。")
+            if q.get("endingTake"):
+                if not agent_reserve:
+                    raise ValueError("请在营销助理中确认试听后的报价。")
+                s["endingTake"] = q["endingTake"]
             if q["action"] == "region":
                 s["variant"] = json.loads(r["spec"])["variant"]
                 s["regionEdit"] = dict(work=work,version=q["base"],box=q["region"],instruction=q["instruction"])
@@ -905,9 +935,32 @@ def make_revision_quote(t, id, v):
         if action == "moment-copy" and "moment" in spec["plan"]:
             options = moments.drafts(spec["plan"])
         instruction = v.get("instruction")
+        previous_offer = spec["plan"].get("merchantOffer")
+        if v.get("product") and v["product"] != (previous_offer or {}).get("product"):
+            raise ValueError("这次写的商品名与原作品不同，请选择对应商品的作品。")
+        wants_ending = v.get("endingPreview") is True or action == "ending"
+        if wants_ending and (spec["kind"] != "video" or not spec["plan"].get("productNarration") or not cp.get("narration")):
+            raise ValueError("请选择一条已交付的逐镜口播商品短片。")
         if action == "edit":
             instruction = revisions.resolve_instruction(spec,cp,instruction,v.get("field"))
         revisions.prepare(spec, cp, action, v.get("ratio"),instruction=instruction,field=v.get("field"),region=v.get("region"))
+        offer = spec["plan"].get("merchantOffer")
+        reuse_film = bool(spec["kind"] == "video" and cp.get("narration") and
+                          (wants_ending or (action == "edit" and offer and offer != previous_offer)))
+        film_scope = None
+        if action == "h3-background":
+            from .video_api import economy_config
+            from .film_background import verify_archive
+            if wants_ending or v.get("duplicate"):
+                raise ValueError("动态背景对照需保留原音轨和同一作品。")
+            economy_config()
+            verify_archive(DATA / t / "works" / id / str(base) / "edit.zip", cp["storyboard"], spec["plan"]["output"])
+            film_scope = dict(storyboard=cp["storyboard"], productNarration=True, merchantOffer=offer,
+                              videoMotion="economy", deliveries=["仅替换动态背景，沿用商品图、口播、字幕及价格"])
+        if reuse_film:
+            film_scope = dict(storyboard=storyboard(spec["plan"], spec["replacement"]), productNarration=True,
+                              merchantOffer=offer, previousOffer=previous_offer, voiceRevision=wants_ending,
+                              deliveries=["短片、活动海报、字幕、配文"] if offer else ["短片、字幕、配文"])
         rewrite = None
         if action == "revision":
             rewrite = generate_copy(spec["plan"], revision_note="在保留事实与指定标题的前提下，换一个创意角度。上一稿标题：" + cp["title"])
@@ -916,8 +969,11 @@ def make_revision_quote(t, id, v):
             spec["replacement"] = rewrite
         cost = pricing.snapshot(spec, pricing.current(c), "revision")
         quote = quotes.dumps(dict(tenant=t, work=id, base=base, currentAtQuote=w["current"], action=action, rewrite=rewrite, ratio=v.get("ratio"),
+                                  **({"approvalId": ident()} if action == "h3-background" else {}),
+                                  reuseFilm=reuse_film, endingPreview=wants_ending,
                                   pricingSnapshot=spec["pricingSnapshot"], cost=cost, instruction=instruction,field=v.get("field"),region=v.get("region"),duplicate=v.get("duplicate") is True), salt="revision")
-        return dict(cost=cost, options=options, quote=quote, changes={k:spec["replacement"].get(k) for k in ("title","body","cta","offer","terms")} if action in ("edit","revision") else None)
+        return dict(cost=cost, options=options, quote=quote, filmScope=film_scope,
+                    changes={k:spec["replacement"].get(k) for k in ("title","body","cta","offer","terms")} if action in ("edit","revision","ending") else None)
 
 
 @app.post("/api/works/<id>/revise")
@@ -1029,7 +1085,8 @@ def produce_job(id):
 
     try:
         stage("正在准备素材和文案")
-        if (p.get("autoCreation") and model.route("vision")["model"]) or (not p.get("bundleRole") and not p.get("autoCreation")):
+        locked_background = s.get("backgroundSourceVersion")
+        if not locked_background and ((p.get("autoCreation") and model.route("vision")["model"]) or (not p.get("bundleRole") and not p.get("autoCreation"))):
             preflight(s, DATA / t / "assets")
         cached_copy = j["copy_checkpoint"]
         if (cached_copy and p.get("autoCreation") and not s.get("copySelected")
@@ -1062,7 +1119,7 @@ def produce_job(id):
             ap = DATA / t / "assets" / s["asset"] / filename
         if n == 1 and s["kind"] in ("poster", "video") and not s.get("regionEdit"):
             elevate_for_production(s, cp)
-        if s["kind"] == "video":
+        if s["kind"] == "video" and not locked_background:
             if not (p.get("agentTask") and s.get("copySelected")) and (longer := long_form(p, cp)):
                 cp["longForm"] = longer
             cp["storyboard"] = storyboard(p, cp, ap)
@@ -1080,6 +1137,8 @@ def produce_job(id):
             + json.dumps(p["profile"], ensure_ascii=False)
         )
         words = cp["title"] + " " + cp["body"] + " " + cp["cta"]
+        if p.get("productNarration"):
+            words += " " + " ".join(shot["narration"] for shot in cp["storyboard"])
         if s["kind"] == "video" and cp["storyboard"][1].get("evidence"):
             words += " " + cp["storyboard"][1]["line"]
             known += " " + p.get("markedDetail", {}).get("label", "")
@@ -1095,7 +1154,21 @@ def produce_job(id):
         new_scene = bool(s["kind"] == "poster" and not ap and p.get("visualSource") == "concept"
                          and p.get("layoutOverride") and s.get("variant", 0) > 0)
         scene = f"concept-{s['variant']}" if new_scene else "concept"
-        if s.get("regionEdit"):
+        if s.get("filmSourceVersion"):
+            background, visual_engine = None, "复用已交付净画面"
+        elif s.get("reuseCloudSet"):
+            frames = Path(p.get("videoBackground") or "")
+            if not frames.is_relative_to(DATA / t / "works") or not (frames / "001.jpg").is_file():
+                raise ValueError("原动态背景文件不可用，请恢复原素材，或重新确认生成背景。")
+            background, visual_engine = None, "复用已交付动态背景"
+        elif s["kind"] == "video" and p.get("videoMotion") == "local":
+            background, visual_engine = None, "本地商品运镜"
+        elif s["kind"] == "video" and p.get("videoMotion") == "economy":
+            from .video_api import economy_config, prepare_background
+            cfg = economy_config()
+            p["videoBackground"] = str(prepare_background(dest, p, cp, cfg=cfg))
+            background, visual_engine = None, cfg["model"]
+        elif s.get("regionEdit"):
             background, visual_engine = None, "海报局部修图"
         elif p.get("autoCreation") and s["kind"] != "copy" and p.get("bundleRole") not in ("white","overlay","box","bag","card"):
             background, visual_engine = None, "本地商品素材排版"
@@ -1181,10 +1254,20 @@ def produce_job(id):
                         source = DATA / t / "works" / local_edit["work"] / str(local_edit["version"])
                         layout = region_edit.original_layout(source, dest, cp)
                     if layout is None:
-                        stage((repair_plan or {}).get("stage", "正在调整排版") if repair else "正在排版并导出成品")
+                        stage((repair_plan or {}).get("stage", "正在调整排版") if repair else
+                              "正在合成逐镜口播、字幕与配乐" if p.get("productNarration") else "正在排版并导出成品")
+                        film_context = {}
+                        if locked_background:
+                            film_context["backgroundArchive"] = str(dest.parent / str(locked_background) / "edit.zip")
+                        if s.get("filmSourceVersion"):
+                            source = dest.parent / str(s["filmSourceVersion"])
+                            film_context["sourceEdit"] = str(source / "edit.zip")
+                        if take := s.get("endingTake"):
+                            film_context.update(previewFolder=str(DATA / t / "ending-previews" / take["task"] / take["batch"]),
+                                                takeKey=take["key"])
                         layout = render(
                             dest,
-                            p,
+                            {**p, "_filmRevision": film_context} if film_context else p,
                             cp,
                             s["kind"],
                             chosen,
@@ -1192,7 +1275,7 @@ def produce_job(id):
                             s["variant"],
                             background,
                             custom_font,
-                            repair=repair,
+                            repair=repair and not locked_background,
                         )
                     if s["kind"] == "poster":
                         region_edit.apply(dest,DATA / t / "works",layout,s,id)
@@ -1259,6 +1342,8 @@ def produce_job(id):
                     )
                 if not issues:
                     break
+                if locked_background:
+                    raise ValueError("背景对照未通过检查：" + "；".join(issues))
                 if terminal:
                     raise ValueError(visual["content"]["reason"])
                 if repair:
@@ -1322,6 +1407,15 @@ def produce_job(id):
             cp["protectedAreas"] = region_edit.protected(layout["frames"][0])
             if edit := s.pop("regionEdit",None):
                 p.setdefault("backgroundPatches",[]).append(dict(work=work,version=n,job=id,box=edit["box"]))
+        if p.get("merchantOffer"):
+            from .merchant_offer import campaign_poster, check_delivery
+            stage("正在核对活动海报、口播、字幕和发布配文" if s["kind"] == "video" else "正在核对发布配文的活动信息")
+            offer = p["merchantOffer"]
+            if s["kind"] == "video":
+                campaign_poster(dest, ap.with_name("original.png"), offer)
+            cp["merchantOfferProof"] = check_delivery(dest, p, s["kind"])
+            checks.append({"label":"活动价核对", "detail":f"{offer['weekday']} {offer['amount']} 元 · " +
+                           ("活动海报、发布配文、成片口播和两种字幕已分别读回。" if s["kind"] == "video" else "发布配文已读回。")})
         if renderer := layout.get("videoRenderer"):
             checks.append({"label": "短片渲染引擎", "detail": renderer})
         if visual:
@@ -1429,6 +1523,14 @@ def produce_job(id):
                 }
             )
         if s["kind"] == "video":
+            if layout.get("narration"):
+                narration = layout["narration"]
+                cp["narration"] = narration
+                style = {"warm": "温暖亲切", "bright": "轻快明亮", "mixed": "分镜调节"}.get(narration.get("style"))
+                voice = f'{narration["provider"]} · {narration["speaker"]}'
+                if style and narration.get("styleApplied"):
+                    voice += f" · {style}"
+                checks.append({"label": "逐镜口播", "detail": f'{voice} · {len(narration["cues"])} 段同步字幕。'})
             checks.append(
                 {
                     "label": "短片检查",
@@ -1436,7 +1538,7 @@ def produce_job(id):
                 }
             )
         with db(True) as c:
-            object_storage.enqueue(c,dest,["poster.png","copy.txt","poster.svg","video.mp4","edit.zip","open-design.zip"])
+            object_storage.enqueue(c,dest,["poster.png","offer-poster.png","copy.txt","poster.svg","video.mp4","edit.zip","open-design.zip","captions.srt"])
             if n == 1:
                 c.execute(
                     "INSERT INTO work VALUES(?,?,?,?,?)", (work, t, s["kind"], 1, now())
@@ -1550,9 +1652,12 @@ def output(id, n, mode):
             abort(404)
     file = {
         "poster": "poster.png",
+        "offer-poster": "offer-poster.png",
+        "post": "copy.txt",
         "design-source": "poster.svg",
         "edit-source": "edit.zip",
         "open-design-source": "open-design.zip",
+        "subtitles": "captions.srt",
         "video": "video.mp4",
         "download": {"copy": "copy.txt", "poster": "poster.png", "video": "video.mp4"}[
             w["kind"]
@@ -1564,7 +1669,7 @@ def output(id, n, mode):
     suffix = "-OpenDesign.zip" if mode == "open-design-source" else path.suffix
     filename = "响指出片-" + json.loads(r["copy"])["title"] + suffix
     signed = None
-    if mode in ("download","design-source","edit-source","open-design-source") and request.headers.get("X-Trupic-Native") != "1":
+    if mode in ("download","design-source","edit-source","open-design-source","subtitles") and request.headers.get("X-Trupic-Native") != "1":
         with db() as c:
             signed = object_storage.download_url(c,path,filename)
     if not signed and not path.exists():
@@ -1582,7 +1687,7 @@ def output(id, n, mode):
         return response
     return send_file(
         path,
-        as_attachment=mode in ("download", "design-source", "edit-source", "open-design-source"),
+        as_attachment=mode in ("download", "design-source", "edit-source", "open-design-source", "subtitles"),
         download_name=filename,
         conditional=True,
     )
@@ -2194,6 +2299,7 @@ work_history.register(app, globals())
 register_bundles(app, globals())
 creation_submit, creation_details = register_creations(app, globals())
 personal_agent.register(app, globals())
+merchant_blind.register(app, globals())
 register_voice(app, reqtenant)
 register_model_tools(app, globals())
 model_admission.register(app, globals())

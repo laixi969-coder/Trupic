@@ -41,6 +41,11 @@ def edit_request(spec, cp, instruction, field):
     changed = False
     clauses = [s.strip() for s in re.split(r"[；;\n]", instruction) if s.strip()]
     for clause in clauses:
+        from . import merchant_offer
+        if plan.get("merchantOffer") and (change := merchant_offer.parse_change(clause)):
+            merchant_offer.update_copy_and_plan(plan, cp, change)
+            changed = True
+            continue
         price = re.fullmatch(
             r"(?:把|将)?(?:价格|售价)?(?:从)?\s*(\d+(?:\.\d+)?)\s*元?\s*(?:改为|改成|调为|调整为|换成|改到)\s*(\d+(?:\.\d+)?)\s*元[。！]?",
             clause,
@@ -133,6 +138,19 @@ def resolve_instruction(spec, cp, instruction, field):
 
 def prepare(spec, cp, action, ratio=None, option=0, instruction=None, field=None, region=None):
     plan = spec["plan"]
+    if action == "h3-background":
+        if (spec["kind"] != "video" or not spec.get("asset") or not plan.get("productNarration")
+                or plan.get("output", {}).get("duration") != 15 or not cp.get("narration")):
+            raise ValueError("请选择已交付的 15 秒商品口播短片作为背景对照。")
+        if instruction and (offer := plan.get("merchantOffer")):
+            from .merchant_offer import _written_facts
+            days, prices = _written_facts(instruction)
+            if days - {offer.get("weekday")} or prices - {offer.get("amount")}:
+                raise ValueError("背景对照的活动日期和价格必须与选定版本一致，请先选择正确的版本。")
+        plan["videoMotion"] = "economy"
+        spec["replacement"] = cp
+        spec["copySelected"] = True
+        return
     if action in ("layout","image","ratio","redesign"):
         plan.pop("backgroundPatches", None)
     if action == "region":
@@ -176,6 +194,9 @@ def prepare(spec, cp, action, ratio=None, option=0, instruction=None, field=None
         if type(option) is not int or not 0 <= option < len(values):
             raise ValueError("请选择有效的精简文案。")
         cp.update(body=values[option], detailLine=values[option])
+    elif action == "ending":
+        if spec["kind"] != "video" or not plan.get("productNarration") or not cp.get("narration"):
+            raise ValueError("请选择一条已交付的逐镜口播商品短片。")
     elif action in ("revision", "redesign"):
         if action == "redesign" and (design := spec["plan"].get("design")):
             spec["plan"]["design"] = next_style(design)

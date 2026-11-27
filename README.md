@@ -38,11 +38,29 @@ npm start
 
 营销助理的语音输入需要 FFmpeg、whisper.cpp 的 `whisper-cli` 和支持中文的多语 GGML 模型（如 `ggml-small.bin`）。在服务进程环境中设置 `TRUPIC_WHISPER_MODEL` 指向模型文件，或将其放在项目的 `.trupic/models/ggml-small.bin`。CLI 可通过 `TRUPIC_WHISPER_CLI` 指定，也可放在 `.trupic/bin/whisper-cli` 或系统 PATH 中。这两个项目内路径都支持软链接。中文回复使用 macOS `say` 的 Tingting 嗓音，Linux 使用 `espeak-ng` 的 `cmn` 嗓音，可用 `TRUPIC_TTS_VOICE` 调整。语音请求沿用 V4 工作空间会话，每段录音最多 60 秒、6 MB，每次朗读最多 600 字。转写只返回文字，朗读返回 MP3，临时音频在请求结束时清理。
 
+### 商家盲评
+
+在营销助理打开「商家盲评」，从餐饮、零售、到店服务各 12 份简报中选题，带入创作并核对本店经营条件。成品交付后可从任务卡评价首稿，有修改版时可进入两版盲选。先分别选择能否直接发布，退稿须记录原因，提交后显示版本、制作耗时和实际扣分。商家亲自改稿的分钟数可单独填写。演示答卷与正式商家统计分开，活动条件变更的回顾评价单独标记。
+
+[36 条行业简报](docs/research/video-integration/matcha-blind-review/36条行业简报.md) · [抹茶两版盲选与验收实录](docs/research/video-integration/matcha-blind-review/README.md)
+
+同价背景对照可从已交付的商品短片发起。选定要对照的版本，对营销助理说「只用 H3 替换动态背景，保留商品图、口播和字幕」，确认本次修改报价。系统从原片剪辑包取用已交付的净画面、音轨、字幕图层和镜头时间。评审时选该版和新交付的版本，两版均为修改稿时只记录版本偏好。
+
+### 一张商品图做 15 秒带货视频
+
+在「营销助理」新对话上传一张清晰的商品图，说明想让顾客看什么、接下来做什么。例如“给店里的抹茶拿铁做一条 15 秒竖屏口播，介绍杯壁的分层，邀请顾客到店点一杯”。网页会自动生成并复核脚本。任务卡也可点「生成并复核脚本」，随后核对开场、细节和收尾三句。也可以点「使用我的文案」，按三行填入自己的台词。确认报价后，积分按原有规则预占，交付后结算。成片可直接带声播放，作品页可下载字幕，剪辑包包含净画面、人声、配乐和时间线。[抹茶拿铁从上传到交付的实录](docs/research/video-integration/merchant-demo/README.md)
+
+商品片使用独立的本机中文神经配音。部署方安装项目依赖后运行 `.venv/bin/python -m server.film_voice --prepare` 下载并校验 Kokoro v1.1-zh 模型，支持 CPU。可用 `TRUPIC_FILM_VOICE_SPEAKER` 选择中文音色，默认 59。生成时按实际发声时间排字幕，人声出现时自动压低配乐。超出镜头可用时长太多的台词会提示缩短，系统保留商家确认的原句。[中文音色与模型说明](https://huggingface.co/hexgrad/Kokoro-82M-v1.1-zh)
+
+Apple Silicon 可运行 `.venv/bin/python -m server.film_voice --prepare-qwen`，为 Qwen3-TTS 1.7B CustomVoice 准备独立的 MLX 环境和约 2.31 GB 的模型权重。就绪后，默认优先使用 Qwen。在需求里加“语气轻快一点”或“用温柔的口吻”，助理将语气要求和逐镜朗读指令单独传给配音模型。剪辑包和成片的字幕仍沿用确认过的逐字台词。可用 `TRUPIC_FILM_VOICE_ENGINE` 显式选择 `qwen3-mlx` 或 `kokoro`。[Qwen 语气控制和预置音色](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
+
+在这条商品口播流程中，可以写“抹茶拿铁，周五到店价 18.90 元”，确认单个活动的商品、日期和价格。交付包会多一张独立的活动海报。成片交付后，对助理说“周五价从 18.90 改成 19.90，只把片尾换成轻快口吻”，可在新报价上试听片尾并选择读法。原版本仍可打开。交付时服务会从实际 PNG、MP4 字幕像素、SRT、配文和 MP4 的声音核对活动信息；读回有冲突会停止该项交付。此步骤使用上文配置的本地 Whisper 及项目依赖中的 RapidOCR。部署时可运行 `.venv/bin/python -m server.merchant_offer --prepare-ocr` 预装并实测两份中文 PP-OCRv5 mobile 权重，首次下载合计约 20.5 MB，随后可离线识别。设置 `TRUPIC_OCR_MODEL_DIR` 可指定持久化模型目录，预装命令和服务进程使用同一目录。[模型来源和许可](https://github.com/RapidAI/RapidOCR/blob/e1e8eef04b72c89dd5c0ccd6f2a0101493918f30/python/MODEL_LICENSES.md) · [抹茶改价与积分验收](docs/research/video-integration/matcha-friday-revision/checks.json)
+
 ## 商家操作
 
 1. 在原创作台选「图片文字一键」或「视频文字一键」，输入需求。商家名称、商品照片均可留空。「商家档案」可多选行业、自定义行业；「宣传用途与商品」用于指定本次的推广对象。
 2. 选择带形状图示的画幅。图文可选一张或两张海报，均配发布文案。可批量上传，核对自动建议的商品、风格和构图来源。上传获得授权的参考视频可以辅助安排镜头节奏。视频体验档为 15 秒，有效订阅可选 30 或 45 秒；较长视频需要足够的不同卖点或场景。30／45 秒短片在已连接文案模型时另写开场钩子与结尾行动句，与 15 秒版不同；草稿含未经商家确认的数字或承诺时沿用原句。
-3. 核对交付项和总积分后开始。任务按成品预占积分，交付后结算，失败项释放预占，可单独重试。刷新后可从历史继续查看，视频默认静音。旧组合制作接口仍支持选稿和九秒作品。
+3. 核对交付项和总积分后开始。任务按成品预占积分，交付后结算，失败项释放预占，可单独重试。刷新后可从历史继续查看成品。旧组合制作接口仍支持选稿和九秒作品。
 4. 在作品页可点选新版海报的文字、缩短文案、指定价格替换、换画面、恢复旧版本，或保留原需求换画幅另存。「换一张」保留文案：有实拍图的作品只换版式并沿用底图，没有实拍图的作品重新生成配图。修改先报总价，取消不扣。历史支持逐条、勾选及全部删除，可撤销上一批。
 5. 右上角「积分」显示余额、任务预占与退回记录、套餐和订单。「邀请与推广」提供绑定账号后的邀请链接与二维码，渠道账号另外显示授权范围内的客户与佣金。
 
@@ -103,6 +121,8 @@ npm start
 - **测试连接**：使用当前表单执行实际请求，不切换正式路由。文案检查结构化响应，视觉审核识别随机色卡，图片实际生成并解码，视频提交异步任务、查询、下载并解码 216 帧。图片和视频可在测试结果内预览；显示耗时和错误原因。测试会产生平台用量。视频查询超时后在同一测试结果上重试会复用原任务。
 
 云端视频接入方舟异步任务、Atlas Cloud 文生视频和百炼万相异步文生视频。连接使用对应平台的提交与查询协议。各模型返回的素材在本地按确认时长合成，重试复用已有任务。百炼可使用所属工作空间的 Base URL。[Atlas 视频协议](https://www.atlascloud.ai/docs/models/video) · [百炼视频协议](https://www.alibabacloud.com/help/en/model-studio/text-to-video-api-reference)动态视频提供成品和含净画面、字幕、音轨的剪辑包；静态 HyperFrames 源工程不适用于动态背景，不提供该项导出。今日请求统计按平台、模型和用途展示请求、耗时及平台返回的 token 用量；视频统计为任务提交响应，并非成品质量结论。
+
+15 秒商品讲解片可选择本地商品运镜或 H3 经济动态背景。H3 使用当前 Atlas 视频连接的 `minimax/h3-developer/text-to-video`，提交 9 秒、480P 的环境画面，关闭提示词扩写。本地再合成 15 秒成片，叠入原商品、人声和字幕。Atlas 模型页列出的起价为每秒 0.015 美元，9 秒按起价估算约 0.135 美元；商家仍按 Trupic 报价确认积分。模型须在该连接的已同步目录内，生产环境沿用模型准入。试听和盲评复用已交付文件。[Atlas H3 Developer 接口与计价](https://www.atlascloud.ai/models/minimax/h3-developer/text-to-video)
 
 方舟与百炼按所填地址和密钥同步模型。视觉审核所选模型须支持同一请求内的多张 Base64 图片。各平台的 Chat Completions 文档列出适配的模型和输入格式。[Atlas Cloud](https://www.atlascloud.ai/docs/llm-protocols) · [火山方舟](https://docs.volcengine.com/docs/ark/chat-api) · [阿里云百炼](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope) · [DeepSeek](https://api-docs.deepseek.com/api/create-chat-completion/)
 

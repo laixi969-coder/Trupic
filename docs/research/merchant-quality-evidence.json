@@ -1,0 +1,524 @@
+{
+  "date": "2026-11-26",
+  "scope": "单一开发机、隔离任务。秒数限对应步骤，各组样片可能使用不同定稿，不是线上延迟、人工偏好或真实业绩。",
+  "voice_revision": {
+    "inputs": [
+      "video-integration/merchant-demo/generated/edit.zip",
+      "video-integration/merchant-demo/expressive/generated/edit.zip"
+    ],
+    "entry_point": "server.film_edit.render_master",
+    "method": "第一包净画面、固定标题，加第二包混音、字幕图层及其真实入出帧，与第二个自动稿的正式交付 MP4 逐字节比对。",
+    "identical_input_asset_sha256": {
+      "picture.mp4": "bfd7c932d8d6f6ee93d62bda56b2e815249c1805d89f1f29eefad5d741f087c8",
+      "title-1.png": "cd3353aa2962301c8c85b948230fe398764b5c76cccd72d0bbd0bd2eb718cb1b",
+      "title-2.png": "cd3353aa2962301c8c85b948230fe398764b5c76cccd72d0bbd0bd2eb718cb1b",
+      "title-3.png": "cd3353aa2962301c8c85b948230fe398764b5c76cccd72d0bbd0bd2eb718cb1b"
+    },
+    "composition_seconds": [
+      0.914,
+      0.94,
+      0.837
+    ],
+    "output_byte_equality_to_delivery": true,
+    "duration_s": 15.0,
+    "delivered_file": "video-integration/merchant-demo/expressive/generated/film.mp4",
+    "delivered_sha256": "ef9a09187e132a7a16eace8b4252822b6d2d1adb6a1c0fc5e05d0c4d754d4a8d",
+    "workflow_observations": {
+      "modelCalls": [
+        {
+          "kind": "text",
+          "model": "Qwen3-VL-2B-Instruct",
+          "calls": 5,
+          "ok": 4
+        },
+        {
+          "kind": "vision",
+          "model": "Qwen3-VL-2B-Instruct",
+          "calls": 6,
+          "ok": 6
+        }
+      ],
+      "before": 120,
+      "afterQuote": 120,
+      "confirmedCost": 12,
+      "after": 108,
+      "replayReturnedSameJobs": true
+    }
+  },
+  "visual_fact_readback": {
+    "synthetic_inputs": [
+      {
+        "image": "ok.png",
+        "truth": "到店价 ¥18.90，仅限周五。"
+      },
+      {
+        "image": "mut-price.png",
+        "truth": "到店价 ¥19.90，仅限周五。"
+      },
+      {
+        "image": "mut-day.png",
+        "truth": "到店价 ¥18.90，仅限周六。"
+      }
+    ],
+    "expected_source": "到店价 ¥18.90，仅限周五。",
+    "poster_checks": "按初始文本和区域调用 server.visual_review.text_check、package_check，三张图这两项均返回 None；未模拟整套商业交付检查。",
+    "film": "video-integration/merchant-demo/expressive/generated/film.mp4",
+    "frame_seconds": [
+      0.45,
+      4.2,
+      10.65
+    ],
+    "apple_vision_readings": [
+      {
+        "input": "film-0.45.png",
+        "elapsed_ms": 159,
+        "reading": "瞧瞧杯壁。"
+      },
+      {
+        "input": "film-4.2.png",
+        "elapsed_ms": 61,
+        "reading": "你看，抹茶和牛奶分层清晰。"
+      },
+      {
+        "input": "film-10.65.png",
+        "elapsed_ms": 53,
+        "reading": "来店里点一杯。"
+      },
+      {
+        "input": "ok.png",
+        "elapsed_ms": 37,
+        "reading": "到店价￥18.90，仅限周五。"
+      },
+      {
+        "input": "mut-price.png",
+        "elapsed_ms": 33,
+        "reading": "到店价￥19.90，仅限周五。"
+      },
+      {
+        "input": "mut-day.png",
+        "elapsed_ms": 33,
+        "reading": "到店价￥18.90，仅限周六。"
+      }
+    ],
+    "rapidocr": {
+      "package": "3.10.0",
+      "models": "Chinese PP-OCRv5 mobile detection and recognition via ONNX",
+      "results": [
+        {
+          "file": "ok.png",
+          "lines": [
+            "到店价¥18.90，仅限周五。"
+          ],
+          "confidence": [
+            0.9663
+          ],
+          "seconds": 19.26
+        },
+        {
+          "file": "mut-price.png",
+          "lines": [
+            "到店价¥19.90，仅限周五。"
+          ],
+          "confidence": [
+            0.967
+          ],
+          "seconds": 0.123
+        },
+        {
+          "file": "mut-day.png",
+          "lines": [
+            "到店价￥18.90，仅限周六。"
+          ],
+          "confidence": [
+            0.9788
+          ],
+          "seconds": 0.108
+        },
+        {
+          "file": "film-0.45.png",
+          "lines": [
+            "瞧瞧杯壁。"
+          ],
+          "confidence": [
+            0.9774
+          ],
+          "seconds": 0.119
+        },
+        {
+          "file": "film-4.2.png",
+          "lines": [
+            "你看，抹茶和牛奶分层清晰。"
+          ],
+          "confidence": [
+            0.9986
+          ],
+          "seconds": 0.123
+        },
+        {
+          "file": "film-10.65.png",
+          "lines": [
+            "来店里点一杯。"
+          ],
+          "confidence": [
+            0.9988
+          ],
+          "seconds": 0.126
+        }
+      ]
+    }
+  },
+  "line_break": {
+    "font_px": 32,
+    "width_px": 160,
+    "example": {
+      "input": "今天来看《春日》礼盒。",
+      "current": [
+        "今天来看《",
+        "春日》礼",
+        "盒。"
+      ],
+      "uax14": [
+        "今天来看",
+        "《春日》礼",
+        "盒。"
+      ]
+    },
+    "currency_still_splits": [
+      "拿铁",
+      "¥18.90／",
+      "杯，限周",
+      "五。"
+    ]
+  },
+  "matte": {
+    "method": "240×200 有参考真值的合成图，三分图，换背景后计算混合带 RGB 的平均绝对误差（0 到 255 量纲）。",
+    "mixed_edge_pixels": 1372,
+    "rgb_mae_on_edge": {
+      "hard_source": 26.938084,
+      "perfect_alpha_with_source_rgb": 20.525281,
+      "estimated_alpha_with_source_rgb": 20.525248,
+      "estimated_alpha_and_foreground_rgb": 0.031781
+    }
+  },
+  "voice_alignment": {
+    "recordings": [
+      "video-integration/merchant-demo/voice-comparison/vivian-warm.mp3",
+      "video-integration/merchant-demo/voice-comparison/vivian-bright.mp3"
+    ],
+    "mix": "video-integration/merchant-demo/expressive/film.mp4",
+    "method": "两份四句固定稿的原始 WAV，另取温暖版 MP4 混音及同一干声配错误尾句。ffmpeg 解码为 16 kHz 单声道，输入给 MLX 社区版 Qwen3 ForcedAligner 0.6B 4bit。stem 为合成时的句段区间，无人工逐字真值。",
+    "runs": [
+      {
+        "case": "warm",
+        "seconds": 0.829,
+        "units": 34,
+        "boundaries": [
+          {
+            "text": "这一杯，先别搅。",
+            "align": [
+              0.08,
+              1.76
+            ],
+            "stem": [
+              0.075,
+              1.861
+            ],
+            "delta": [
+              0.005,
+              -0.101
+            ]
+          },
+          {
+            "text": "顺着杯壁看，抹茶和牛奶留下了两种颜色。",
+            "align": [
+              3.12,
+              7.84
+            ],
+            "stem": [
+              3.075,
+              7.914
+            ],
+            "delta": [
+              0.045,
+              -0.074
+            ]
+          },
+          {
+            "text": "想喝抹茶拿铁？",
+            "align": [
+              10.08,
+              11.68
+            ],
+            "stem": [
+              10.075,
+              11.714
+            ],
+            "delta": [
+              0.005,
+              -0.034
+            ]
+          },
+          {
+            "text": "到店点一杯。",
+            "align": [
+              11.84,
+              12.8
+            ],
+            "stem": [
+              11.844,
+              12.822
+            ],
+            "delta": [
+              -0.004,
+              -0.022
+            ]
+          }
+        ],
+        "peakGiB": 1.77
+      },
+      {
+        "case": "bright",
+        "seconds": 0.099,
+        "units": 34,
+        "boundaries": [
+          {
+            "text": "这一杯，先别搅。",
+            "align": [
+              0.08,
+              2.08
+            ],
+            "stem": [
+              0.075,
+              2.107
+            ],
+            "delta": [
+              0.005,
+              -0.027
+            ]
+          },
+          {
+            "text": "顺着杯壁看，抹茶和牛奶留下了两种颜色。",
+            "align": [
+              3.12,
+              7.92
+            ],
+            "stem": [
+              3.075,
+              7.914
+            ],
+            "delta": [
+              0.045,
+              0.006
+            ]
+          },
+          {
+            "text": "想喝抹茶拿铁？",
+            "align": [
+              10.08,
+              11.76
+            ],
+            "stem": [
+              10.075,
+              11.867
+            ],
+            "delta": [
+              0.005,
+              -0.107
+            ]
+          },
+          {
+            "text": "到店点一杯。",
+            "align": [
+              12.0,
+              12.88
+            ],
+            "stem": [
+              11.997,
+              12.905
+            ],
+            "delta": [
+              0.003,
+              -0.025
+            ]
+          }
+        ],
+        "peakGiB": 1.79
+      },
+      {
+        "case": "mp4mix",
+        "seconds": 0.104,
+        "units": 34,
+        "boundaries": [
+          {
+            "text": "这一杯，先别搅。",
+            "align": [
+              0.08,
+              1.76
+            ],
+            "stem": [
+              0.075,
+              1.861
+            ],
+            "delta": [
+              0.005,
+              -0.101
+            ]
+          },
+          {
+            "text": "顺着杯壁看，抹茶和牛奶留下了两种颜色。",
+            "align": [
+              3.12,
+              7.84
+            ],
+            "stem": [
+              3.075,
+              7.914
+            ],
+            "delta": [
+              0.045,
+              -0.074
+            ]
+          },
+          {
+            "text": "想喝抹茶拿铁？",
+            "align": [
+              10.08,
+              11.68
+            ],
+            "stem": [
+              10.075,
+              11.714
+            ],
+            "delta": [
+              0.005,
+              -0.034
+            ]
+          },
+          {
+            "text": "到店点一杯。",
+            "align": [
+              11.84,
+              12.8
+            ],
+            "stem": [
+              11.844,
+              12.822
+            ],
+            "delta": [
+              -0.004,
+              -0.022
+            ]
+          }
+        ],
+        "peakGiB": 1.79
+      },
+      {
+        "case": "wrongprice",
+        "seconds": 0.096,
+        "units": 36,
+        "boundaries": [
+          {
+            "text": "这一杯，先别搅。",
+            "align": [
+              0.08,
+              1.76
+            ],
+            "stem": [
+              0.075,
+              1.861
+            ],
+            "delta": [
+              0.005,
+              -0.101
+            ]
+          },
+          {
+            "text": "顺着杯壁看，抹茶和牛奶留下了两种颜色。",
+            "align": [
+              3.12,
+              7.84
+            ],
+            "stem": [
+              3.075,
+              7.914
+            ],
+            "delta": [
+              0.045,
+              -0.074
+            ]
+          },
+          {
+            "text": "想喝抹茶拿铁？",
+            "align": [
+              10.08,
+              11.68
+            ],
+            "stem": [
+              10.075,
+              11.714
+            ],
+            "delta": [
+              0.005,
+              -0.034
+            ]
+          },
+          {
+            "text": "今天免费送两杯。",
+            "align": [
+              11.68,
+              12.8
+            ],
+            "stem": [
+              11.844,
+              12.822
+            ],
+            "delta": [
+              -0.164,
+              -0.022
+            ]
+          }
+        ],
+        "peakGiB": 1.79
+      }
+    ]
+  },
+  "scene_boundaries": {
+    "method": "PySceneDetect 默认 AdaptiveDetector、ContentDetector 与 FFmpeg scale=320:-2 + scene>0.3 比较，24fps。",
+    "control": {
+      "duration": 8,
+      "source_stills": [
+        "server/scenes/matcha.webp",
+        "server/scenes/bakery.webp",
+        "server/scenes/citrus.webp"
+      ],
+      "expected": [
+        2,
+        5
+      ],
+      "adaptive": [
+        2,
+        5
+      ],
+      "content": [
+        2,
+        5
+      ],
+      "ffmpeg": [
+        2,
+        5
+      ]
+    },
+    "sample": {
+      "source": "video-integration/merchant-demo/expressive/film.mp4",
+      "expected": [
+        3,
+        10
+      ],
+      "adaptive": [
+        10
+      ],
+      "content": [],
+      "ffmpeg": []
+    }
+  }
+}

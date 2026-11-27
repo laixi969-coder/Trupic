@@ -1,0 +1,103 @@
+{
+  "model": "minimax/h3-developer/text-to-video",
+  "chargeStatus": "charged",
+  "modelCharge": {
+    "amount": "0.135",
+    "currency": "USD",
+    "field": "price"
+  },
+  "accountCashDeltaUSD": "-0.135",
+  "providerPredictionFingerprint": "8466228ffd3b8543",
+  "providerCreatedUtc": "2026-11-27T04:25:06.528Z",
+  "providerCompletedUtc": "2026-11-27T04:26:28.933Z",
+  "providerSeconds": 82.405,
+  "backgroundReadySeconds": 86.53,
+  "firstSubmissionToFinalDeliverySeconds": 630.779,
+  "local": {
+    "version": 2,
+    "role": "revision",
+    "credits": 1,
+    "workCredits": 1,
+    "requestToDeliverySeconds": 28.0,
+    "productionSeconds": 13.0,
+    "offer": {
+      "product": "抹茶拿铁",
+      "weekday": "周五",
+      "amount": "19.90",
+      "currency": "CNY",
+      "channel": "到店"
+    },
+    "deliveredAt": "2026-11-27T03:03:20+00:00",
+    "visualEngine": "复用已交付净画面",
+    "modelCharge": null
+  },
+  "h3": {
+    "version": 3,
+    "role": "revision",
+    "credits": 1,
+    "workCredits": 1,
+    "requestToDeliverySeconds": 24.0,
+    "productionSeconds": 24.0,
+    "offer": {
+      "product": "抹茶拿铁",
+      "weekday": "周五",
+      "amount": "19.90",
+      "currency": "CNY",
+      "channel": "到店"
+    },
+    "deliveredAt": "2026-11-27T04:35:36+00:00",
+    "visualEngine": "minimax/h3-developer/text-to-video",
+    "modelCharge": {
+      "amount": "0.135",
+      "currency": "USD",
+      "field": "price"
+    }
+  },
+  "startingCredits": 107,
+  "endingCredits": 106,
+  "negativeEntries": 1,
+  "approvalsForSameJob": 3,
+  "sharedTrackHashes": {
+    "soundtrack.wav": "9682cd364f44624c3da8e29cb12ad5ddc1c17644335353f0273064ba09a50af2",
+    "voice.wav": "f5223b5238bd3d10d342dc4decd4a6463fddab291af0aa2431701ef2906b9a6d",
+    "music-ducked.wav": "ff5d2e9ec54ebd048bbd963f4005a6031a688623d1886387e64a3a0ff8cdcc2e",
+    "spoken-1.png": "28a288cd06d07c129721db841a59dc42a3650403f5c57c415868d897fea2e254",
+    "spoken-2.png": "f9a62e030e7753f258d6b7db54e2846b3f5a99556f59bfaa66114aa0fbb48795",
+    "spoken-3.png": "d1d4d8137ebd4658c7dca1b766d3a04bd378a995c327b9686296d53843cb4f52",
+    "title-1.png": "cd3353aa2962301c8c85b948230fe398764b5c76cccd72d0bbd0bd2eb718cb1b",
+    "title-2.png": "e4750964e0f685ca8694cd5d860f6e69d55cc02e0b62862d23c0237e29e65cff",
+    "title-3.png": "61aa20f8b2a7bffd5f199b85d1cec5674a4b2cb35e61fadb2b40832035796f84",
+    "captions.srt": "f7a1642c54d0bf4b308305bb34f4073ab6e4e51d773955c5dccab04b9883df10",
+    "cuts.edl": "ee03416a0fb48b8be7d47d73d88fac5f25ab90359751a2a06eb8961ca025e0e9",
+    "timeline.json": "42ba38bb9d98a08266071a823a99e30f7ba4edca65edfa5f29b98ec23b3d236a"
+  },
+  "encodedAudioSHA256": "40920d6c8dd14cff0de2f75d42164421353557567c874e71043f34f55b6987eb",
+  "localFilmSHA256": "f88299330b540755d9db91e7e918df2d5e6f5942cf88616c63a5c0f44d0e369b",
+  "h3FilmSHA256": "c018e77a8e4e1d0bc345d315648cf5af9e7e7b85cc46cbd2a36f46b5f8c16b75",
+  "visualComparison": {
+    "framesCompared": 360,
+    "analysisSize": [
+      180,
+      320
+    ],
+    "cupCenter": [
+      85,
+      164,
+      111,
+      198
+    ],
+    "upperLeft": [
+      0,
+      0,
+      48,
+      28
+    ],
+    "maxCupMeanAbsoluteDelta": 1.446,
+    "minBackgroundMeanAbsoluteDelta": 70.207
+  },
+  "offlinePlayback": {
+    "bytes": 4926424,
+    "offlineRequests": 0,
+    "reopenAndResetVerified": true
+  }
+}
